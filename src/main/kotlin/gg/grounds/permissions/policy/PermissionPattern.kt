@@ -4,7 +4,10 @@ object PermissionPattern {
     fun matches(pattern: String, permission: String): Boolean =
         when {
             pattern == "*" -> true
-            pattern.endsWith(".*") -> permission.startsWith(pattern.removeSuffix("*"))
+            pattern.endsWith(".*") -> {
+                val prefix = pattern.removeSuffix("*")
+                permission.startsWith(prefix) && permission.length > prefix.length
+            }
             else -> pattern == permission
         }
 

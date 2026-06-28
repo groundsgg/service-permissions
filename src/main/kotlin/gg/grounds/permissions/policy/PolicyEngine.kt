@@ -7,6 +7,7 @@ import gg.grounds.permissions.domain.PermissionGrantSource
 import gg.grounds.permissions.domain.PermissionPolicyInput
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
+import gg.grounds.permissions.domain.PlayerPermissionGrant
 import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
 import gg.grounds.permissions.domain.RoleMetadata
@@ -47,8 +48,16 @@ object PolicyEngine {
                 .mapNotNull { rolesByKey[it] }
                 .flatMap { it.grants.asSequence() }
                 .filterNot { it.isExpired(now) }
+                .map { it.withSource(PermissionGrantSource.ROLE) }
                 .toList()
-        val playerGrants = input.playerGrants.filterNot { it.isExpired(now) }
+        val playerGrants =
+            input.playerGrants
+                .asSequence()
+                .filter { it.playerId == playerId }
+                .filterNot { it.isExpired(now) }
+                .filterNot { it.grant.isExpired(now) }
+                .map { it.grant.withSource(PermissionGrantSource.PLAYER) }
+                .toList()
         val grants = roleGrants + playerGrants
 
         return EffectivePermissionSnapshot(
@@ -143,8 +152,14 @@ object PolicyEngine {
     private fun PermissionGrant.isExpired(now: Instant): Boolean =
         expiresAt?.let { !it.isAfter(now) } ?: false
 
+    private fun PlayerPermissionGrant.isExpired(now: Instant): Boolean =
+        expiresAt?.let { !it.isAfter(now) } ?: false
+
     private fun PlayerRoleGrant.isExpired(now: Instant): Boolean =
         expiresAt?.let { !it.isAfter(now) } ?: false
+
+    private fun PermissionGrant.withSource(source: PermissionGrantSource): PermissionGrant =
+        if (this.source == source) this else copy(source = source)
 
     private fun RoleDefinition.toMetadata(): RoleMetadata =
         RoleMetadata(key = key, name = name, prefix = prefix, color = color, sortOrder = sortOrder)

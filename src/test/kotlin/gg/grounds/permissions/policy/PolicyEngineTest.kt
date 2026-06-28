@@ -10,6 +10,7 @@ import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL
 import gg.grounds.permissions.domain.PermissionScopeKind.SERVER
 import gg.grounds.permissions.domain.PermissionScopeKind.SERVER_TYPE
+import gg.grounds.permissions.domain.PlayerPermissionGrant
 import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
 import java.time.Instant
@@ -132,13 +133,57 @@ class PolicyEngineTest {
                             ),
                         playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
                         playerGrants =
-                            listOf(allow("warp.use", PLAYER, expiresAt = now.minusSeconds(1))),
+                            listOf(
+                                PlayerPermissionGrant(
+                                    playerId,
+                                    allow("warp.use", PLAYER),
+                                    expiresAt = now.minusSeconds(1),
+                                )
+                            ),
                     ),
                 now = now,
             )
 
         assertFalse(PolicyEngine.hasPermission(snapshot, "fly.use", PermissionCheckScope.global()))
         assertFalse(PolicyEngine.hasPermission(snapshot, "warp.use", PermissionCheckScope.global()))
+    }
+
+    @Test
+    fun directPlayerGrantsApplyOnlyToTheMatchingPlayer() {
+        val otherPlayerId = UUID.fromString("00000000-0000-0000-0000-000000000456")
+        val input =
+            policy(
+                roles = emptyList(),
+                playerGrants = listOf(PlayerPermissionGrant(playerId, allow("warp.use", ROLE))),
+            )
+
+        val matchingSnapshot = PolicyEngine.createSnapshot(playerId, input, now)
+        val otherSnapshot = PolicyEngine.createSnapshot(otherPlayerId, input, now)
+
+        assertTrue(
+            PolicyEngine.hasPermission(matchingSnapshot, "warp.use", PermissionCheckScope.global())
+        )
+        assertFalse(
+            PolicyEngine.hasPermission(otherSnapshot, "warp.use", PermissionCheckScope.global())
+        )
+    }
+
+    @Test
+    fun snapshotDerivesGrantSourcesFromContainers() {
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles = listOf(role("member", grants = listOf(deny("kit.claim", PLAYER)))),
+                        playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
+                        playerGrants =
+                            listOf(PlayerPermissionGrant(playerId, allow("kit.claim", ROLE))),
+                    ),
+                now = now,
+            )
+
+        assertTrue(PolicyEngine.hasPermission(snapshot, "kit.claim", PermissionCheckScope.global()))
     }
 
     @Test
@@ -170,6 +215,33 @@ class PolicyEngineTest {
     }
 
     @Test
+    fun serverTypeGrantsApplyToServerChecksOnlyWhenServerTypeIsSupplied() {
+        val snapshot =
+            snapshot(
+                grants =
+                    listOf(
+                        allow("region.edit", ROLE, PermissionScope(GLOBAL)),
+                        deny("region.edit", ROLE, PermissionScope(SERVER_TYPE, "survival")),
+                    )
+            )
+
+        assertFalse(
+            PolicyEngine.hasPermission(
+                snapshot,
+                "region.edit",
+                PermissionCheckScope.server(server = "survival-1", serverType = "survival"),
+            )
+        )
+        assertTrue(
+            PolicyEngine.hasPermission(
+                snapshot,
+                "region.edit",
+                PermissionCheckScope.server(server = "survival-1"),
+            )
+        )
+    }
+
+    @Test
     fun directPlayerGrantBeatsRoleGrantAtTheSameScope() {
         val snapshot =
             snapshot(grants = listOf(deny("kit.claim", ROLE), allow("kit.claim", PLAYER)))
@@ -185,11 +257,19 @@ class PolicyEngineTest {
     }
 
     @Test
+    fun playerWildcardGrantBeatsRoleExactGrant() {
+        val snapshot = snapshot(grants = listOf(deny("chat.send", ROLE), allow("*", PLAYER)))
+
+        assertTrue(PolicyEngine.hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
+    }
+
+    @Test
     fun prefixWildcardPatternMatchesOnlyChildren() {
         val snapshot = snapshot(grants = listOf(allow("chat.*", ROLE)))
 
         assertTrue(PolicyEngine.hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
         assertFalse(PolicyEngine.hasPermission(snapshot, "chat", PermissionCheckScope.global()))
+        assertFalse(PolicyEngine.hasPermission(snapshot, "chat.", PermissionCheckScope.global()))
     }
 
     @Test
@@ -227,7 +307,10 @@ class PolicyEngineTest {
                 policy(
                     roles = listOf(role("member", grants = grants.filter { it.source == ROLE })),
                     playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
-                    playerGrants = grants.filter { it.source == PLAYER },
+                    playerGrants =
+                        grants
+                            .filter { it.source == PLAYER }
+                            .map { PlayerPermissionGrant(playerId, it) },
                 ),
             now = now,
         )
@@ -235,7 +318,7 @@ class PolicyEngineTest {
     private fun policy(
         roles: List<RoleDefinition>,
         playerRoles: List<PlayerRoleGrant> = emptyList(),
-        playerGrants: List<PermissionGrant> = emptyList(),
+        playerGrants: List<PlayerPermissionGrant> = emptyList(),
     ) =
         PermissionPolicyInput(
             policyVersion = 1,

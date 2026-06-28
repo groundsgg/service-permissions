@@ -69,11 +69,17 @@ data class RoleDefinition(
 
 data class PlayerRoleGrant(val playerId: UUID, val roleKey: String, val expiresAt: Instant? = null)
 
+data class PlayerPermissionGrant(
+    val playerId: UUID,
+    val grant: PermissionGrant,
+    val expiresAt: Instant? = null,
+)
+
 data class PermissionPolicyInput(
     val policyVersion: Long,
     val roles: List<RoleDefinition>,
     val playerRoles: List<PlayerRoleGrant> = emptyList(),
-    val playerGrants: List<PermissionGrant> = emptyList(),
+    val playerGrants: List<PlayerPermissionGrant> = emptyList(),
     val refreshAfter: Instant,
     val expiresAt: Instant,
 )
