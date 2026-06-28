@@ -39,7 +39,7 @@ dependencies {
     implementation("io.quarkus:quarkus-scheduler")
     implementation("io.quarkus:quarkus-opentelemetry")
 
-    compileOnly("com.google.protobuf:protobuf-kotlin")
+    implementation("com.google.protobuf:protobuf-kotlin")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")

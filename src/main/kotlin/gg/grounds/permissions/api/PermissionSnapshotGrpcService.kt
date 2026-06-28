@@ -1,0 +1,153 @@
+package gg.grounds.permissions.api
+
+import com.google.protobuf.Timestamp
+import gg.grounds.grpc.permissions.GetPlayerSnapshotRequest
+import gg.grounds.grpc.permissions.PermissionEffect
+import gg.grounds.grpc.permissions.PermissionGrant
+import gg.grounds.grpc.permissions.PermissionGrantSource
+import gg.grounds.grpc.permissions.PermissionScope
+import gg.grounds.grpc.permissions.PermissionScopeKind
+import gg.grounds.grpc.permissions.PermissionSnapshotService
+import gg.grounds.grpc.permissions.PlayerPermissionSnapshot
+import gg.grounds.grpc.permissions.RefreshOnlinePlayersReply
+import gg.grounds.grpc.permissions.RefreshOnlinePlayersRequest
+import gg.grounds.grpc.permissions.RoleMetadata
+import gg.grounds.permissions.domain.EffectivePermissionSnapshot
+import gg.grounds.permissions.policy.PolicyEngine
+import io.quarkus.grpc.GrpcService
+import io.smallrye.common.annotation.Blocking
+import io.smallrye.mutiny.Uni
+import jakarta.inject.Inject
+import java.time.Instant
+import java.util.UUID
+import org.jboss.logging.Logger
+
+@GrpcService
+@Blocking
+class PermissionSnapshotGrpcService
+@Inject
+constructor(private val policyProvider: PermissionPolicyProvider) : PermissionSnapshotService {
+
+    override fun getPlayerSnapshot(
+        request: GetPlayerSnapshotRequest
+    ): Uni<PlayerPermissionSnapshot> {
+        return Uni.createFrom().item { handleGetPlayerSnapshot(request) }
+    }
+
+    override fun refreshOnlinePlayers(
+        request: RefreshOnlinePlayersRequest
+    ): Uni<RefreshOnlinePlayersReply> {
+        return Uni.createFrom().item {
+            LOG.infof(
+                "Permission refresh accepted (serverType=%s, serverId=%s)",
+                request.serverType,
+                request.serverId,
+            )
+            RefreshOnlinePlayersReply.newBuilder()
+                .setAccepted(true)
+                .setMessage("refresh accepted")
+                .build()
+        }
+    }
+
+    private fun handleGetPlayerSnapshot(
+        request: GetPlayerSnapshotRequest
+    ): PlayerPermissionSnapshot {
+        val playerId =
+            request.playerId
+                .trim()
+                .takeIf { it.isNotEmpty() }
+                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                ?: throw IllegalArgumentException("player_id must be a UUID")
+        val input =
+            policyProvider.policyFor(
+                PermissionPolicyRequest(
+                    playerId = playerId,
+                    keycloakGroups = request.keycloakGroupsList.toSet(),
+                    serverType = request.serverType,
+                    serverId = request.serverId,
+                )
+            )
+        val snapshot = PolicyEngine.createSnapshot(playerId = playerId, input = input)
+
+        LOG.infof(
+            "Permission snapshot computed (playerId=%s, policyVersion=%d, roleCount=%d)",
+            playerId,
+            snapshot.policyVersion,
+            snapshot.roleKeys.size,
+        )
+        return snapshot.toGrpc()
+    }
+
+    private fun EffectivePermissionSnapshot.toGrpc(): PlayerPermissionSnapshot =
+        PlayerPermissionSnapshot.newBuilder()
+            .setPlayerId(playerId.toString())
+            .setPolicyVersion(policyVersion)
+            .setIssuedAt(issuedAt.toTimestamp())
+            .setRefreshAfter(refreshAfter.toTimestamp())
+            .setExpiresAt(expiresAt.toTimestamp())
+            .addAllAllowPatterns(allowPatterns.map { it.toGrpc() })
+            .addAllDenyPatterns(denyPatterns.map { it.toGrpc() })
+            .addAllRoleKeys(roleKeys)
+            .addAllRoleMetadata(roleMetadata.map { it.toGrpc() })
+            .build()
+
+    private fun gg.grounds.permissions.domain.PermissionGrant.toGrpc(): PermissionGrant =
+        PermissionGrant.newBuilder()
+            .setEffect(effect.toGrpc())
+            .setPattern(pattern)
+            .setScope(scope.toGrpc())
+            .setSource(source.toGrpc())
+            .also { builder -> expiresAt?.let { builder.setExpiresAt(it.toTimestamp()) } }
+            .build()
+
+    private fun gg.grounds.permissions.domain.PermissionScope.toGrpc(): PermissionScope =
+        PermissionScope.newBuilder()
+            .setKind(
+                when (kind) {
+                    gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL ->
+                        PermissionScopeKind.PERMISSION_SCOPE_KIND_GLOBAL
+                    gg.grounds.permissions.domain.PermissionScopeKind.SERVER_TYPE ->
+                        PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER_TYPE
+                    gg.grounds.permissions.domain.PermissionScopeKind.SERVER ->
+                        PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER
+                }
+            )
+            .also { builder -> value?.let { builder.value = it } }
+            .build()
+
+    private fun gg.grounds.permissions.domain.PermissionEffect.toGrpc(): PermissionEffect =
+        when (this) {
+            gg.grounds.permissions.domain.PermissionEffect.ALLOW ->
+                PermissionEffect.PERMISSION_EFFECT_ALLOW
+            gg.grounds.permissions.domain.PermissionEffect.DENY ->
+                PermissionEffect.PERMISSION_EFFECT_DENY
+        }
+
+    private fun gg.grounds.permissions.domain.PermissionGrantSource.toGrpc():
+        PermissionGrantSource =
+        when (this) {
+            gg.grounds.permissions.domain.PermissionGrantSource.ROLE ->
+                PermissionGrantSource.PERMISSION_GRANT_SOURCE_ROLE
+            gg.grounds.permissions.domain.PermissionGrantSource.PLAYER ->
+                PermissionGrantSource.PERMISSION_GRANT_SOURCE_PLAYER
+        }
+
+    private fun gg.grounds.permissions.domain.RoleMetadata.toGrpc(): RoleMetadata =
+        RoleMetadata.newBuilder()
+            .setKey(key)
+            .setName(name)
+            .also { builder ->
+                prefix?.let { builder.prefix = it }
+                color?.let { builder.color = it }
+            }
+            .setSortOrder(sortOrder)
+            .build()
+
+    private fun Instant.toTimestamp(): Timestamp =
+        Timestamp.newBuilder().setSeconds(epochSecond).setNanos(nano).build()
+
+    companion object {
+        private val LOG = Logger.getLogger(PermissionSnapshotGrpcService::class.java)
+    }
+}
