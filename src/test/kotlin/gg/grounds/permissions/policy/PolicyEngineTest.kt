@@ -5,6 +5,7 @@ import gg.grounds.permissions.domain.PermissionEffect.DENY
 import gg.grounds.permissions.domain.PermissionGrant
 import gg.grounds.permissions.domain.PermissionGrantSource.PLAYER
 import gg.grounds.permissions.domain.PermissionGrantSource.ROLE
+import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionPolicyInput
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL
@@ -15,6 +16,7 @@ import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
 import java.time.Instant
 import java.util.UUID
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -36,7 +38,7 @@ class PolicyEngineTest {
                                 role(
                                     key = "default",
                                     default = true,
-                                    grants = listOf(allow("chat.read")),
+                                    grants = listOf(allowSpec("chat.read")),
                                 )
                             )
                     ),
@@ -56,8 +58,8 @@ class PolicyEngineTest {
                     policy(
                         roles =
                             listOf(
-                                role("builder", grants = listOf(allow("build.place"))),
-                                role("moderator", grants = listOf(allow("chat.mute"))),
+                                role("builder", grants = listOf(allowSpec("build.place"))),
+                                role("moderator", grants = listOf(allowSpec("chat.mute"))),
                             ),
                         playerRoles =
                             listOf(
@@ -83,7 +85,7 @@ class PolicyEngineTest {
                     policy(
                         roles =
                             listOf(
-                                role("member", grants = listOf(allow("home.teleport"))),
+                                role("member", grants = listOf(allowSpec("home.teleport"))),
                                 role("vip", inherits = setOf("member")),
                             ),
                         playerRoles = listOf(PlayerRoleGrant(playerId, "vip")),
@@ -117,6 +119,44 @@ class PolicyEngineTest {
     }
 
     @Test
+    fun unassignedCycleInputIsRejectedDuringSnapshotCreation() {
+        assertThrows(IllegalArgumentException::class.java) {
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles =
+                            listOf(
+                                role("member", grants = listOf(allowSpec("chat.read"))),
+                                role("alpha", inherits = setOf("beta")),
+                                role("beta", inherits = setOf("alpha")),
+                            ),
+                        playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
+                    ),
+                now = now,
+            )
+        }
+    }
+
+    @Test
+    fun duplicateRoleKeysAreRejectedDuringSnapshotCreation() {
+        assertThrows(IllegalArgumentException::class.java) {
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles =
+                            listOf(
+                                role("member", grants = listOf(allowSpec("chat.read"))),
+                                role("member", grants = listOf(allowSpec("chat.write"))),
+                            )
+                    ),
+                now = now,
+            )
+        }
+    }
+
+    @Test
     fun expiredGrantsAreIgnored() {
         val snapshot =
             PolicyEngine.createSnapshot(
@@ -128,7 +168,9 @@ class PolicyEngineTest {
                                 role(
                                     "member",
                                     grants =
-                                        listOf(allow("fly.use", expiresAt = now.minusSeconds(1))),
+                                        listOf(
+                                            allowSpec("fly.use", expiresAt = now.minusSeconds(1))
+                                        ),
                                 )
                             ),
                         playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
@@ -136,7 +178,7 @@ class PolicyEngineTest {
                             listOf(
                                 PlayerPermissionGrant(
                                     playerId,
-                                    allow("warp.use", PLAYER),
+                                    allowSpec("warp.use"),
                                     expiresAt = now.minusSeconds(1),
                                 )
                             ),
@@ -154,7 +196,7 @@ class PolicyEngineTest {
         val input =
             policy(
                 roles = emptyList(),
-                playerGrants = listOf(PlayerPermissionGrant(playerId, allow("warp.use", ROLE))),
+                playerGrants = listOf(PlayerPermissionGrant(playerId, allowSpec("warp.use"))),
             )
 
         val matchingSnapshot = PolicyEngine.createSnapshot(playerId, input, now)
@@ -175,15 +217,114 @@ class PolicyEngineTest {
                 playerId = playerId,
                 input =
                     policy(
-                        roles = listOf(role("member", grants = listOf(deny("kit.claim", PLAYER)))),
+                        roles = listOf(role("member", grants = listOf(denySpec("kit.claim")))),
                         playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
                         playerGrants =
-                            listOf(PlayerPermissionGrant(playerId, allow("kit.claim", ROLE))),
+                            listOf(PlayerPermissionGrant(playerId, allowSpec("kit.claim"))),
                     ),
                 now = now,
             )
 
         assertTrue(PolicyEngine.hasPermission(snapshot, "kit.claim", PermissionCheckScope.global()))
+    }
+
+    @Test
+    fun snapshotExpiryIsCappedByPlayerRoleAssignmentExpiry() {
+        val roleAssignmentExpiresAt = now.plusSeconds(30)
+
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles = listOf(role("member", grants = listOf(allowSpec("chat.read")))),
+                        playerRoles =
+                            listOf(
+                                PlayerRoleGrant(
+                                    playerId = playerId,
+                                    roleKey = "member",
+                                    expiresAt = roleAssignmentExpiresAt,
+                                )
+                            ),
+                    ),
+                now = now,
+            )
+
+        assertEquals(roleAssignmentExpiresAt, snapshot.expiresAt)
+    }
+
+    @Test
+    fun snapshotExpiryIsCappedByPlayerDirectGrantContainerExpiry() {
+        val containerExpiresAt = now.plusSeconds(45)
+
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles = emptyList(),
+                        playerGrants =
+                            listOf(
+                                PlayerPermissionGrant(
+                                    playerId = playerId,
+                                    grant = allowSpec("warp.use"),
+                                    expiresAt = containerExpiresAt,
+                                )
+                            ),
+                    ),
+                now = now,
+            )
+
+        assertEquals(containerExpiresAt, snapshot.expiresAt)
+    }
+
+    @Test
+    fun snapshotExpiryIsCappedByPermissionGrantExpiry() {
+        val grantExpiresAt = now.plusSeconds(20)
+
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles =
+                            listOf(
+                                role(
+                                    "member",
+                                    grants =
+                                        listOf(allowSpec("fly.use", expiresAt = grantExpiresAt)),
+                                )
+                            ),
+                        playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
+                    ),
+                now = now,
+            )
+
+        assertEquals(grantExpiresAt, snapshot.expiresAt)
+    }
+
+    @Test
+    fun snapshotExpiryIsCappedByPlayerDirectPermissionGrantExpiry() {
+        val grantExpiresAt = now.plusSeconds(25)
+
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles = emptyList(),
+                        playerGrants =
+                            listOf(
+                                PlayerPermissionGrant(
+                                    playerId = playerId,
+                                    grant = allowSpec("warp.use", expiresAt = grantExpiresAt),
+                                )
+                            ),
+                    ),
+                now = now,
+            )
+
+        assertEquals(grantExpiresAt, snapshot.expiresAt)
     }
 
     @Test
@@ -305,12 +446,18 @@ class PolicyEngineTest {
             playerId = playerId,
             input =
                 policy(
-                    roles = listOf(role("member", grants = grants.filter { it.source == ROLE })),
+                    roles =
+                        listOf(
+                            role(
+                                "member",
+                                grants = grants.filter { it.source == ROLE }.map { it.toSpec() },
+                            )
+                        ),
                     playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
                     playerGrants =
                         grants
                             .filter { it.source == PLAYER }
-                            .map { PlayerPermissionGrant(playerId, it) },
+                            .map { PlayerPermissionGrant(playerId, it.toSpec()) },
                 ),
             now = now,
         )
@@ -333,7 +480,7 @@ class PolicyEngineTest {
         key: String,
         default: Boolean = false,
         inherits: Set<String> = emptySet(),
-        grants: List<PermissionGrant> = emptyList(),
+        grants: List<PermissionGrantSpec> = emptyList(),
     ) =
         RoleDefinition(
             key = key,
@@ -342,6 +489,12 @@ class PolicyEngineTest {
             inheritedRoleKeys = inherits,
             grants = grants,
         )
+
+    private fun allowSpec(
+        pattern: String,
+        scope: PermissionScope = PermissionScope(GLOBAL),
+        expiresAt: Instant? = null,
+    ) = PermissionGrantSpec(effect = ALLOW, pattern = pattern, scope = scope, expiresAt = expiresAt)
 
     private fun allow(
         pattern: String,
@@ -357,6 +510,12 @@ class PolicyEngineTest {
             expiresAt = expiresAt,
         )
 
+    private fun denySpec(
+        pattern: String,
+        scope: PermissionScope = PermissionScope(GLOBAL),
+        expiresAt: Instant? = null,
+    ) = PermissionGrantSpec(effect = DENY, pattern = pattern, scope = scope, expiresAt = expiresAt)
+
     private fun deny(
         pattern: String,
         source: gg.grounds.permissions.domain.PermissionGrantSource = ROLE,
@@ -368,6 +527,14 @@ class PolicyEngineTest {
             pattern = pattern,
             scope = scope,
             source = source,
+            expiresAt = expiresAt,
+        )
+
+    private fun PermissionGrant.toSpec() =
+        PermissionGrantSpec(
+            effect = effect,
+            pattern = pattern,
+            scope = scope,
             expiresAt = expiresAt,
         )
 }

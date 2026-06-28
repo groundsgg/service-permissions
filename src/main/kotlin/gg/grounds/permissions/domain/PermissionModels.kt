@@ -30,6 +30,13 @@ data class PermissionGrant(
     val expiresAt: Instant? = null,
 )
 
+data class PermissionGrantSpec(
+    val effect: PermissionEffect,
+    val pattern: String,
+    val scope: PermissionScope,
+    val expiresAt: Instant? = null,
+)
+
 enum class PermissionGrantSource {
     ROLE,
     PLAYER,
@@ -64,14 +71,14 @@ data class RoleDefinition(
     val sortOrder: Int = 0,
     val isDefault: Boolean = false,
     val inheritedRoleKeys: Set<String> = emptySet(),
-    val grants: List<PermissionGrant> = emptyList(),
+    val grants: List<PermissionGrantSpec> = emptyList(),
 )
 
 data class PlayerRoleGrant(val playerId: UUID, val roleKey: String, val expiresAt: Instant? = null)
 
 data class PlayerPermissionGrant(
     val playerId: UUID,
-    val grant: PermissionGrant,
+    val grant: PermissionGrantSpec,
     val expiresAt: Instant? = null,
 )
 

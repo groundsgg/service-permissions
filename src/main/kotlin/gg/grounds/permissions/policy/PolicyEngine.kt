@@ -4,6 +4,7 @@ import gg.grounds.permissions.domain.EffectivePermissionSnapshot
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrant
 import gg.grounds.permissions.domain.PermissionGrantSource
+import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionPolicyInput
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
@@ -32,14 +33,18 @@ object PolicyEngine {
         input: PermissionPolicyInput,
         now: Instant = Instant.now(),
     ): EffectivePermissionSnapshot {
-        val rolesByKey = input.roles.associateBy { it.key }
+        val rolesByKey = input.roles.toRoleMap()
+        validateRoleGraph(input.roles.map { it.key }, rolesByKey)
+
+        val includedPlayerRoleGrants =
+            input.playerRoles
+                .asSequence()
+                .filter { it.playerId == playerId }
+                .filterNot { it.isExpired(now) }
+                .toList()
         val assignedRoleKeys =
             input.roles.filter { it.isDefault }.mapTo(linkedSetOf()) { it.key } +
-                input.playerRoles
-                    .asSequence()
-                    .filter { it.playerId == playerId }
-                    .filterNot { it.isExpired(now) }
-                    .map { it.roleKey }
+                includedPlayerRoleGrants.map { it.roleKey }
 
         val roleKeys = flattenRoleKeys(assignedRoleKeys, rolesByKey)
         val roleGrants =
@@ -48,24 +53,32 @@ object PolicyEngine {
                 .mapNotNull { rolesByKey[it] }
                 .flatMap { it.grants.asSequence() }
                 .filterNot { it.isExpired(now) }
-                .map { it.withSource(PermissionGrantSource.ROLE) }
                 .toList()
-        val playerGrants =
+        val effectiveRoleGrants = roleGrants.map { it.toGrant(PermissionGrantSource.ROLE) }
+        val includedPlayerGrants =
             input.playerGrants
                 .asSequence()
                 .filter { it.playerId == playerId }
                 .filterNot { it.isExpired(now) }
                 .filterNot { it.grant.isExpired(now) }
-                .map { it.grant.withSource(PermissionGrantSource.PLAYER) }
                 .toList()
-        val grants = roleGrants + playerGrants
+        val playerGrants =
+            includedPlayerGrants.map { it.grant.toGrant(PermissionGrantSource.PLAYER) }
+        val grants = effectiveRoleGrants + playerGrants
 
         return EffectivePermissionSnapshot(
             playerId = playerId,
             policyVersion = input.policyVersion,
             issuedAt = now,
             refreshAfter = input.refreshAfter,
-            expiresAt = input.expiresAt,
+            expiresAt =
+                earliestOf(
+                    listOf(input.expiresAt) +
+                        includedPlayerRoleGrants.mapNotNull { it.expiresAt } +
+                        roleGrants.mapNotNull { it.expiresAt } +
+                        includedPlayerGrants.mapNotNull { it.expiresAt } +
+                        includedPlayerGrants.mapNotNull { it.grant.expiresAt }
+                ),
             allowPatterns = grants.filter { it.effect == PermissionEffect.ALLOW },
             denyPatterns = grants.filter { it.effect == PermissionEffect.DENY },
             roleKeys = roleKeys,
@@ -91,6 +104,23 @@ object PolicyEngine {
                 )
 
         return candidate?.grant?.effect == PermissionEffect.ALLOW
+    }
+
+    private fun List<RoleDefinition>.toRoleMap(): Map<String, RoleDefinition> {
+        val rolesByKey = linkedMapOf<String, RoleDefinition>()
+        forEach { role ->
+            require(rolesByKey.put(role.key, role) == null) {
+                "Duplicate role key detected (roleKey=${role.key})"
+            }
+        }
+        return rolesByKey
+    }
+
+    private fun validateRoleGraph(
+        roleKeys: Collection<String>,
+        rolesByKey: Map<String, RoleDefinition>,
+    ) {
+        flattenRoleKeys(roleKeys, rolesByKey)
     }
 
     private fun flattenRoleKeys(
@@ -149,7 +179,7 @@ object PolicyEngine {
             PermissionScopeKind.SERVER -> if (value == scope.server) 2 else null
         }
 
-    private fun PermissionGrant.isExpired(now: Instant): Boolean =
+    private fun PermissionGrantSpec.isExpired(now: Instant): Boolean =
         expiresAt?.let { !it.isAfter(now) } ?: false
 
     private fun PlayerPermissionGrant.isExpired(now: Instant): Boolean =
@@ -158,8 +188,17 @@ object PolicyEngine {
     private fun PlayerRoleGrant.isExpired(now: Instant): Boolean =
         expiresAt?.let { !it.isAfter(now) } ?: false
 
-    private fun PermissionGrant.withSource(source: PermissionGrantSource): PermissionGrant =
-        if (this.source == source) this else copy(source = source)
+    private fun PermissionGrantSpec.toGrant(source: PermissionGrantSource): PermissionGrant =
+        PermissionGrant(
+            effect = effect,
+            pattern = pattern,
+            scope = scope,
+            source = source,
+            expiresAt = expiresAt,
+        )
+
+    private fun earliestOf(instants: List<Instant>): Instant =
+        instants.minOrNull() ?: error("Snapshot expiry candidates must not be empty")
 
     private fun RoleDefinition.toMetadata(): RoleMetadata =
         RoleMetadata(key = key, name = name, prefix = prefix, color = color, sortOrder = sortOrder)
