@@ -1,0 +1,9 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "service-permissions",
+      "include-v-in-tag": true
+    }
+  }
+}
