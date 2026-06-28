@@ -11,7 +11,10 @@ import org.junit.jupiter.api.Test
 import org.testcontainers.postgresql.PostgreSQLContainer
 
 @QuarkusTest
-@QuarkusTestResource(PermissionsPostgresTestResource::class)
+@QuarkusTestResource(
+    value = PermissionsPostgresTestResource::class,
+    restrictToAnnotatedClass = true,
+)
 class PermissionsSchemaTest {
 
     @Inject lateinit var dataSource: DataSource
@@ -28,6 +31,50 @@ class PermissionsSchemaTest {
                     }
                 }
         }
+    }
+
+    @Test
+    fun flywayCreatesPolicyLookupIndexes() {
+        val indexes =
+            dataSource.connection.use { connection ->
+                connection
+                    .prepareStatement(
+                        """
+                        SELECT indexname, indexdef
+                        FROM pg_indexes
+                        WHERE schemaname = current_schema()
+                        """
+                            .trimIndent()
+                    )
+                    .use { statement ->
+                        statement.executeQuery().use { resultSet ->
+                            buildMap {
+                                while (resultSet.next()) {
+                                    put(
+                                        resultSet.getString("indexname"),
+                                        resultSet.getString("indexdef"),
+                                    )
+                                }
+                            }
+                        }
+                    }
+            }
+
+        assertIndexExists(indexes, "permission_role_inheritance_child_role_key_idx")
+        assertIndexExists(indexes, "permission_role_grants_role_key_idx")
+        assertIndexExists(indexes, "permission_player_role_grants_player_id_idx")
+        assertIndexExists(indexes, "permission_player_role_grants_role_key_idx")
+        assertIndexExists(indexes, "permission_player_grants_player_id_idx")
+        assertIndexExists(indexes, "permission_keycloak_group_mappings_keycloak_group_idx")
+
+        val auditIndex = assertIndexExists(indexes, "permission_audit_events_created_at_desc_idx")
+        assertTrue(auditIndex.contains("created_at DESC"))
+    }
+
+    private fun assertIndexExists(indexes: Map<String, String>, indexName: String): String {
+        val index = indexes[indexName]
+        assertTrue(index != null, "Expected index to exist: $indexName")
+        return index!!
     }
 }
 

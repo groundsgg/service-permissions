@@ -23,6 +23,9 @@ CREATE TABLE permission_role_inheritance (
     CHECK (parent_role_key <> child_role_key)
 );
 
+CREATE INDEX permission_role_inheritance_child_role_key_idx
+    ON permission_role_inheritance (child_role_key);
+
 CREATE TABLE permission_role_grants (
     id UUID PRIMARY KEY,
     role_key TEXT NOT NULL REFERENCES permission_roles(key) ON DELETE CASCADE,
@@ -35,6 +38,9 @@ CREATE TABLE permission_role_grants (
     CHECK ((scope_kind = 'GLOBAL' AND scope_value IS NULL) OR (scope_kind <> 'GLOBAL' AND scope_value IS NOT NULL))
 );
 
+CREATE INDEX permission_role_grants_role_key_idx
+    ON permission_role_grants (role_key);
+
 CREATE TABLE permission_player_role_grants (
     id UUID PRIMARY KEY,
     player_id UUID NOT NULL,
@@ -42,6 +48,12 @@ CREATE TABLE permission_player_role_grants (
     expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX permission_player_role_grants_player_id_idx
+    ON permission_player_role_grants (player_id);
+
+CREATE INDEX permission_player_role_grants_role_key_idx
+    ON permission_player_role_grants (role_key);
 
 CREATE TABLE permission_player_grants (
     id UUID PRIMARY KEY,
@@ -55,6 +67,9 @@ CREATE TABLE permission_player_grants (
     CHECK ((scope_kind = 'GLOBAL' AND scope_value IS NULL) OR (scope_kind <> 'GLOBAL' AND scope_value IS NOT NULL))
 );
 
+CREATE INDEX permission_player_grants_player_id_idx
+    ON permission_player_grants (player_id);
+
 CREATE TABLE permission_keycloak_group_mappings (
     id UUID PRIMARY KEY,
     keycloak_group TEXT NOT NULL,
@@ -63,6 +78,9 @@ CREATE TABLE permission_keycloak_group_mappings (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (keycloak_group, role_key)
 );
+
+CREATE INDEX permission_keycloak_group_mappings_keycloak_group_idx
+    ON permission_keycloak_group_mappings (keycloak_group);
 
 CREATE TABLE permission_catalog_entries (
     permission_key TEXT PRIMARY KEY,
@@ -103,3 +121,6 @@ CREATE TABLE permission_audit_events (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX permission_audit_events_created_at_desc_idx
+    ON permission_audit_events (created_at DESC);
