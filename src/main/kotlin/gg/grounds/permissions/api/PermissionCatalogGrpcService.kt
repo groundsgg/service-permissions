@@ -25,19 +25,19 @@ class PermissionCatalogGrpcService : PermissionCatalogService {
             if (request.permissionsList.isEmpty()) {
                 throw invalidArgument("permissions must not be empty")
             }
+            val permissionKeys = mutableSetOf<String>()
             request.permissionsList.forEachIndexed { index, permission ->
-                permission.key.normalizedRequired("permissions[$index].key")
+                val permissionKey = permission.key.normalizedRequired("permissions[$index].key")
+                if (!permissionKeys.add(permissionKey)) {
+                    throw invalidArgument("permissions[$index].key must be unique")
+                }
                 permission.label.normalizedRequired("permissions[$index].label")
                 if (permission.supportedScopesList.isEmpty()) {
                     throw invalidArgument("permissions[$index].supported_scopes must not be empty")
                 }
-                if (
-                    permission.supportedScopesList.any {
-                        it == PermissionScopeKind.PERMISSION_SCOPE_KIND_UNSPECIFIED
-                    }
-                ) {
+                if (permission.supportedScopesValueList.any { it !in SUPPORTED_SCOPE_VALUES }) {
                     throw invalidArgument(
-                        "permissions[$index].supported_scopes must not contain unspecified values"
+                        "permissions[$index].supported_scopes must contain only supported values"
                     )
                 }
             }
@@ -78,6 +78,12 @@ class PermissionCatalogGrpcService : PermissionCatalogService {
 
     companion object {
         private val LOG = Logger.getLogger(PermissionCatalogGrpcService::class.java)
+        private val SUPPORTED_SCOPE_VALUES =
+            setOf(
+                PermissionScopeKind.PERMISSION_SCOPE_KIND_GLOBAL.number,
+                PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER_TYPE.number,
+                PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER.number,
+            )
 
         private fun invalidArgument(description: String): StatusRuntimeException =
             Status.INVALID_ARGUMENT.withDescription(description).asRuntimeException()

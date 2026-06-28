@@ -6,6 +6,8 @@ import gg.grounds.grpc.permissions.PermissionEffect.PERMISSION_EFFECT_DENY
 import gg.grounds.grpc.permissions.PermissionGrantSource.PERMISSION_GRANT_SOURCE_PLAYER
 import gg.grounds.grpc.permissions.PermissionManifestEntry
 import gg.grounds.grpc.permissions.PermissionScopeKind.PERMISSION_SCOPE_KIND_GLOBAL
+import gg.grounds.grpc.permissions.PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER
+import gg.grounds.grpc.permissions.PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER_TYPE
 import gg.grounds.grpc.permissions.PermissionSnapshotService
 import gg.grounds.grpc.permissions.RefreshOnlinePlayersRequest
 import gg.grounds.grpc.permissions.RegisterPermissionManifestRequest
@@ -225,6 +227,94 @@ class PermissionSnapshotGrpcServiceTest {
 
         assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
         assertEquals("permissions[0].label must not be blank", error.status.description)
+    }
+
+    @Test
+    fun registerPermissionManifestAcceptsValidManifest() {
+        val reply =
+            catalogService
+                .registerPermissionManifest(
+                    RegisterPermissionManifestRequest.newBuilder()
+                        .setSource("plugin-config")
+                        .setSourceVersion("1.0.0")
+                        .addPermissions(
+                            PermissionManifestEntry.newBuilder()
+                                .setKey("grounds.command.fly")
+                                .setLabel("Fly command")
+                                .addSupportedScopes(PERMISSION_SCOPE_KIND_GLOBAL)
+                                .addSupportedScopes(PERMISSION_SCOPE_KIND_SERVER_TYPE)
+                                .addSupportedScopes(PERMISSION_SCOPE_KIND_SERVER)
+                                .build()
+                        )
+                        .build()
+                )
+                .await()
+                .indefinitely()
+
+        assertTrue(reply.accepted)
+        assertEquals("manifest accepted", reply.message)
+    }
+
+    @Test
+    fun registerPermissionManifestRejectsUnknownSupportedScopeAsInvalidArgument() {
+        val error =
+            assertThrows(StatusRuntimeException::class.java) {
+                catalogService
+                    .registerPermissionManifest(
+                        RegisterPermissionManifestRequest.newBuilder()
+                            .setSource("plugin-config")
+                            .setSourceVersion("1.0.0")
+                            .addPermissions(
+                                PermissionManifestEntry.newBuilder()
+                                    .setKey("grounds.command.fly")
+                                    .setLabel("Fly command")
+                                    .addSupportedScopesValue(99)
+                                    .build()
+                            )
+                            .build()
+                    )
+                    .await()
+                    .indefinitely()
+            }
+
+        assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+        assertEquals(
+            "permissions[0].supported_scopes must contain only supported values",
+            error.status.description,
+        )
+    }
+
+    @Test
+    fun registerPermissionManifestRejectsDuplicatePermissionKeysAsInvalidArgument() {
+        val error =
+            assertThrows(StatusRuntimeException::class.java) {
+                catalogService
+                    .registerPermissionManifest(
+                        RegisterPermissionManifestRequest.newBuilder()
+                            .setSource("plugin-config")
+                            .setSourceVersion("1.0.0")
+                            .addPermissions(
+                                PermissionManifestEntry.newBuilder()
+                                    .setKey("grounds.command.fly")
+                                    .setLabel("Fly command")
+                                    .addSupportedScopes(PERMISSION_SCOPE_KIND_GLOBAL)
+                                    .build()
+                            )
+                            .addPermissions(
+                                PermissionManifestEntry.newBuilder()
+                                    .setKey("grounds.command.fly")
+                                    .setLabel("Fly command duplicate")
+                                    .addSupportedScopes(PERMISSION_SCOPE_KIND_GLOBAL)
+                                    .build()
+                            )
+                            .build()
+                    )
+                    .await()
+                    .indefinitely()
+            }
+
+        assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+        assertEquals("permissions[1].key must be unique", error.status.description)
     }
 
     class Profile : QuarkusTestProfile {
