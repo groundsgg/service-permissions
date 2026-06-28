@@ -79,7 +79,7 @@ data class PlayerRoleGrant(val playerId: UUID, val roleKey: String, val expiresA
 data class PlayerPermissionGrant(
     val playerId: UUID,
     val grant: PermissionGrantSpec,
-    val expiresAt: Instant? = null,
+    val assignmentExpiresAt: Instant? = null,
 )
 
 data class PermissionPolicyInput(

@@ -15,15 +15,18 @@ import gg.grounds.permissions.domain.RoleMetadata
 import java.time.Instant
 import java.util.UUID
 
-data class PermissionCheckScope(val serverType: String? = null, val server: String? = null) {
+data class PermissionCheckScope
+private constructor(val serverType: String? = null, val server: String? = null) {
     companion object {
         fun global(): PermissionCheckScope = PermissionCheckScope()
 
         fun serverType(serverType: String): PermissionCheckScope =
             PermissionCheckScope(serverType = serverType)
 
-        fun server(server: String, serverType: String? = null): PermissionCheckScope =
+        fun server(server: String, serverType: String): PermissionCheckScope =
             PermissionCheckScope(serverType = serverType, server = server)
+
+        fun serverOnly(server: String): PermissionCheckScope = PermissionCheckScope(server = server)
     }
 }
 
@@ -76,7 +79,7 @@ object PolicyEngine {
                     listOf(input.expiresAt) +
                         includedPlayerRoleGrants.mapNotNull { it.expiresAt } +
                         roleGrants.mapNotNull { it.expiresAt } +
-                        includedPlayerGrants.mapNotNull { it.expiresAt } +
+                        includedPlayerGrants.mapNotNull { it.assignmentExpiresAt } +
                         includedPlayerGrants.mapNotNull { it.grant.expiresAt }
                 ),
             allowPatterns = grants.filter { it.effect == PermissionEffect.ALLOW },
@@ -90,7 +93,12 @@ object PolicyEngine {
         snapshot: EffectivePermissionSnapshot,
         permission: String,
         scope: PermissionCheckScope,
+        now: Instant = Instant.now(),
     ): Boolean {
+        if (!snapshot.expiresAt.isAfter(now)) {
+            return false
+        }
+
         val candidate =
             (snapshot.allowPatterns + snapshot.denyPatterns)
                 .asSequence()
@@ -183,7 +191,7 @@ object PolicyEngine {
         expiresAt?.let { !it.isAfter(now) } ?: false
 
     private fun PlayerPermissionGrant.isExpired(now: Instant): Boolean =
-        expiresAt?.let { !it.isAfter(now) } ?: false
+        assignmentExpiresAt?.let { !it.isAfter(now) } ?: false
 
     private fun PlayerRoleGrant.isExpired(now: Instant): Boolean =
         expiresAt?.let { !it.isAfter(now) } ?: false

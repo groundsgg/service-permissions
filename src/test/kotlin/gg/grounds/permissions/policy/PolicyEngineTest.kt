@@ -1,5 +1,6 @@
 package gg.grounds.permissions.policy
 
+import gg.grounds.permissions.domain.EffectivePermissionSnapshot
 import gg.grounds.permissions.domain.PermissionEffect.ALLOW
 import gg.grounds.permissions.domain.PermissionEffect.DENY
 import gg.grounds.permissions.domain.PermissionGrant
@@ -45,7 +46,7 @@ class PolicyEngineTest {
                 now = now,
             )
 
-        assertTrue(PolicyEngine.hasPermission(snapshot, "chat.read", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "chat.read", PermissionCheckScope.global()))
         assertTrue(snapshot.roleKeys.contains("default"))
     }
 
@@ -70,10 +71,8 @@ class PolicyEngineTest {
                 now = now,
             )
 
-        assertTrue(
-            PolicyEngine.hasPermission(snapshot, "build.place", PermissionCheckScope.global())
-        )
-        assertTrue(PolicyEngine.hasPermission(snapshot, "chat.mute", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "build.place", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "chat.mute", PermissionCheckScope.global()))
     }
 
     @Test
@@ -93,9 +92,7 @@ class PolicyEngineTest {
                 now = now,
             )
 
-        assertTrue(
-            PolicyEngine.hasPermission(snapshot, "home.teleport", PermissionCheckScope.global())
-        )
+        assertTrue(hasPermission(snapshot, "home.teleport", PermissionCheckScope.global()))
         assertTrue(snapshot.roleKeys.containsAll(setOf("vip", "member")))
     }
 
@@ -179,15 +176,38 @@ class PolicyEngineTest {
                                 PlayerPermissionGrant(
                                     playerId,
                                     allowSpec("warp.use"),
-                                    expiresAt = now.minusSeconds(1),
+                                    assignmentExpiresAt = now.minusSeconds(1),
                                 )
                             ),
                     ),
                 now = now,
             )
 
-        assertFalse(PolicyEngine.hasPermission(snapshot, "fly.use", PermissionCheckScope.global()))
-        assertFalse(PolicyEngine.hasPermission(snapshot, "warp.use", PermissionCheckScope.global()))
+        assertFalse(hasPermission(snapshot, "fly.use", PermissionCheckScope.global()))
+        assertFalse(hasPermission(snapshot, "warp.use", PermissionCheckScope.global()))
+    }
+
+    @Test
+    fun expiredSnapshotsDenyOtherwiseMatchingAllows() {
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId = playerId,
+                input =
+                    policy(
+                        roles =
+                            listOf(
+                                role(
+                                    key = "default",
+                                    default = true,
+                                    grants = listOf(allowSpec("chat.read")),
+                                )
+                            ),
+                        expiresAt = now.minusSeconds(1),
+                    ),
+                now = now.minusSeconds(2),
+            )
+
+        assertFalse(hasPermission(snapshot, "chat.read", PermissionCheckScope.global(), now = now))
     }
 
     @Test
@@ -202,12 +222,8 @@ class PolicyEngineTest {
         val matchingSnapshot = PolicyEngine.createSnapshot(playerId, input, now)
         val otherSnapshot = PolicyEngine.createSnapshot(otherPlayerId, input, now)
 
-        assertTrue(
-            PolicyEngine.hasPermission(matchingSnapshot, "warp.use", PermissionCheckScope.global())
-        )
-        assertFalse(
-            PolicyEngine.hasPermission(otherSnapshot, "warp.use", PermissionCheckScope.global())
-        )
+        assertTrue(hasPermission(matchingSnapshot, "warp.use", PermissionCheckScope.global()))
+        assertFalse(hasPermission(otherSnapshot, "warp.use", PermissionCheckScope.global()))
     }
 
     @Test
@@ -225,7 +241,7 @@ class PolicyEngineTest {
                 now = now,
             )
 
-        assertTrue(PolicyEngine.hasPermission(snapshot, "kit.claim", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "kit.claim", PermissionCheckScope.global()))
     }
 
     @Test
@@ -268,7 +284,7 @@ class PolicyEngineTest {
                                 PlayerPermissionGrant(
                                     playerId = playerId,
                                     grant = allowSpec("warp.use"),
-                                    expiresAt = containerExpiresAt,
+                                    assignmentExpiresAt = containerExpiresAt,
                                 )
                             ),
                     ),
@@ -340,14 +356,14 @@ class PolicyEngineTest {
             )
 
         assertTrue(
-            PolicyEngine.hasPermission(
+            hasPermission(
                 snapshot,
                 "region.edit",
                 PermissionCheckScope.server(server = "survival-1", serverType = "survival"),
             )
         )
         assertFalse(
-            PolicyEngine.hasPermission(
+            hasPermission(
                 snapshot,
                 "region.edit",
                 PermissionCheckScope.server(server = "survival-2", serverType = "survival"),
@@ -367,17 +383,17 @@ class PolicyEngineTest {
             )
 
         assertFalse(
-            PolicyEngine.hasPermission(
+            hasPermission(
                 snapshot,
                 "region.edit",
                 PermissionCheckScope.server(server = "survival-1", serverType = "survival"),
             )
         )
         assertTrue(
-            PolicyEngine.hasPermission(
+            hasPermission(
                 snapshot,
                 "region.edit",
-                PermissionCheckScope.server(server = "survival-1"),
+                PermissionCheckScope.serverOnly(server = "survival-1"),
             )
         )
     }
@@ -387,39 +403,37 @@ class PolicyEngineTest {
         val snapshot =
             snapshot(grants = listOf(deny("kit.claim", ROLE), allow("kit.claim", PLAYER)))
 
-        assertTrue(PolicyEngine.hasPermission(snapshot, "kit.claim", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "kit.claim", PermissionCheckScope.global()))
     }
 
     @Test
     fun exactPatternBeatsWildcardPattern() {
         val snapshot = snapshot(grants = listOf(deny("chat.*", ROLE), allow("chat.send", ROLE)))
 
-        assertTrue(PolicyEngine.hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
     }
 
     @Test
     fun playerWildcardGrantBeatsRoleExactGrant() {
         val snapshot = snapshot(grants = listOf(deny("chat.send", ROLE), allow("*", PLAYER)))
 
-        assertTrue(PolicyEngine.hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
     }
 
     @Test
     fun prefixWildcardPatternMatchesOnlyChildren() {
         val snapshot = snapshot(grants = listOf(allow("chat.*", ROLE)))
 
-        assertTrue(PolicyEngine.hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
-        assertFalse(PolicyEngine.hasPermission(snapshot, "chat", PermissionCheckScope.global()))
-        assertFalse(PolicyEngine.hasPermission(snapshot, "chat.", PermissionCheckScope.global()))
+        assertTrue(hasPermission(snapshot, "chat.send", PermissionCheckScope.global()))
+        assertFalse(hasPermission(snapshot, "chat", PermissionCheckScope.global()))
+        assertFalse(hasPermission(snapshot, "chat.", PermissionCheckScope.global()))
     }
 
     @Test
     fun starPatternMatchesEveryPermission() {
         val snapshot = snapshot(grants = listOf(allow("*", ROLE)))
 
-        assertTrue(
-            PolicyEngine.hasPermission(snapshot, "any.permission", PermissionCheckScope.global())
-        )
+        assertTrue(hasPermission(snapshot, "any.permission", PermissionCheckScope.global()))
     }
 
     @Test
@@ -427,19 +441,22 @@ class PolicyEngineTest {
         val snapshot =
             snapshot(grants = listOf(allow("economy.pay", ROLE), deny("economy.pay", ROLE)))
 
-        assertFalse(
-            PolicyEngine.hasPermission(snapshot, "economy.pay", PermissionCheckScope.global())
-        )
+        assertFalse(hasPermission(snapshot, "economy.pay", PermissionCheckScope.global()))
     }
 
     @Test
     fun noMatchingAllowReturnsDenied() {
         val snapshot = snapshot(grants = listOf(allow("chat.read", ROLE)))
 
-        assertFalse(
-            PolicyEngine.hasPermission(snapshot, "chat.write", PermissionCheckScope.global())
-        )
+        assertFalse(hasPermission(snapshot, "chat.write", PermissionCheckScope.global()))
     }
+
+    private fun hasPermission(
+        snapshot: EffectivePermissionSnapshot,
+        permission: String,
+        scope: PermissionCheckScope,
+        now: Instant = this.now,
+    ): Boolean = PolicyEngine.hasPermission(snapshot, permission, scope, now)
 
     private fun snapshot(grants: List<PermissionGrant>) =
         PolicyEngine.createSnapshot(
@@ -466,6 +483,7 @@ class PolicyEngineTest {
         roles: List<RoleDefinition>,
         playerRoles: List<PlayerRoleGrant> = emptyList(),
         playerGrants: List<PlayerPermissionGrant> = emptyList(),
+        expiresAt: Instant = now.plusSeconds(300),
     ) =
         PermissionPolicyInput(
             policyVersion = 1,
@@ -473,7 +491,7 @@ class PolicyEngineTest {
             playerRoles = playerRoles,
             playerGrants = playerGrants,
             refreshAfter = now.plusSeconds(60),
-            expiresAt = now.plusSeconds(300),
+            expiresAt = expiresAt,
         )
 
     private fun role(
