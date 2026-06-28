@@ -52,6 +52,8 @@ class InMemoryPermissionPolicyProvider : PermissionPolicyProvider {
     @Synchronized
     override fun policyFor(request: PermissionPolicyRequest): PermissionPolicyInput {
         val now = Instant.now()
+        // Server context is accepted for future persistence-backed filtering; the in-memory test
+        // seam does not use it.
         val mappedRoles =
             request.keycloakGroups
                 .asSequence()

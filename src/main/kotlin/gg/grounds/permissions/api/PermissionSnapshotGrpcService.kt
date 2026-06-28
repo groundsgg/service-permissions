@@ -14,6 +14,8 @@ import gg.grounds.grpc.permissions.RefreshOnlinePlayersRequest
 import gg.grounds.grpc.permissions.RoleMetadata
 import gg.grounds.permissions.domain.EffectivePermissionSnapshot
 import gg.grounds.permissions.policy.PolicyEngine
+import io.grpc.Status
+import io.grpc.StatusRuntimeException
 import io.quarkus.grpc.GrpcService
 import io.smallrye.common.annotation.Blocking
 import io.smallrye.mutiny.Uni
@@ -38,10 +40,13 @@ constructor(private val policyProvider: PermissionPolicyProvider) : PermissionSn
         request: RefreshOnlinePlayersRequest
     ): Uni<RefreshOnlinePlayersReply> {
         return Uni.createFrom().item {
+            val serverType = request.serverType.normalizedOptional("server_type")
+            val serverId = request.serverId.normalizedOptional("server_id")
+
             LOG.infof(
                 "Permission refresh accepted (serverType=%s, serverId=%s)",
-                request.serverType,
-                request.serverId,
+                serverType,
+                serverId,
             )
             RefreshOnlinePlayersReply.newBuilder()
                 .setAccepted(true)
@@ -53,26 +58,27 @@ constructor(private val policyProvider: PermissionPolicyProvider) : PermissionSn
     private fun handleGetPlayerSnapshot(
         request: GetPlayerSnapshotRequest
     ): PlayerPermissionSnapshot {
-        val playerId =
-            request.playerId
-                .trim()
-                .takeIf { it.isNotEmpty() }
-                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                ?: throw IllegalArgumentException("player_id must be a UUID")
+        val playerId = request.playerId.toRequiredUuid("player_id")
+        val serverType = request.serverType.normalizedOptional("server_type")
+        val serverId = request.serverId.normalizedOptional("server_id")
+        val keycloakGroups =
+            request.keycloakGroupsList.mapNotNull { it.trim().takeIf(String::isNotEmpty) }.toSet()
         val input =
             policyProvider.policyFor(
                 PermissionPolicyRequest(
                     playerId = playerId,
-                    keycloakGroups = request.keycloakGroupsList.toSet(),
-                    serverType = request.serverType,
-                    serverId = request.serverId,
+                    keycloakGroups = keycloakGroups,
+                    serverType = serverType,
+                    serverId = serverId,
                 )
             )
         val snapshot = PolicyEngine.createSnapshot(playerId = playerId, input = input)
 
         LOG.infof(
-            "Permission snapshot computed (playerId=%s, policyVersion=%d, roleCount=%d)",
+            "Permission snapshot computed (playerId=%s, serverType=%s, serverId=%s, policyVersion=%d, roleCount=%d)",
             playerId,
+            serverType,
+            serverId,
             snapshot.policyVersion,
             snapshot.roleKeys.size,
         )
@@ -147,7 +153,30 @@ constructor(private val policyProvider: PermissionPolicyProvider) : PermissionSn
     private fun Instant.toTimestamp(): Timestamp =
         Timestamp.newBuilder().setSeconds(epochSecond).setNanos(nano).build()
 
+    private fun String.toRequiredUuid(fieldName: String): UUID {
+        val trimmed = trim()
+        if (trimmed.isEmpty()) {
+            throw invalidArgument("$fieldName must be a nonblank UUID")
+        }
+        return runCatching { UUID.fromString(trimmed) }
+            .getOrElse { throw invalidArgument("$fieldName must be a valid UUID") }
+    }
+
+    private fun String.normalizedOptional(fieldName: String): String {
+        if (isEmpty()) {
+            return ""
+        }
+        val trimmed = trim()
+        if (trimmed.isEmpty()) {
+            throw invalidArgument("$fieldName must not be blank")
+        }
+        return trimmed
+    }
+
     companion object {
         private val LOG = Logger.getLogger(PermissionSnapshotGrpcService::class.java)
+
+        private fun invalidArgument(description: String): StatusRuntimeException =
+            Status.INVALID_ARGUMENT.withDescription(description).asRuntimeException()
     }
 }

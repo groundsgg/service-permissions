@@ -1,19 +1,32 @@
 package gg.grounds.permissions.api
 
 import gg.grounds.grpc.permissions.GetPlayerSnapshotRequest
+import gg.grounds.grpc.permissions.PermissionCatalogService
+import gg.grounds.grpc.permissions.PermissionEffect.PERMISSION_EFFECT_DENY
+import gg.grounds.grpc.permissions.PermissionGrantSource.PERMISSION_GRANT_SOURCE_PLAYER
+import gg.grounds.grpc.permissions.PermissionManifestEntry
+import gg.grounds.grpc.permissions.PermissionScopeKind.PERMISSION_SCOPE_KIND_GLOBAL
 import gg.grounds.grpc.permissions.PermissionSnapshotService
+import gg.grounds.grpc.permissions.RefreshOnlinePlayersRequest
+import gg.grounds.grpc.permissions.RegisterPermissionManifestRequest
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.domain.PlayerPermissionGrant
 import gg.grounds.permissions.domain.RoleDefinition
+import io.grpc.Status
+import io.grpc.StatusRuntimeException
 import io.quarkus.grpc.GrpcClient
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.junit.QuarkusTestProfile
 import io.quarkus.test.junit.TestProfile
 import jakarta.inject.Inject
 import java.util.UUID
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -25,6 +38,8 @@ class PermissionSnapshotGrpcServiceTest {
     @Inject lateinit var policyProvider: InMemoryPermissionPolicyProvider
 
     @GrpcClient("permission-snapshot") lateinit var service: PermissionSnapshotService
+
+    @GrpcClient("permission-catalog") lateinit var catalogService: PermissionCatalogService
 
     @BeforeEach
     fun resetPolicy() {
@@ -38,8 +53,15 @@ class PermissionSnapshotGrpcServiceTest {
             policyVersion = 7,
             roles =
                 listOf(
-                    RoleDefinition(key = "player", name = "Player", isDefault = true),
-                    RoleDefinition(key = "moderator", name = "Moderator"),
+                    RoleDefinition(
+                        key = "player",
+                        name = "Player",
+                        prefix = "[P]",
+                        color = "green",
+                        sortOrder = 100,
+                        isDefault = true,
+                    ),
+                    RoleDefinition(key = "moderator", name = "Moderator", sortOrder = 50),
                 ),
             keycloakRoleMappings = mapOf("/staff" to setOf("moderator")),
             playerGrants =
@@ -70,7 +92,115 @@ class PermissionSnapshotGrpcServiceTest {
                 .indefinitely()
 
         assertTrue(snapshot.roleKeysList.containsAll(listOf("player", "moderator")))
-        assertTrue(snapshot.denyPatternsList.any { it.pattern == "grounds.command.op" })
+        assertEquals(7, snapshot.policyVersion)
+        assertNotNull(snapshot.issuedAt)
+        assertNotNull(snapshot.refreshAfter)
+        assertNotNull(snapshot.expiresAt)
+
+        val denyGrant = snapshot.denyPatternsList.single { it.pattern == "grounds.command.op" }
+        assertEquals(PERMISSION_EFFECT_DENY, denyGrant.effect)
+        assertEquals(PERMISSION_GRANT_SOURCE_PLAYER, denyGrant.source)
+        assertEquals(PERMISSION_SCOPE_KIND_GLOBAL, denyGrant.scope.kind)
+
+        val playerRole = snapshot.roleMetadataList.single { it.key == "player" }
+        assertEquals("Player", playerRole.name)
+        assertEquals("[P]", playerRole.prefix)
+        assertEquals("green", playerRole.color)
+        assertEquals(100, playerRole.sortOrder)
+    }
+
+    @Test
+    fun getPlayerSnapshotRejectsInvalidPlayerIdAsInvalidArgument() {
+        val error =
+            assertThrows(StatusRuntimeException::class.java) {
+                service
+                    .getPlayerSnapshot(
+                        GetPlayerSnapshotRequest.newBuilder().setPlayerId("not-a-uuid").build()
+                    )
+                    .await()
+                    .indefinitely()
+            }
+
+        assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+    }
+
+    @Test
+    fun getPlayerSnapshotRejectsBlankServerContextAsInvalidArgument() {
+        val error =
+            assertThrows(StatusRuntimeException::class.java) {
+                service
+                    .getPlayerSnapshot(
+                        GetPlayerSnapshotRequest.newBuilder()
+                            .setPlayerId("00000000-0000-0000-0000-000000000123")
+                            .setServerType("   ")
+                            .build()
+                    )
+                    .await()
+                    .indefinitely()
+            }
+
+        assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+    }
+
+    @Test
+    fun snapshotIgnoresBlankKeycloakGroups() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000123")
+        policyProvider.replacePolicy(
+            roles = listOf(RoleDefinition(key = "admin", name = "Admin")),
+            keycloakRoleMappings = mapOf("" to setOf("admin"), "   " to setOf("admin")),
+        )
+
+        val snapshot =
+            service
+                .getPlayerSnapshot(
+                    GetPlayerSnapshotRequest.newBuilder()
+                        .setPlayerId(playerId.toString())
+                        .addKeycloakGroups("")
+                        .addKeycloakGroups("   ")
+                        .build()
+                )
+                .await()
+                .indefinitely()
+
+        assertFalse(snapshot.roleKeysList.contains("admin"))
+    }
+
+    @Test
+    fun refreshOnlinePlayersRejectsBlankServerContextAsInvalidArgument() {
+        val error =
+            assertThrows(StatusRuntimeException::class.java) {
+                service
+                    .refreshOnlinePlayers(
+                        RefreshOnlinePlayersRequest.newBuilder().setServerId("   ").build()
+                    )
+                    .await()
+                    .indefinitely()
+            }
+
+        assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+    }
+
+    @Test
+    fun registerPermissionManifestRejectsMissingRequiredFieldsAsInvalidArgument() {
+        val error =
+            assertThrows(StatusRuntimeException::class.java) {
+                catalogService
+                    .registerPermissionManifest(
+                        RegisterPermissionManifestRequest.newBuilder()
+                            .setSource("plugin-config")
+                            .addPermissions(
+                                PermissionManifestEntry.newBuilder()
+                                    .setKey("grounds.command.fly")
+                                    .addSupportedScopes(PERMISSION_SCOPE_KIND_GLOBAL)
+                                    .build()
+                            )
+                            .build()
+                    )
+                    .await()
+                    .indefinitely()
+            }
+
+        assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
     }
 
     class Profile : QuarkusTestProfile {
@@ -79,6 +209,9 @@ class PermissionSnapshotGrpcServiceTest {
                 "quarkus.grpc.clients.permission-snapshot.host" to "localhost",
                 "quarkus.grpc.clients.permission-snapshot.port" to "9001",
                 "quarkus.grpc.clients.permission-snapshot.plain-text" to "true",
+                "quarkus.grpc.clients.permission-catalog.host" to "localhost",
+                "quarkus.grpc.clients.permission-catalog.port" to "9001",
+                "quarkus.grpc.clients.permission-catalog.plain-text" to "true",
                 "quarkus.flyway.migrate-at-start" to "false",
             )
     }
