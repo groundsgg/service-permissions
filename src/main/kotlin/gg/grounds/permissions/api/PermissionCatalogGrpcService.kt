@@ -22,6 +22,9 @@ class PermissionCatalogGrpcService : PermissionCatalogService {
             val sourceVersion = request.sourceVersion.normalizedRequired("source_version")
             val serverType = request.serverType.normalizedOptional("server_type")
             val serverId = request.serverId.normalizedOptional("server_id")
+            if (request.permissionsList.isEmpty()) {
+                throw invalidArgument("permissions must not be empty")
+            }
             request.permissionsList.forEachIndexed { index, permission ->
                 permission.key.normalizedRequired("permissions[$index].key")
                 permission.label.normalizedRequired("permissions[$index].label")

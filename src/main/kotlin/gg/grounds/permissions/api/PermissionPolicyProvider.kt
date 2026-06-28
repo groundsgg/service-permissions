@@ -1,9 +1,6 @@
 package gg.grounds.permissions.api
 
 import gg.grounds.permissions.domain.PermissionPolicyInput
-import gg.grounds.permissions.domain.PlayerPermissionGrant
-import gg.grounds.permissions.domain.PlayerRoleGrant
-import gg.grounds.permissions.domain.RoleDefinition
 import jakarta.enterprise.context.ApplicationScoped
 import java.time.Duration
 import java.time.Instant
@@ -21,54 +18,22 @@ interface PermissionPolicyProvider {
 }
 
 @ApplicationScoped
-class InMemoryPermissionPolicyProvider : PermissionPolicyProvider {
-    private var policyVersion: Long = 1
-    private var roles: List<RoleDefinition> = emptyList()
-    private var keycloakRoleMappings: Map<String, Set<String>> = emptyMap()
-    private var playerRoles: List<PlayerRoleGrant> = emptyList()
-    private var playerGrants: List<PlayerPermissionGrant> = emptyList()
-    private var refreshAfterOffset: Duration = Duration.ofMinutes(5)
-    private var expiresAfterOffset: Duration = Duration.ofMinutes(10)
-
-    @Synchronized
-    fun replacePolicy(
-        policyVersion: Long = 1,
-        roles: List<RoleDefinition> = emptyList(),
-        keycloakRoleMappings: Map<String, Set<String>> = emptyMap(),
-        playerRoles: List<PlayerRoleGrant> = emptyList(),
-        playerGrants: List<PlayerPermissionGrant> = emptyList(),
-        refreshAfterOffset: Duration = Duration.ofMinutes(5),
-        expiresAfterOffset: Duration = Duration.ofMinutes(10),
-    ) {
-        this.policyVersion = policyVersion
-        this.roles = roles
-        this.keycloakRoleMappings = keycloakRoleMappings
-        this.playerRoles = playerRoles
-        this.playerGrants = playerGrants
-        this.refreshAfterOffset = refreshAfterOffset
-        this.expiresAfterOffset = expiresAfterOffset
-    }
-
-    @Synchronized
+class EmptyPermissionPolicyProvider : PermissionPolicyProvider {
     override fun policyFor(request: PermissionPolicyRequest): PermissionPolicyInput {
         val now = Instant.now()
-        // Server context is accepted for future persistence-backed filtering; the in-memory test
-        // seam does not use it.
-        val mappedRoles =
-            request.keycloakGroups
-                .asSequence()
-                .flatMap { keycloakRoleMappings[it].orEmpty().asSequence() }
-                .distinct()
-                .map { roleKey -> PlayerRoleGrant(request.playerId, roleKey) }
-                .toList()
 
         return PermissionPolicyInput(
-            policyVersion = policyVersion,
-            roles = roles,
-            playerRoles = playerRoles + mappedRoles,
-            playerGrants = playerGrants,
-            refreshAfter = now.plus(refreshAfterOffset),
-            expiresAt = now.plus(expiresAfterOffset),
+            policyVersion = 1,
+            roles = emptyList(),
+            playerRoles = emptyList(),
+            playerGrants = emptyList(),
+            refreshAfter = now.plus(REFRESH_AFTER_OFFSET),
+            expiresAt = now.plus(EXPIRES_AFTER_OFFSET),
         )
+    }
+
+    companion object {
+        private val REFRESH_AFTER_OFFSET = Duration.ofMinutes(5)
+        private val EXPIRES_AFTER_OFFSET = Duration.ofMinutes(10)
     }
 }

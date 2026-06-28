@@ -35,7 +35,7 @@ import org.junit.jupiter.api.Test
 @TestProfile(PermissionSnapshotGrpcServiceTest.Profile::class)
 class PermissionSnapshotGrpcServiceTest {
 
-    @Inject lateinit var policyProvider: InMemoryPermissionPolicyProvider
+    @Inject lateinit var policyProvider: SeededPermissionPolicyProvider
 
     @GrpcClient("permission-snapshot") lateinit var service: PermissionSnapshotService
 
@@ -122,6 +122,7 @@ class PermissionSnapshotGrpcServiceTest {
             }
 
         assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+        assertEquals("player_id must be a valid UUID", error.status.description)
     }
 
     @Test
@@ -140,6 +141,7 @@ class PermissionSnapshotGrpcServiceTest {
             }
 
         assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+        assertEquals("server_type must not be blank", error.status.description)
     }
 
     @Test
@@ -178,6 +180,26 @@ class PermissionSnapshotGrpcServiceTest {
             }
 
         assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+        assertEquals("server_id must not be blank", error.status.description)
+    }
+
+    @Test
+    fun registerPermissionManifestRejectsEmptyManifestAsInvalidArgument() {
+        val error =
+            assertThrows(StatusRuntimeException::class.java) {
+                catalogService
+                    .registerPermissionManifest(
+                        RegisterPermissionManifestRequest.newBuilder()
+                            .setSource("plugin-config")
+                            .setSourceVersion("1.0.0")
+                            .build()
+                    )
+                    .await()
+                    .indefinitely()
+            }
+
+        assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+        assertEquals("permissions must not be empty", error.status.description)
     }
 
     @Test
@@ -188,6 +210,7 @@ class PermissionSnapshotGrpcServiceTest {
                     .registerPermissionManifest(
                         RegisterPermissionManifestRequest.newBuilder()
                             .setSource("plugin-config")
+                            .setSourceVersion("1.0.0")
                             .addPermissions(
                                 PermissionManifestEntry.newBuilder()
                                     .setKey("grounds.command.fly")
@@ -201,6 +224,7 @@ class PermissionSnapshotGrpcServiceTest {
             }
 
         assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+        assertEquals("permissions[0].label must not be blank", error.status.description)
     }
 
     class Profile : QuarkusTestProfile {
@@ -214,5 +238,8 @@ class PermissionSnapshotGrpcServiceTest {
                 "quarkus.grpc.clients.permission-catalog.plain-text" to "true",
                 "quarkus.flyway.migrate-at-start" to "false",
             )
+
+        override fun getEnabledAlternatives(): Set<Class<*>> =
+            setOf(SeededPermissionPolicyProvider::class.java)
     }
 }
