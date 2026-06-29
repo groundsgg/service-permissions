@@ -1,9 +1,9 @@
 package gg.grounds.permissions.api
 
 import gg.grounds.permissions.domain.PermissionPolicyInput
+import gg.grounds.permissions.persistence.PermissionRepository
 import jakarta.enterprise.context.ApplicationScoped
-import java.time.Duration
-import java.time.Instant
+import jakarta.inject.Inject
 import java.util.UUID
 
 data class PermissionPolicyRequest(
@@ -18,22 +18,9 @@ interface PermissionPolicyProvider {
 }
 
 @ApplicationScoped
-class EmptyPermissionPolicyProvider : PermissionPolicyProvider {
-    override fun policyFor(request: PermissionPolicyRequest): PermissionPolicyInput {
-        val now = Instant.now()
-
-        return PermissionPolicyInput(
-            policyVersion = 1,
-            roles = emptyList(),
-            playerRoles = emptyList(),
-            playerGrants = emptyList(),
-            refreshAfter = now.plus(REFRESH_AFTER_OFFSET),
-            expiresAt = now.plus(EXPIRES_AFTER_OFFSET),
-        )
-    }
-
-    companion object {
-        private val REFRESH_AFTER_OFFSET = Duration.ofMinutes(5)
-        private val EXPIRES_AFTER_OFFSET = Duration.ofMinutes(10)
-    }
+class DatabasePermissionPolicyProvider
+@Inject
+constructor(private val repository: PermissionRepository) : PermissionPolicyProvider {
+    override fun policyFor(request: PermissionPolicyRequest): PermissionPolicyInput =
+        repository.policyFor(request)
 }
