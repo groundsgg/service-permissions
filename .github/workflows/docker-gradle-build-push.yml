@@ -1,0 +1,16 @@
+name: Docker Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  packages: write
+  contents: write
+  actions: write
+
+jobs:
+  reusable:
+    uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main

@@ -37,5 +37,5 @@ USER nonroot:nonroot
 
 COPY --from=build --chown=nonroot:nonroot /workspace/build/quarkus-app/ ./
 
-EXPOSE 8080
+EXPOSE 9000
 ENTRYPOINT ["java", "-jar", "quarkus-run.jar"]
