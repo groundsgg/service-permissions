@@ -1,10 +1,13 @@
 package gg.grounds.permissions.rest
 
 import gg.grounds.permissions.api.PermissionPolicyRequest
+import gg.grounds.permissions.auth.AdminAuthorizationService
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PlayerGrantRecord
 import gg.grounds.permissions.persistence.PlayerRoleGrantRecord
 import gg.grounds.permissions.policy.PolicyEngine
+import io.quarkus.security.Authenticated
+import io.quarkus.security.identity.SecurityIdentity
 import jakarta.inject.Inject
 import jakarta.ws.rs.Consumes
 import jakarta.ws.rs.DELETE
@@ -15,6 +18,8 @@ import jakarta.ws.rs.Path
 import jakarta.ws.rs.PathParam
 import jakarta.ws.rs.Produces
 import jakarta.ws.rs.QueryParam
+import jakarta.ws.rs.core.Context
+import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import java.util.UUID
@@ -22,11 +27,22 @@ import java.util.UUID
 @Path("/v1/permissions/players/{playerId}")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-class PermissionPlayerResource @Inject constructor(private val repository: PermissionRepository) {
+@Authenticated
+class PermissionPlayerResource
+@Inject
+constructor(
+    private val repository: PermissionRepository,
+    private val authorization: AdminAuthorizationService,
+    private val identity: SecurityIdentity,
+) {
 
     @GET
     @Path("/roles")
-    fun listPlayerRoles(@PathParam("playerId") playerId: String): List<PlayerRoleGrantResponse> {
+    fun listPlayerRoles(
+        @PathParam("playerId") playerId: String,
+        @Context headers: HttpHeaders,
+    ): List<PlayerRoleGrantResponse> {
+        requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         return repository.listPlayerRoleGrantRecords(id).map { it.toResponse() }
     }
@@ -36,7 +52,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
     fun createPlayerRole(
         @PathParam("playerId") playerId: String,
         request: PlayerRoleGrantRequest,
+        @Context headers: HttpHeaders,
     ): Response {
+        requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val grant =
             PlayerRoleGrantRecord(
@@ -56,7 +74,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
         request: PlayerRoleGrantRequest,
+        @Context headers: HttpHeaders,
     ): PlayerRoleGrantResponse {
+        requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
         val grant =
@@ -74,7 +94,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
     fun deletePlayerRole(
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
+        @Context headers: HttpHeaders,
     ): Response {
+        requireAdmin(headers)
         repository.deletePlayerRoleGrant(
             playerId = PermissionValidation.uuid(playerId, "playerId"),
             grantId = PermissionValidation.uuid(grantId, "grantId"),
@@ -84,7 +106,11 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
 
     @GET
     @Path("/grants")
-    fun listPlayerGrants(@PathParam("playerId") playerId: String): List<PlayerGrantResponse> {
+    fun listPlayerGrants(
+        @PathParam("playerId") playerId: String,
+        @Context headers: HttpHeaders,
+    ): List<PlayerGrantResponse> {
+        requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         return repository.listPlayerGrantRecords(id).map { it.toResponse() }
     }
@@ -94,7 +120,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
     fun createPlayerGrant(
         @PathParam("playerId") playerId: String,
         request: GrantRequest,
+        @Context headers: HttpHeaders,
     ): Response {
+        requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val grant = request.toPlayerGrantRecord(playerId = id, grantId = UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
@@ -108,7 +136,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
         request: GrantRequest,
+        @Context headers: HttpHeaders,
     ): PlayerGrantResponse {
+        requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
         return repository
@@ -121,7 +151,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
     fun deletePlayerGrant(
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
+        @Context headers: HttpHeaders,
     ): Response {
+        requireAdmin(headers)
         repository.deletePlayerGrant(
             playerId = PermissionValidation.uuid(playerId, "playerId"),
             grantId = PermissionValidation.uuid(grantId, "grantId"),
@@ -136,7 +168,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
         @QueryParam("keycloakGroup") keycloakGroups: List<String>?,
         @QueryParam("serverType") serverType: String?,
         @QueryParam("serverId") serverId: String?,
+        @Context headers: HttpHeaders,
     ): EffectivePermissionResponse {
+        requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val input =
             repository.policyFor(
@@ -168,6 +202,9 @@ class PermissionPlayerResource @Inject constructor(private val repository: Permi
             expiresAt = snapshot.expiresAt,
         )
     }
+
+    private fun requireAdmin(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsAdmin(identity, headers)
 
     private fun GrantRequest.toPlayerGrantRecord(playerId: UUID, grantId: UUID): PlayerGrantRecord =
         PlayerGrantRecord(

@@ -4,6 +4,7 @@ import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
+import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import jakarta.inject.Inject
 import org.hamcrest.Matchers.equalTo
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Test
     value = PermissionsPostgresTestResource::class,
     restrictToAnnotatedClass = true,
 )
+@TestSecurity(user = "admin-user", roles = ["MINECRAFT_PERMISSIONS_MANAGE"])
 class PermissionRestResourceTest {
 
     @Inject lateinit var repository: PermissionRepository
