@@ -33,6 +33,10 @@ dependencies {
     implementation(enforcedPlatform("io.quarkus.platform:quarkus-bom:3.37.0"))
     implementation("io.quarkus:quarkus-arc")
     implementation("io.quarkus:quarkus-grpc")
+    implementation("io.quarkus:quarkus-rest")
+    implementation("io.quarkus:quarkus-rest-jackson")
+    implementation("io.quarkus:quarkus-jackson")
+    implementation("io.quarkus:quarkus-agroal")
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-kotlin")
@@ -43,6 +47,7 @@ dependencies {
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")
+    testImplementation("io.rest-assured:rest-assured")
     testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")
 }
