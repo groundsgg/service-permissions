@@ -40,6 +40,7 @@ dependencies {
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-kotlin")
+    implementation("io.quarkus:quarkus-smallrye-jwt")
     implementation("io.quarkus:quarkus-scheduler")
     implementation("io.quarkus:quarkus-opentelemetry")
 
@@ -47,6 +48,7 @@ dependencies {
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")
+    testImplementation("io.quarkus:quarkus-test-security")
     testImplementation("io.rest-assured:rest-assured")
     testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")

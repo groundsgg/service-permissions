@@ -1,7 +1,10 @@
 package gg.grounds.permissions.rest
 
+import gg.grounds.permissions.auth.AdminAuthorizationService
 import gg.grounds.permissions.persistence.CatalogEntryRecord
 import gg.grounds.permissions.persistence.PermissionRepository
+import io.quarkus.security.Authenticated
+import io.quarkus.security.identity.SecurityIdentity
 import jakarta.inject.Inject
 import jakarta.ws.rs.Consumes
 import jakarta.ws.rs.DELETE
@@ -11,21 +14,33 @@ import jakarta.ws.rs.PUT
 import jakarta.ws.rs.Path
 import jakarta.ws.rs.PathParam
 import jakarta.ws.rs.Produces
+import jakarta.ws.rs.core.Context
+import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 
 @Path("/v1/permissions/catalog")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-class PermissionCatalogResource @Inject constructor(private val repository: PermissionRepository) {
+@Authenticated
+class PermissionCatalogResource
+@Inject
+constructor(
+    private val repository: PermissionRepository,
+    private val authorization: AdminAuthorizationService,
+    private val identity: SecurityIdentity,
+) {
 
     @GET
-    fun listCatalog(): List<CatalogEntryResponse> =
-        repository.listCatalogEntries().map { it.toResponse() }
+    fun listCatalog(@Context headers: HttpHeaders): List<CatalogEntryResponse> {
+        requireAdmin(headers)
+        return repository.listCatalogEntries().map { it.toResponse() }
+    }
 
     @POST
     @Path("/custom")
-    fun createCustomEntry(request: CatalogEntryRequest): Response {
+    fun createCustomEntry(request: CatalogEntryRequest, @Context headers: HttpHeaders): Response {
+        requireAdmin(headers)
         val entry = request.toRecord(custom = true)
         return Response.status(Response.Status.CREATED)
             .entity(repository.upsertCatalogEntry(entry).toResponse())
@@ -37,17 +52,27 @@ class PermissionCatalogResource @Inject constructor(private val repository: Perm
     fun updateCustomEntry(
         @PathParam("permissionKey") permissionKey: String,
         request: CatalogEntryRequest,
-    ): CatalogEntryResponse =
-        repository
+        @Context headers: HttpHeaders,
+    ): CatalogEntryResponse {
+        requireAdmin(headers)
+        return repository
             .upsertCatalogEntry(request.copy(key = permissionKey).toRecord(custom = true))
             .toResponse()
+    }
 
     @DELETE
     @Path("/custom/{permissionKey}")
-    fun deleteCustomEntry(@PathParam("permissionKey") permissionKey: String): Response {
+    fun deleteCustomEntry(
+        @PathParam("permissionKey") permissionKey: String,
+        @Context headers: HttpHeaders,
+    ): Response {
+        requireAdmin(headers)
         repository.deleteCustomCatalogEntry(PermissionValidation.permissionKey(permissionKey))
         return Response.noContent().build()
     }
+
+    private fun requireAdmin(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsAdmin(identity, headers)
 
     private fun CatalogEntryRequest.toRecord(custom: Boolean): CatalogEntryRecord =
         CatalogEntryRecord(

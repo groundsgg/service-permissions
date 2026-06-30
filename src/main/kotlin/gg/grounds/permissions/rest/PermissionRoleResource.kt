@@ -1,9 +1,12 @@
 package gg.grounds.permissions.rest
 
+import gg.grounds.permissions.auth.AdminAuthorizationService
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.RoleGrantRecord
 import gg.grounds.permissions.persistence.RoleRecord
+import io.quarkus.security.Authenticated
+import io.quarkus.security.identity.SecurityIdentity
 import jakarta.inject.Inject
 import jakarta.ws.rs.Consumes
 import jakarta.ws.rs.DELETE
@@ -14,6 +17,8 @@ import jakarta.ws.rs.PUT
 import jakarta.ws.rs.Path
 import jakarta.ws.rs.PathParam
 import jakarta.ws.rs.Produces
+import jakarta.ws.rs.core.Context
+import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import java.util.UUID
@@ -21,12 +26,24 @@ import java.util.UUID
 @Path("/v1/permissions/roles")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-class PermissionRoleResource @Inject constructor(private val repository: PermissionRepository) {
+@Authenticated
+class PermissionRoleResource
+@Inject
+constructor(
+    private val repository: PermissionRepository,
+    private val authorization: AdminAuthorizationService,
+    private val identity: SecurityIdentity,
+) {
 
-    @GET fun listRoles(): List<RoleResponse> = repository.listRoles().map { it.toResponse() }
+    @GET
+    fun listRoles(@Context headers: HttpHeaders): List<RoleResponse> {
+        requireAdmin(headers)
+        return repository.listRoles().map { it.toResponse() }
+    }
 
     @POST
-    fun createRole(request: RoleRequest): Response {
+    fun createRole(request: RoleRequest, @Context headers: HttpHeaders): Response {
+        requireAdmin(headers)
         val role =
             RoleRecord(
                 key = PermissionValidation.roleKey(request.key),
@@ -45,13 +62,23 @@ class PermissionRoleResource @Inject constructor(private val repository: Permiss
 
     @GET
     @Path("/{roleKey}")
-    fun getRole(@PathParam("roleKey") roleKey: String): RoleResponse =
-        repository.getRole(PermissionValidation.roleKey(roleKey))?.toResponse()
+    fun getRole(
+        @PathParam("roleKey") roleKey: String,
+        @Context headers: HttpHeaders,
+    ): RoleResponse {
+        requireAdmin(headers)
+        return repository.getRole(PermissionValidation.roleKey(roleKey))?.toResponse()
             ?: throw NotFoundException("Role not found (roleKey=$roleKey)")
+    }
 
     @PUT
     @Path("/{roleKey}")
-    fun updateRole(@PathParam("roleKey") roleKey: String, request: RoleRequest): RoleResponse {
+    fun updateRole(
+        @PathParam("roleKey") roleKey: String,
+        request: RoleRequest,
+        @Context headers: HttpHeaders,
+    ): RoleResponse {
+        requireAdmin(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val existing =
             repository.getRole(key) ?: throw NotFoundException("Role not found (roleKey=$key)")
@@ -74,7 +101,8 @@ class PermissionRoleResource @Inject constructor(private val repository: Permiss
 
     @DELETE
     @Path("/{roleKey}")
-    fun deleteRole(@PathParam("roleKey") roleKey: String): Response {
+    fun deleteRole(@PathParam("roleKey") roleKey: String, @Context headers: HttpHeaders): Response {
+        requireAdmin(headers)
         repository.deleteRole(PermissionValidation.roleKey(roleKey))
         return Response.noContent().build()
     }
@@ -84,7 +112,9 @@ class PermissionRoleResource @Inject constructor(private val repository: Permiss
     fun addInheritance(
         @PathParam("roleKey") roleKey: String,
         @PathParam("parentRoleKey") parentRoleKey: String,
+        @Context headers: HttpHeaders,
     ): Response {
+        requireAdmin(headers)
         repository.addRoleInheritance(
             childRoleKey = PermissionValidation.roleKey(roleKey),
             parentRoleKey = PermissionValidation.roleKey(parentRoleKey),
@@ -97,7 +127,9 @@ class PermissionRoleResource @Inject constructor(private val repository: Permiss
     fun removeInheritance(
         @PathParam("roleKey") roleKey: String,
         @PathParam("parentRoleKey") parentRoleKey: String,
+        @Context headers: HttpHeaders,
     ): Response {
+        requireAdmin(headers)
         repository.removeRoleInheritance(
             childRoleKey = PermissionValidation.roleKey(roleKey),
             parentRoleKey = PermissionValidation.roleKey(parentRoleKey),
@@ -107,14 +139,24 @@ class PermissionRoleResource @Inject constructor(private val repository: Permiss
 
     @GET
     @Path("/{roleKey}/grants")
-    fun listRoleGrants(@PathParam("roleKey") roleKey: String): List<RoleGrantResponse> =
-        repository.listRoleGrantRecords(PermissionValidation.roleKey(roleKey)).map {
+    fun listRoleGrants(
+        @PathParam("roleKey") roleKey: String,
+        @Context headers: HttpHeaders,
+    ): List<RoleGrantResponse> {
+        requireAdmin(headers)
+        return repository.listRoleGrantRecords(PermissionValidation.roleKey(roleKey)).map {
             it.toResponse()
         }
+    }
 
     @POST
     @Path("/{roleKey}/grants")
-    fun createRoleGrant(@PathParam("roleKey") roleKey: String, request: GrantRequest): Response {
+    fun createRoleGrant(
+        @PathParam("roleKey") roleKey: String,
+        request: GrantRequest,
+        @Context headers: HttpHeaders,
+    ): Response {
+        requireAdmin(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val grant = request.toRoleGrantRecord(roleKey = key, id = UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
@@ -128,7 +170,9 @@ class PermissionRoleResource @Inject constructor(private val repository: Permiss
         @PathParam("roleKey") roleKey: String,
         @PathParam("grantId") grantId: String,
         request: GrantRequest,
+        @Context headers: HttpHeaders,
     ): RoleGrantResponse {
+        requireAdmin(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val id = PermissionValidation.uuid(grantId, "grantId")
         return repository.updateRoleGrant(key, id, request.toRoleGrantRecord(key, id)).toResponse()
@@ -139,13 +183,18 @@ class PermissionRoleResource @Inject constructor(private val repository: Permiss
     fun deleteRoleGrant(
         @PathParam("roleKey") roleKey: String,
         @PathParam("grantId") grantId: String,
+        @Context headers: HttpHeaders,
     ): Response {
+        requireAdmin(headers)
         repository.deleteRoleGrant(
             roleKey = PermissionValidation.roleKey(roleKey),
             grantId = PermissionValidation.uuid(grantId, "grantId"),
         )
         return Response.noContent().build()
     }
+
+    private fun requireAdmin(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsAdmin(identity, headers)
 
     private fun GrantRequest.toRoleGrantRecord(roleKey: String, id: UUID): RoleGrantRecord =
         RoleGrantRecord(
