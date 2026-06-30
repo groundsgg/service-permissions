@@ -160,6 +160,18 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
 
     fun addRoleInheritance(childRoleKey: String, parentRoleKey: String) {
         write("role.inheritance.created", "role:$childRoleKey") { connection ->
+            require(childRoleKey != parentRoleKey) {
+                "Role inheritance would create a cycle (childRoleKey=$childRoleKey, parentRoleKey=$parentRoleKey)"
+            }
+            require(
+                !roleHasAncestor(
+                    connection,
+                    roleKey = parentRoleKey,
+                    ancestorRoleKey = childRoleKey,
+                )
+            ) {
+                "Role inheritance would create a cycle (childRoleKey=$childRoleKey, parentRoleKey=$parentRoleKey)"
+            }
             connection
                 .prepareStatement(
                     """
@@ -552,6 +564,9 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
 
     fun upsertCatalogEntry(entry: CatalogEntryRecord): CatalogEntryRecord =
         write("catalog.entry.upserted", "permission:${entry.key}") { connection ->
+            require(!entry.custom || !catalogEntryOwnedByRuntime(connection, entry.key)) {
+                "Catalog entry is owned by runtime registration (permissionKey=${entry.key})"
+            }
             connection
                 .prepareStatement(
                     """
@@ -883,6 +898,52 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                 statement.executeUpdate()
             }
     }
+
+    private fun roleHasAncestor(
+        connection: Connection,
+        roleKey: String,
+        ancestorRoleKey: String,
+    ): Boolean =
+        connection
+            .prepareStatement(
+                """
+                WITH RECURSIVE ancestors(role_key) AS (
+                    SELECT parent_role_key
+                    FROM permission_role_inheritance
+                    WHERE child_role_key = ?
+                    UNION
+                    SELECT inheritance.parent_role_key
+                    FROM permission_role_inheritance inheritance
+                    JOIN ancestors ON inheritance.child_role_key = ancestors.role_key
+                )
+                SELECT 1
+                FROM ancestors
+                WHERE role_key = ?
+                LIMIT 1
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, roleKey)
+                statement.setString(2, ancestorRoleKey)
+                statement.executeQuery().use { rows -> rows.next() }
+            }
+
+    private fun catalogEntryOwnedByRuntime(connection: Connection, permissionKey: String): Boolean =
+        connection
+            .prepareStatement(
+                """
+                SELECT 1
+                FROM permission_catalog_entries
+                WHERE permission_key = ? AND custom = FALSE
+                LIMIT 1
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, permissionKey)
+                statement.executeQuery().use { rows -> rows.next() }
+            }
 
     private fun ResultSet.toRoleRecords(): List<RoleRecord> = buildList {
         while (next()) {

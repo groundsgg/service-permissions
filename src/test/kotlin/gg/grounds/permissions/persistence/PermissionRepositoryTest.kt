@@ -10,6 +10,7 @@ import jakarta.inject.Inject
 import java.time.Instant
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -126,5 +127,57 @@ class PermissionRepositoryTest {
         )
         assertEquals(1, input.playerGrants.count { it.playerId == playerId })
         assertEquals(1, repository.listCatalogEntries().size)
+    }
+
+    @Test
+    fun rejectsRoleInheritanceCycles() {
+        repository.createRole(RoleRecord(key = "alpha", name = "Alpha"))
+        repository.createRole(RoleRecord(key = "beta", name = "Beta"))
+
+        repository.addRoleInheritance(childRoleKey = "beta", parentRoleKey = "alpha")
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.addRoleInheritance(childRoleKey = "alpha", parentRoleKey = "beta")
+            }
+
+        assertEquals(
+            "Role inheritance would create a cycle (childRoleKey=alpha, parentRoleKey=beta)",
+            error.message,
+        )
+    }
+
+    @Test
+    fun rejectsCustomCatalogUpsertOverRuntimeOwnedEntry() {
+        repository.upsertCatalogEntry(
+            CatalogEntryRecord(
+                key = "grounds.command.fly",
+                label = "Fly",
+                source = "plugin-runtime",
+                sourceVersion = "1.0.0",
+                supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                custom = false,
+            )
+        )
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.upsertCatalogEntry(
+                    CatalogEntryRecord(
+                        key = "grounds.command.fly",
+                        label = "Custom fly",
+                        source = "custom",
+                        sourceVersion = "admin",
+                        supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                        custom = true,
+                    )
+                )
+            }
+
+        assertEquals(
+            "Catalog entry is owned by runtime registration (permissionKey=grounds.command.fly)",
+            error.message,
+        )
+        assertEquals(false, repository.listCatalogEntries().single().custom)
     }
 }

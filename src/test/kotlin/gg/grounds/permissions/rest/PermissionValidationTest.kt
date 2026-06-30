@@ -34,8 +34,33 @@ class PermissionValidationTest {
             }
 
         assertEquals(
-            "permissionPattern must contain only lowercase letters, numbers, dots, underscores, hyphens, or wildcard stars",
+            "permissionPattern must be a concrete key, '*', or a suffix wildcard ending in '.*'",
             error.message,
+        )
+    }
+
+    @Test
+    fun rejectsUnsupportedWildcardPermissionPatterns() {
+        PermissionValidation.permissionPattern("*")
+        PermissionValidation.permissionPattern("grounds.command.*")
+        PermissionValidation.permissionPattern("grounds.command.fly")
+
+        val middleWildcardError =
+            assertThrows(IllegalArgumentException::class.java) {
+                PermissionValidation.permissionPattern("grounds.*.fly")
+            }
+        val partialWildcardError =
+            assertThrows(IllegalArgumentException::class.java) {
+                PermissionValidation.permissionPattern("grounds.command*")
+            }
+
+        assertEquals(
+            "permissionPattern must be a concrete key, '*', or a suffix wildcard ending in '.*'",
+            middleWildcardError.message,
+        )
+        assertEquals(
+            "permissionPattern must be a concrete key, '*', or a suffix wildcard ending in '.*'",
+            partialWildcardError.message,
         )
     }
 

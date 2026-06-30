@@ -6,7 +6,7 @@ import java.util.UUID
 
 object PermissionValidation {
     private val roleKeyRegex = Regex("^[a-z0-9._-]+$")
-    private val permissionPatternRegex = Regex("^[a-z0-9._*-]+$")
+    private val permissionKeyRegex = Regex("^[a-z0-9._-]+$")
 
     fun roleKey(value: String?): String {
         val roleKey = required(value, "roleKey")
@@ -18,16 +18,16 @@ object PermissionValidation {
 
     fun permissionKey(value: String?): String {
         val permissionKey = required(value, "permissionKey")
-        require(permissionPatternRegex.matches(permissionKey)) {
-            "permissionKey must contain only lowercase letters, numbers, dots, underscores, hyphens, or wildcard stars"
+        require(permissionKeyRegex.matches(permissionKey)) {
+            "permissionKey must contain only lowercase letters, numbers, dots, underscores, or hyphens"
         }
         return permissionKey
     }
 
     fun permissionPattern(value: String?): String {
         val permissionPattern = required(value, "permissionPattern")
-        require(permissionPatternRegex.matches(permissionPattern)) {
-            "permissionPattern must contain only lowercase letters, numbers, dots, underscores, hyphens, or wildcard stars"
+        require(isSupportedPermissionPattern(permissionPattern)) {
+            "permissionPattern must be a concrete key, '*', or a suffix wildcard ending in '.*'"
         }
         return permissionPattern
     }
@@ -57,4 +57,9 @@ object PermissionValidation {
         require(!trimmed.isNullOrEmpty()) { "$fieldName must not be blank" }
         return trimmed
     }
+
+    private fun isSupportedPermissionPattern(value: String): Boolean =
+        value == "*" ||
+            permissionKeyRegex.matches(value) ||
+            (value.endsWith(".*") && permissionKeyRegex.matches(value.removeSuffix(".*")))
 }
