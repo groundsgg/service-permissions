@@ -9,9 +9,11 @@ import jakarta.ws.rs.ForbiddenException
 import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.jwt.JsonWebToken
@@ -40,7 +42,48 @@ class AdminAuthorizationService(
     ): Boolean =
         ADMIN_PERMISSION in identity.roles ||
             JWT_PERMISSION_CLAIMS.any { claimName -> claimContainsPermission(claimName) } ||
+            forgeProjectAccessAllowsManagement(headers) ||
             forgeEffectiveAccessContainsPermission(headers)
+
+    private fun forgeProjectAccessAllowsManagement(headers: HttpHeaders): Boolean {
+        val projectId = headers.getHeaderString(PROJECT_ID_HEADER)?.trim()
+        if (projectId.isNullOrBlank()) {
+            return false
+        }
+        val authorization = headers.getHeaderString(HttpHeaders.AUTHORIZATION)?.trim()
+        if (authorization.isNullOrBlank()) {
+            return false
+        }
+
+        val request =
+            HttpRequest.newBuilder()
+                .uri(
+                    URI.create(
+                        "${forgeBaseUrl.trimEnd('/')}/v1/projects/${encodePathSegment(projectId)}"
+                    )
+                )
+                .timeout(Duration.ofSeconds(3))
+                .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, authorization)
+                .GET()
+                .build()
+
+        val response =
+            try {
+                httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+            } catch (_: Exception) {
+                return false
+            }
+
+        if (response.statusCode() == 401 || response.statusCode() == 403) {
+            return false
+        }
+        if (response.statusCode() !in 200..299) {
+            return false
+        }
+
+        return parseProjectRole(response.body()) in PROJECT_ADMIN_ROLES
+    }
 
     private fun forgeEffectiveAccessContainsPermission(headers: HttpHeaders): Boolean {
         val authorization = headers.getHeaderString(HttpHeaders.AUTHORIZATION)?.trim()
@@ -88,6 +131,16 @@ class AdminAuthorizationService(
         return permissions.mapNotNull(JsonNode::asText).toSet()
     }
 
+    private fun parseProjectRole(body: String): String? {
+        val root =
+            try {
+                objectMapper.readTree(body)
+            } catch (_: Exception) {
+                return null
+            }
+        return root.get("role")?.asText()
+    }
+
     private fun claimContainsPermission(claimName: String): Boolean =
         when (val claim = jwtClaim(claimName)) {
             is String -> claim == ADMIN_PERMISSION
@@ -109,8 +162,13 @@ class AdminAuthorizationService(
             null
         }
 
+    private fun encodePathSegment(value: String): String =
+        URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
+
     private companion object {
         private const val ADMIN_PERMISSION = "MINECRAFT_PERMISSIONS_MANAGE"
+        private const val PROJECT_ID_HEADER = "X-Grounds-Project-Id"
+        private val PROJECT_ADMIN_ROLES = setOf("owner", "editor")
         private val JWT_PERMISSION_CLAIMS = listOf("permissions", "platform_permissions", "groups")
     }
 }
