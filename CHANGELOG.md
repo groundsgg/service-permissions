@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.0...service-permissions-v0.1.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* **permissions:** authorize project permissions editors ([#12](https://github.com/groundsgg/service-permissions/issues/12)) ([80c63e9](https://github.com/groundsgg/service-permissions/commit/80c63e9a4bc90edf2b7c8f19fbc43d67459b519a))
+
 ## [0.1.0](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.0.1...service-permissions-v0.1.0) (2026-06-30)
 
 
