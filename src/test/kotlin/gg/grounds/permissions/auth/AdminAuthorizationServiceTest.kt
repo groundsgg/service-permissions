@@ -52,6 +52,38 @@ class AdminAuthorizationServiceTest {
     }
 
     @Test
+    fun acceptsForgeProjectOwnerAccessWhenProjectHeaderIsLowercase() {
+        val server =
+            forgeAccessServer(
+                path = "/v1/projects/project-a",
+                response = """{"id":"project-a","role":"owner"}""",
+            )
+        try {
+            val service =
+                AdminAuthorizationService(
+                    WebUserResolver(jsonWebToken(subject = "project-owner"), false),
+                    jsonWebToken(subject = "project-owner"),
+                    ObjectMapper(),
+                    "http://localhost:${server.address.port}",
+                )
+
+            val userId =
+                service.requireMinecraftPermissionsAdmin(
+                    securityIdentity(),
+                    StaticAuthorizationHeaders(
+                        authorization = "Bearer project-owner-token",
+                        projectId = "project-a",
+                        projectHeaderName = "x-grounds-project-id",
+                    ),
+                )
+
+            assertEquals("project-owner", userId)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun rejectsForgeProjectViewersWhenJwtDoesNotContainPermission() {
         val server =
             forgeAccessServer(
@@ -150,12 +182,13 @@ class AdminAuthorizationServiceTest {
 private class StaticAuthorizationHeaders(
     private val authorization: String,
     private val projectId: String? = null,
+    private val projectHeaderName: String = "X-Grounds-Project-Id",
 ) : HttpHeaders {
     private val headers =
         MultivaluedHashMap<String, String>().also {
             it.add(HttpHeaders.AUTHORIZATION, authorization)
             if (projectId != null) {
-                it.add("X-Grounds-Project-Id", projectId)
+                it.add(projectHeaderName, projectId)
             }
         }
 
