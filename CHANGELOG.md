@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.2...service-permissions-v0.1.3) (2026-07-07)
+
+
+### Bug Fixes
+
+* **permissions:** trust forge project role context ([#16](https://github.com/groundsgg/service-permissions/issues/16)) ([dee2326](https://github.com/groundsgg/service-permissions/commit/dee23269b0d8d5533b1e90a9be094854ca54abed))
+
 ## [0.1.2](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.1...service-permissions-v0.1.2) (2026-07-07)
 
 
