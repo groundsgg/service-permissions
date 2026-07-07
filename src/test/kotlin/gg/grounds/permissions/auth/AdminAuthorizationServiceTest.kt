@@ -34,6 +34,7 @@ class AdminAuthorizationServiceTest {
                     jsonWebToken(subject = "project-owner"),
                     ObjectMapper(),
                     "http://localhost:${server.address.port}",
+                    false,
                 )
 
             val userId =
@@ -65,6 +66,7 @@ class AdminAuthorizationServiceTest {
                     jsonWebToken(subject = "project-owner"),
                     ObjectMapper(),
                     "http://localhost:${server.address.port}",
+                    false,
                 )
 
             val userId =
@@ -97,6 +99,7 @@ class AdminAuthorizationServiceTest {
                     jsonWebToken(subject = "project-viewer"),
                     ObjectMapper(),
                     "http://localhost:${server.address.port}",
+                    false,
                 )
 
             assertThrows(ForbiddenException::class.java) {
@@ -114,6 +117,53 @@ class AdminAuthorizationServiceTest {
     }
 
     @Test
+    fun acceptsTrustedForgeProjectEditorHeaderWhenEnabled() {
+        val service =
+            AdminAuthorizationService(
+                WebUserResolver(jsonWebToken(subject = "project-editor"), false),
+                jsonWebToken(subject = "project-editor"),
+                ObjectMapper(),
+                "http://localhost:1",
+                true,
+            )
+
+        val userId =
+            service.requireMinecraftPermissionsAdmin(
+                securityIdentity(),
+                StaticAuthorizationHeaders(
+                    authorization = "Bearer project-editor-token",
+                    projectId = "project-a",
+                    projectRole = "editor",
+                ),
+            )
+
+        assertEquals("project-editor", userId)
+    }
+
+    @Test
+    fun ignoresTrustedForgeProjectRoleHeaderWhenDisabled() {
+        val service =
+            AdminAuthorizationService(
+                WebUserResolver(jsonWebToken(subject = "project-editor"), false),
+                jsonWebToken(subject = "project-editor"),
+                ObjectMapper(),
+                "http://localhost:1",
+                false,
+            )
+
+        assertThrows(ForbiddenException::class.java) {
+            service.requireMinecraftPermissionsAdmin(
+                securityIdentity(),
+                StaticAuthorizationHeaders(
+                    authorization = "Bearer project-editor-token",
+                    projectId = "project-a",
+                    projectRole = "editor",
+                ),
+            )
+        }
+    }
+
+    @Test
     fun acceptsForgeEffectiveAccessPermissionWhenJwtDoesNotContainPermission() {
         val server = forgeAccessServer("""{"permissions":["MINECRAFT_PERMISSIONS_MANAGE"]}""")
         try {
@@ -123,6 +173,7 @@ class AdminAuthorizationServiceTest {
                     jsonWebToken(subject = "admin-user"),
                     ObjectMapper(),
                     "http://localhost:${server.address.port}",
+                    false,
                 )
 
             val userId =
@@ -183,12 +234,16 @@ private class StaticAuthorizationHeaders(
     private val authorization: String,
     private val projectId: String? = null,
     private val projectHeaderName: String = "X-Grounds-Project-Id",
+    private val projectRole: String? = null,
 ) : HttpHeaders {
     private val headers =
         MultivaluedHashMap<String, String>().also {
             it.add(HttpHeaders.AUTHORIZATION, authorization)
             if (projectId != null) {
                 it.add(projectHeaderName, projectId)
+            }
+            if (projectRole != null) {
+                it.add("X-Grounds-Project-Role", projectRole)
             }
         }
 
