@@ -46,11 +46,11 @@ class AdminAuthorizationService(
             forgeEffectiveAccessContainsPermission(headers)
 
     private fun forgeProjectAccessAllowsManagement(headers: HttpHeaders): Boolean {
-        val projectId = headers.getHeaderString(PROJECT_ID_HEADER)?.trim()
+        val projectId = headerString(headers, PROJECT_ID_HEADER)?.trim()
         if (projectId.isNullOrBlank()) {
             return false
         }
-        val authorization = headers.getHeaderString(HttpHeaders.AUTHORIZATION)?.trim()
+        val authorization = headerString(headers, HttpHeaders.AUTHORIZATION)?.trim()
         if (authorization.isNullOrBlank()) {
             return false
         }
@@ -86,7 +86,7 @@ class AdminAuthorizationService(
     }
 
     private fun forgeEffectiveAccessContainsPermission(headers: HttpHeaders): Boolean {
-        val authorization = headers.getHeaderString(HttpHeaders.AUTHORIZATION)?.trim()
+        val authorization = headerString(headers, HttpHeaders.AUTHORIZATION)?.trim()
         if (authorization.isNullOrBlank()) {
             return false
         }
@@ -161,6 +161,16 @@ class AdminAuthorizationService(
         } catch (_: IllegalStateException) {
             null
         }
+
+    private fun headerString(headers: HttpHeaders, name: String): String? {
+        headers.getHeaderString(name)?.let {
+            return it
+        }
+        return headers.requestHeaders.entries
+            .firstOrNull { (headerName, _) -> headerName.equals(name, ignoreCase = true) }
+            ?.value
+            ?.joinToString(",")
+    }
 
     private fun encodePathSegment(value: String): String =
         URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
