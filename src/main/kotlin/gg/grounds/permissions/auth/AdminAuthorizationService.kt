@@ -24,6 +24,11 @@ class AdminAuthorizationService(
     private val jwt: JsonWebToken,
     private val objectMapper: ObjectMapper,
     @param:ConfigProperty(name = "permissions.forge.base-url") private val forgeBaseUrl: String,
+    @param:ConfigProperty(
+        name = "permissions.auth.trust-forge-project-role",
+        defaultValue = "false",
+    )
+    private val trustForgeProjectRoleHeader: Boolean,
 ) {
     private val httpClient: HttpClient =
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
@@ -42,8 +47,21 @@ class AdminAuthorizationService(
     ): Boolean =
         ADMIN_PERMISSION in identity.roles ||
             JWT_PERMISSION_CLAIMS.any { claimName -> claimContainsPermission(claimName) } ||
+            trustedForgeProjectRoleAllowsManagement(headers) ||
             forgeProjectAccessAllowsManagement(headers) ||
             forgeEffectiveAccessContainsPermission(headers)
+
+    private fun trustedForgeProjectRoleAllowsManagement(headers: HttpHeaders): Boolean {
+        if (!trustForgeProjectRoleHeader) {
+            return false
+        }
+        val projectId = headerString(headers, PROJECT_ID_HEADER)?.trim()
+        if (projectId.isNullOrBlank()) {
+            return false
+        }
+        val role = headerString(headers, PROJECT_ROLE_HEADER)?.trim()
+        return role in PROJECT_ADMIN_ROLES
+    }
 
     private fun forgeProjectAccessAllowsManagement(headers: HttpHeaders): Boolean {
         val projectId = headerString(headers, PROJECT_ID_HEADER)?.trim()
@@ -178,6 +196,7 @@ class AdminAuthorizationService(
     private companion object {
         private const val ADMIN_PERMISSION = "MINECRAFT_PERMISSIONS_MANAGE"
         private const val PROJECT_ID_HEADER = "X-Grounds-Project-Id"
+        private const val PROJECT_ROLE_HEADER = "X-Grounds-Project-Role"
         private val PROJECT_ADMIN_ROLES = setOf("owner", "editor")
         private val JWT_PERMISSION_CLAIMS = listOf("permissions", "platform_permissions", "groups")
     }
