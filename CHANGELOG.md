@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.1...service-permissions-v0.1.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* read project permission headers case-insensitively ([#14](https://github.com/groundsgg/service-permissions/issues/14)) ([e1bb82e](https://github.com/groundsgg/service-permissions/commit/e1bb82ed140bbeee61e1df35966fbc0283f0c749))
+
 ## [0.1.1](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.0...service-permissions-v0.1.1) (2026-07-06)
 
 
