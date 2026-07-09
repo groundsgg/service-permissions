@@ -17,9 +17,12 @@ import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.domain.PlayerPermissionGrant
 import gg.grounds.permissions.domain.RoleDefinition
+import gg.grounds.permissions.persistence.PermissionRepository
+import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
 import io.grpc.Status
 import io.grpc.StatusRuntimeException
 import io.quarkus.grpc.GrpcClient
+import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.junit.QuarkusTestProfile
 import io.quarkus.test.junit.TestProfile
@@ -34,10 +37,15 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
 @QuarkusTest
+@QuarkusTestResource(
+    value = PermissionsPostgresTestResource::class,
+    restrictToAnnotatedClass = true,
+)
 @TestProfile(PermissionSnapshotGrpcServiceTest.Profile::class)
 class PermissionSnapshotGrpcServiceTest {
 
     @Inject lateinit var policyProvider: SeededPermissionPolicyProvider
+    @Inject lateinit var repository: PermissionRepository
 
     @GrpcClient("permission-snapshot") lateinit var service: PermissionSnapshotService
 
@@ -46,6 +54,7 @@ class PermissionSnapshotGrpcServiceTest {
     @BeforeEach
     fun resetPolicy() {
         policyProvider.replacePolicy()
+        repository.deleteAllPermissionData()
     }
 
     @Test
@@ -256,6 +265,38 @@ class PermissionSnapshotGrpcServiceTest {
     }
 
     @Test
+    fun registerPermissionManifestPersistsRuntimeCatalogEntry() {
+        catalogService
+            .registerPermissionManifest(
+                RegisterPermissionManifestRequest.newBuilder()
+                    .setSource("plugin-config")
+                    .setSourceVersion("1.0.0")
+                    .addPermissions(
+                        PermissionManifestEntry.newBuilder()
+                            .setKey("grounds.command.fly")
+                            .setLabel("Fly command")
+                            .setDescription("Allows flight")
+                            .addSupportedScopes(PERMISSION_SCOPE_KIND_GLOBAL)
+                            .build()
+                    )
+                    .build()
+            )
+            .await()
+            .indefinitely()
+
+        val catalogEntry = repository.listCatalogEntries().single()
+
+        assertEquals("grounds.command.fly", catalogEntry.key)
+        assertEquals("Fly command", catalogEntry.label)
+        assertEquals("Allows flight", catalogEntry.description)
+        assertEquals("plugin-config", catalogEntry.source)
+        assertEquals("1.0.0", catalogEntry.sourceVersion)
+        assertEquals(listOf(PermissionScopeKind.GLOBAL), catalogEntry.supportedScopes)
+        assertFalse(catalogEntry.custom)
+        assertNotNull(catalogEntry.lastSeenAt)
+    }
+
+    @Test
     fun registerPermissionManifestRejectsUnknownSupportedScopeAsInvalidArgument() {
         val error =
             assertThrows(StatusRuntimeException::class.java) {
@@ -326,7 +367,6 @@ class PermissionSnapshotGrpcServiceTest {
                 "quarkus.grpc.clients.permission-catalog.host" to "localhost",
                 "quarkus.grpc.clients.permission-catalog.port" to "9001",
                 "quarkus.grpc.clients.permission-catalog.plain-text" to "true",
-                "quarkus.flyway.migrate-at-start" to "false",
             )
 
         override fun getEnabledAlternatives(): Set<Class<*>> =

@@ -4,16 +4,21 @@ import gg.grounds.grpc.permissions.PermissionCatalogService
 import gg.grounds.grpc.permissions.PermissionScopeKind
 import gg.grounds.grpc.permissions.RegisterPermissionManifestReply
 import gg.grounds.grpc.permissions.RegisterPermissionManifestRequest
+import gg.grounds.permissions.domain.PermissionScopeKind as DomainPermissionScopeKind
+import gg.grounds.permissions.persistence.CatalogEntryRecord
+import gg.grounds.permissions.persistence.PermissionRepository
 import io.grpc.Status
 import io.grpc.StatusRuntimeException
 import io.quarkus.grpc.GrpcService
 import io.smallrye.common.annotation.Blocking
 import io.smallrye.mutiny.Uni
+import java.time.Instant
 import org.jboss.logging.Logger
 
 @GrpcService
 @Blocking
-class PermissionCatalogGrpcService : PermissionCatalogService {
+class PermissionCatalogGrpcService(private val repository: PermissionRepository) :
+    PermissionCatalogService {
     override fun registerPermissionManifest(
         request: RegisterPermissionManifestRequest
     ): Uni<RegisterPermissionManifestReply> {
@@ -26,21 +31,37 @@ class PermissionCatalogGrpcService : PermissionCatalogService {
                 throw invalidArgument("permissions must not be empty")
             }
             val permissionKeys = mutableSetOf<String>()
-            request.permissionsList.forEachIndexed { index, permission ->
-                val permissionKey = permission.key.normalizedRequired("permissions[$index].key")
-                if (!permissionKeys.add(permissionKey)) {
-                    throw invalidArgument("permissions[$index].key must be unique")
-                }
-                permission.label.normalizedRequired("permissions[$index].label")
-                if (permission.supportedScopesList.isEmpty()) {
-                    throw invalidArgument("permissions[$index].supported_scopes must not be empty")
-                }
-                if (permission.supportedScopesValueList.any { it !in SUPPORTED_SCOPE_VALUES }) {
-                    throw invalidArgument(
-                        "permissions[$index].supported_scopes must contain only supported values"
+            val catalogEntries =
+                request.permissionsList.mapIndexed { index, permission ->
+                    val permissionKey = permission.key.normalizedRequired("permissions[$index].key")
+                    if (!permissionKeys.add(permissionKey)) {
+                        throw invalidArgument("permissions[$index].key must be unique")
+                    }
+                    val label = permission.label.normalizedRequired("permissions[$index].label")
+                    if (permission.supportedScopesList.isEmpty()) {
+                        throw invalidArgument(
+                            "permissions[$index].supported_scopes must not be empty"
+                        )
+                    }
+                    if (permission.supportedScopesValueList.any { it !in SUPPORTED_SCOPE_VALUES }) {
+                        throw invalidArgument(
+                            "permissions[$index].supported_scopes must contain only supported values"
+                        )
+                    }
+                    CatalogEntryRecord(
+                        key = permissionKey,
+                        label = label,
+                        description = permission.description,
+                        source = source,
+                        sourceVersion = sourceVersion,
+                        supportedScopes =
+                            permission.supportedScopesList.map { it.toDomainScopeKind() },
+                        custom = false,
+                        lastSeenAt = Instant.now(),
                     )
                 }
-            }
+
+            catalogEntries.forEach(repository::upsertCatalogEntry)
 
             LOG.infof(
                 "Permission manifest registration accepted (source=%s, sourceVersion=%s, serverType=%s, serverId=%s, permissionCount=%d)",
@@ -75,6 +96,15 @@ class PermissionCatalogGrpcService : PermissionCatalogService {
         }
         return trimmed
     }
+
+    private fun PermissionScopeKind.toDomainScopeKind(): DomainPermissionScopeKind =
+        when (this) {
+            PermissionScopeKind.PERMISSION_SCOPE_KIND_GLOBAL -> DomainPermissionScopeKind.GLOBAL
+            PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER_TYPE ->
+                DomainPermissionScopeKind.SERVER_TYPE
+            PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER -> DomainPermissionScopeKind.SERVER
+            else -> throw invalidArgument("supported scope must be recognized")
+        }
 
     companion object {
         private val LOG = Logger.getLogger(PermissionCatalogGrpcService::class.java)
