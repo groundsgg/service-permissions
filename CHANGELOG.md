@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.3...service-permissions-v0.2.0) (2026-07-09)
+
+
+### Features
+
+* persist permission manifests ([#20](https://github.com/groundsgg/service-permissions/issues/20)) ([e7bdb62](https://github.com/groundsgg/service-permissions/commit/e7bdb624435140daecbdadac967530381fd265da))
+
 ## [0.1.3](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.2...service-permissions-v0.1.3) (2026-07-07)
 
 
