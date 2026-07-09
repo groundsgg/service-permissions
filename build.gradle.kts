@@ -4,7 +4,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     id("gg.grounds.base-conventions") version "0.5.1"
-    id("io.quarkus") version "3.37.0"
+    id("io.quarkus") version "3.37.2"
 }
 
 kotlin { jvmToolchain(25) }
