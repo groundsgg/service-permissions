@@ -27,6 +27,24 @@ class PermissionValidationTest {
     }
 
     @Test
+    fun generatesReadableRoleKeysFromNames() {
+        assertEquals("senior-moderator", PermissionValidation.roleKeyFromName(" Senior Moderator "))
+        assertEquals("builder-team", PermissionValidation.roleKeyFromName("Builder_Team"))
+        assertEquals("uber-admin", PermissionValidation.roleKeyFromName("Über Admin"))
+        assertEquals("grosse-admins", PermissionValidation.roleKeyFromName("Große Admins"))
+    }
+
+    @Test
+    fun rejectsRoleNamesWithoutSlugCharacters() {
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                PermissionValidation.roleKeyFromName("!!!")
+            }
+
+        assertEquals("role_name_invalid", error.message)
+    }
+
+    @Test
     fun rejectsInvalidPermissionPatterns() {
         val error =
             assertThrows(IllegalArgumentException::class.java) {

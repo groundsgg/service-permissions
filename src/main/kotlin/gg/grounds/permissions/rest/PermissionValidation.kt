@@ -2,10 +2,14 @@ package gg.grounds.permissions.rest
 
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
+import java.text.Normalizer
+import java.util.Locale
 import java.util.UUID
 
 object PermissionValidation {
+    private val combiningMarksRegex = Regex("\\p{M}+")
     private val roleKeyRegex = Regex("^[a-z0-9._-]+$")
+    private val roleSlugSeparatorRegex = Regex("[^a-z0-9]+")
     private val permissionKeyRegex = Regex("^[a-z0-9._-]+$")
 
     fun roleKey(value: String?): String {
@@ -13,6 +17,19 @@ object PermissionValidation {
         require(roleKeyRegex.matches(roleKey)) {
             "roleKey must contain only lowercase letters, numbers, dots, underscores, or hyphens"
         }
+        return roleKey
+    }
+
+    fun roleKeyFromName(value: String?): String {
+        val name = displayName(value)
+        val roleKey =
+            Normalizer.normalize(name, Normalizer.Form.NFKD)
+                .replace(combiningMarksRegex, "")
+                .lowercase(Locale.ROOT)
+                .replace("ß", "ss")
+                .replace(roleSlugSeparatorRegex, "-")
+                .trim('-')
+        require(roleKey.isNotEmpty()) { "role_name_invalid" }
         return roleKey
     }
 
