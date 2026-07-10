@@ -29,6 +29,56 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun roleCreationGeneratesKeyAndIgnoresIncomingKey() {
+        given()
+            .contentType("application/json")
+            .body("""{"key":"client-selected","name":"Über Admin"}""")
+            .post("/v1/permissions/roles")
+            .then()
+            .statusCode(201)
+            .body("key", equalTo("uber-admin"))
+            .body("name", equalTo("Über Admin"))
+    }
+
+    @Test
+    fun duplicateGeneratedRoleKeyReturnsConflict() {
+        createRole("ignored", "Senior Moderator")
+
+        given()
+            .contentType("application/json")
+            .body("""{"name":"Senior Moderator"}""")
+            .post("/v1/permissions/roles")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("role_key_conflict"))
+    }
+
+    @Test
+    fun invalidGeneratedRoleKeyReturnsBadRequest() {
+        given()
+            .contentType("application/json")
+            .body("""{"name":"!!!"}""")
+            .post("/v1/permissions/roles")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("role_name_invalid"))
+    }
+
+    @Test
+    fun renamingRoleKeepsGeneratedKey() {
+        createRole("ignored", "Event Staff")
+
+        given()
+            .contentType("application/json")
+            .body("""{"name":"Tournament Staff"}""")
+            .put("/v1/permissions/roles/event-staff")
+            .then()
+            .statusCode(200)
+            .body("key", equalTo("event-staff"))
+            .body("name", equalTo("Tournament Staff"))
+    }
+
+    @Test
     fun roleInheritanceAndRoleGrantCrud() {
         createRole("default", "Default", default = true)
         createRole("moderator", "Moderator")

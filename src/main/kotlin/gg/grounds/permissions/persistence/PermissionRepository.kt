@@ -21,6 +21,7 @@ import java.time.Instant
 import java.util.UUID
 import javax.sql.DataSource
 import org.postgresql.util.PGobject
+import org.postgresql.util.PSQLException
 
 data class RoleRecord(
     val key: String,
@@ -82,29 +83,39 @@ class PermissionRepository
 constructor(private val dataSource: DataSource, private val objectMapper: ObjectMapper) {
 
     fun createRole(role: RoleRecord): RoleRecord =
-        write("role.created", "role:${role.key}") { connection ->
-            connection
-                .prepareStatement(
-                    """
-                    INSERT INTO permission_roles (
-                        key, name, description, prefix, color, sort_order, metadata, is_default
+        try {
+            write("role.created", "role:${role.key}") { connection ->
+                connection
+                    .prepareStatement(
+                        """
+                        INSERT INTO permission_roles (
+                            key, name, description, prefix, color, sort_order, metadata, is_default
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """
+                            .trimIndent()
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """
-                        .trimIndent()
-                )
-                .use { statement ->
-                    statement.setString(1, role.key)
-                    statement.setString(2, role.name)
-                    statement.setString(3, role.description)
-                    statement.setString(4, role.prefix)
-                    statement.setString(5, role.color)
-                    statement.setInt(6, role.sortOrder)
-                    statement.setObject(7, jsonb(role.metadata))
-                    statement.setBoolean(8, role.isDefault)
-                    statement.executeUpdate()
-                }
-            role
+                    .use { statement ->
+                        statement.setString(1, role.key)
+                        statement.setString(2, role.name)
+                        statement.setString(3, role.description)
+                        statement.setString(4, role.prefix)
+                        statement.setString(5, role.color)
+                        statement.setInt(6, role.sortOrder)
+                        statement.setObject(7, jsonb(role.metadata))
+                        statement.setBoolean(8, role.isDefault)
+                        statement.executeUpdate()
+                    }
+                role
+            }
+        } catch (error: PSQLException) {
+            if (
+                error.sqlState == POSTGRES_UNIQUE_VIOLATION &&
+                    error.serverErrorMessage?.constraint == PERMISSION_ROLES_PRIMARY_KEY
+            ) {
+                throw DuplicateRoleKeyException(role.key, error)
+            }
+            throw error
         }
 
     fun listRoles(): List<RoleRecord> = read { connection ->
@@ -1038,6 +1049,8 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
         objectMapper.readValue(json, STRING_MAP_TYPE)
 
     companion object {
+        private const val POSTGRES_UNIQUE_VIOLATION = "23505"
+        private const val PERMISSION_ROLES_PRIMARY_KEY = "permission_roles_pkey"
         private val REFRESH_AFTER_OFFSET = Duration.ofMinutes(5)
         private val EXPIRES_AFTER_OFFSET = Duration.ofMinutes(10)
         private val STRING_MAP_TYPE = object : TypeReference<Map<String, String>>() {}

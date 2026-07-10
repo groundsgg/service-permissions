@@ -44,10 +44,11 @@ constructor(
     @POST
     fun createRole(request: RoleRequest, @Context headers: HttpHeaders): Response {
         requireAdmin(headers)
+        val name = PermissionValidation.displayName(request.name)
         val role =
             RoleRecord(
-                key = PermissionValidation.roleKey(request.key),
-                name = PermissionValidation.displayName(request.name),
+                key = PermissionValidation.roleKeyFromName(name),
+                name = name,
                 description = request.description,
                 prefix = request.prefix?.trim()?.takeIf { it.isNotEmpty() },
                 color = request.color?.trim()?.takeIf { it.isNotEmpty() },
