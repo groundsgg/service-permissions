@@ -1,5 +1,6 @@
 package gg.grounds.permissions.rest
 
+import gg.grounds.permissions.persistence.DuplicateRoleKeyException
 import jakarta.ws.rs.NotFoundException
 import jakarta.ws.rs.core.Response
 import jakarta.ws.rs.ext.ExceptionMapper
@@ -19,6 +20,12 @@ class IllegalStateExceptionMapper : ExceptionMapper<IllegalStateException> {
         Response.status(Response.Status.BAD_REQUEST)
             .entity(ErrorResponse(exception.message ?: "invalid state"))
             .build()
+}
+
+@Provider
+class DuplicateRoleKeyExceptionMapper : ExceptionMapper<DuplicateRoleKeyException> {
+    override fun toResponse(exception: DuplicateRoleKeyException): Response =
+        Response.status(Response.Status.CONFLICT).entity(ErrorResponse("role_key_conflict")).build()
 }
 
 @Provider
