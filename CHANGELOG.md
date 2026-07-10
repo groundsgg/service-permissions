@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.2.0...service-permissions-v0.3.0) (2026-07-10)
+
+
+### Features
+
+* generate Minecraft permission role keys ([#22](https://github.com/groundsgg/service-permissions/issues/22)) ([04972d3](https://github.com/groundsgg/service-permissions/commit/04972d3e89b56260c54e14f344345d5ac0858a44))
+
 ## [0.2.0](https://github.com/groundsgg/service-permissions/compare/service-permissions-v0.1.3...service-permissions-v0.2.0) (2026-07-09)
 
 
