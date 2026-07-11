@@ -10,6 +10,7 @@ import jakarta.inject.Inject
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.hasItem
 import org.hamcrest.Matchers.hasSize
+import org.hamcrest.Matchers.nullValue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -126,6 +127,44 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun roleListIncludesAccurateAggregateCountsWithoutOvercounting() {
+        createRole("member", "Member")
+        createRole("guardian", "Guardian")
+        createRole("moderator", "Moderator")
+        createRole("observer", "Observer")
+
+        createRoleGrant("moderator", "grounds.command.moderate")
+        createRoleGrant("moderator", "grounds.command.warn")
+        given().put("/v1/permissions/roles/moderator/inherits/member").then().statusCode(204)
+        given().put("/v1/permissions/roles/moderator/inherits/guardian").then().statusCode(204)
+
+        given()
+            .get("/v1/permissions/roles")
+            .then()
+            .statusCode(200)
+            .body("find { it.key == 'moderator' }.grantCount", equalTo(2))
+            .body("find { it.key == 'moderator' }.inheritanceCount", equalTo(2))
+            .body("find { it.key == 'observer' }.grantCount", equalTo(0))
+            .body("find { it.key == 'observer' }.inheritanceCount", equalTo(0))
+
+        given()
+            .get("/v1/permissions/roles/moderator")
+            .then()
+            .statusCode(200)
+            .body("grantCount", nullValue())
+            .body("inheritanceCount", nullValue())
+
+        given()
+            .contentType("application/json")
+            .body("""{"name":"Moderator","description":"Updated"}""")
+            .put("/v1/permissions/roles/moderator")
+            .then()
+            .statusCode(200)
+            .body("grantCount", nullValue())
+            .body("inheritanceCount", nullValue())
+    }
+
+    @Test
     fun catalogCustomPermissionCrud() {
         given()
             .contentType("application/json")
@@ -223,6 +262,24 @@ class PermissionRestResourceTest {
             .contentType("application/json")
             .body("""{"key":"$key","name":"$name","default":$default}""")
             .post("/v1/permissions/roles")
+            .then()
+            .statusCode(201)
+    }
+
+    private fun createRoleGrant(roleKey: String, permissionPattern: String) {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "effect": "ALLOW",
+                  "permissionPattern": "$permissionPattern",
+                  "scopeKind": "GLOBAL"
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/roles/$roleKey/grants")
             .then()
             .statusCode(201)
     }

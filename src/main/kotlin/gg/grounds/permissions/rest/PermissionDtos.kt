@@ -29,6 +29,19 @@ data class RoleResponse(
     val default: Boolean,
 )
 
+data class RoleListResponse(
+    val key: String,
+    val name: String,
+    val description: String,
+    val prefix: String?,
+    val color: String?,
+    val sortOrder: Int,
+    val metadata: Map<String, String>,
+    val default: Boolean,
+    val grantCount: Long,
+    val inheritanceCount: Long,
+)
+
 data class GrantRequest(
     var effect: PermissionEffect? = null,
     var permissionPattern: String? = null,
