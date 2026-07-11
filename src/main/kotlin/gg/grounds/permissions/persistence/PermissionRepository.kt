@@ -38,6 +38,7 @@ data class RoleAggregateCountsRecord(
     val role: RoleRecord,
     val grantCount: Long,
     val inheritanceCount: Long,
+    val inheritedRoleKeys: Set<String> = emptySet(),
 )
 
 data class RoleGrantRecord(
@@ -138,6 +139,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
     }
 
     fun listRolesWithAggregateCounts(): List<RoleAggregateCountsRecord> = read { connection ->
+        val inheritedRoles = listRoleInheritance(connection)
         connection
             .prepareStatement(
                 """
@@ -162,6 +164,9 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
             )
             .use { statement ->
                 statement.executeQuery().use { rows -> rows.toRoleAggregateCountsRecords() }
+            }
+            .map { record ->
+                record.copy(inheritedRoleKeys = inheritedRoles[record.role.key].orEmpty())
             }
     }
 
@@ -222,6 +227,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                     """
                     INSERT INTO permission_role_inheritance (parent_role_key, child_role_key)
                     VALUES (?, ?)
+                    ON CONFLICT (parent_role_key, child_role_key) DO NOTHING
                     """
                         .trimIndent()
                 )
