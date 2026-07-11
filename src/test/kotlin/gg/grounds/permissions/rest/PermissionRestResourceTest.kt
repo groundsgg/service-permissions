@@ -126,6 +126,26 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun roleListIncludesGrantAndInheritanceCountsForEachRole() {
+        createRole("member", "Member")
+        createRole("moderator", "Moderator")
+
+        createRoleGrant("member", "grounds.command.help")
+        createRoleGrant("moderator", "grounds.command.moderate")
+        createRoleGrant("moderator", "grounds.command.warn")
+        given().put("/v1/permissions/roles/moderator/inherits/member").then().statusCode(204)
+
+        given()
+            .get("/v1/permissions/roles")
+            .then()
+            .statusCode(200)
+            .body("find { it.key == 'member' }.grantCount", equalTo(1))
+            .body("find { it.key == 'member' }.inheritanceCount", equalTo(0))
+            .body("find { it.key == 'moderator' }.grantCount", equalTo(2))
+            .body("find { it.key == 'moderator' }.inheritanceCount", equalTo(1))
+    }
+
+    @Test
     fun catalogCustomPermissionCrud() {
         given()
             .contentType("application/json")
@@ -223,6 +243,24 @@ class PermissionRestResourceTest {
             .contentType("application/json")
             .body("""{"key":"$key","name":"$name","default":$default}""")
             .post("/v1/permissions/roles")
+            .then()
+            .statusCode(201)
+    }
+
+    private fun createRoleGrant(roleKey: String, permissionPattern: String) {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "effect": "ALLOW",
+                  "permissionPattern": "$permissionPattern",
+                  "scopeKind": "GLOBAL"
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/roles/$roleKey/grants")
             .then()
             .statusCode(201)
     }

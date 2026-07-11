@@ -3,6 +3,7 @@ package gg.grounds.permissions.rest
 import gg.grounds.permissions.auth.AdminAuthorizationService
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.persistence.PermissionRepository
+import gg.grounds.permissions.persistence.RoleAggregateCountsRecord
 import gg.grounds.permissions.persistence.RoleGrantRecord
 import gg.grounds.permissions.persistence.RoleRecord
 import io.quarkus.security.Authenticated
@@ -38,7 +39,7 @@ constructor(
     @GET
     fun listRoles(@Context headers: HttpHeaders): List<RoleResponse> {
         requireAdmin(headers)
-        return repository.listRoles().map { it.toResponse() }
+        return repository.listRolesWithAggregateCounts().map { it.toResponse() }
     }
 
     @POST
@@ -219,6 +220,9 @@ fun RoleRecord.toResponse(): RoleResponse =
         metadata = metadata,
         default = isDefault,
     )
+
+fun RoleAggregateCountsRecord.toResponse(): RoleResponse =
+    role.toResponse().copy(grantCount = grantCount, inheritanceCount = inheritanceCount)
 
 fun RoleGrantRecord.toResponse(): RoleGrantResponse =
     RoleGrantResponse(

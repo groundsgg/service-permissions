@@ -34,6 +34,12 @@ data class RoleRecord(
     val isDefault: Boolean = false,
 )
 
+data class RoleAggregateCountsRecord(
+    val role: RoleRecord,
+    val grantCount: Long,
+    val inheritanceCount: Long,
+)
+
 data class RoleGrantRecord(
     val id: UUID,
     val roleKey: String,
@@ -129,6 +135,34 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                     .trimIndent()
             )
             .use { statement -> statement.executeQuery().use { rows -> rows.toRoleRecords() } }
+    }
+
+    fun listRolesWithAggregateCounts(): List<RoleAggregateCountsRecord> = read { connection ->
+        connection
+            .prepareStatement(
+                """
+                SELECT roles.key, roles.name, roles.description, roles.prefix, roles.color,
+                       roles.sort_order, roles.metadata, roles.is_default,
+                       COALESCE(grants.grant_count, 0) AS grant_count,
+                       COALESCE(inheritances.inheritance_count, 0) AS inheritance_count
+                FROM permission_roles roles
+                LEFT JOIN (
+                    SELECT role_key, COUNT(*) AS grant_count
+                    FROM permission_role_grants
+                    GROUP BY role_key
+                ) grants ON grants.role_key = roles.key
+                LEFT JOIN (
+                    SELECT child_role_key, COUNT(*) AS inheritance_count
+                    FROM permission_role_inheritance
+                    GROUP BY child_role_key
+                ) inheritances ON inheritances.child_role_key = roles.key
+                ORDER BY roles.sort_order ASC, roles.key ASC
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.executeQuery().use { rows -> rows.toRoleAggregateCountsRecords() }
+            }
     }
 
     fun getRole(roleKey: String): RoleRecord? = listRoles().firstOrNull { it.key == roleKey }
@@ -972,6 +1006,29 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
             )
         }
     }
+
+    private fun ResultSet.toRoleAggregateCountsRecords(): List<RoleAggregateCountsRecord> =
+        buildList {
+            while (next()) {
+                add(
+                    RoleAggregateCountsRecord(
+                        role =
+                            RoleRecord(
+                                key = getString("key"),
+                                name = getString("name"),
+                                description = getString("description"),
+                                prefix = getString("prefix"),
+                                color = getString("color"),
+                                sortOrder = getInt("sort_order"),
+                                metadata = metadataMap(getString("metadata")),
+                                isDefault = getBoolean("is_default"),
+                            ),
+                        grantCount = getLong("grant_count"),
+                        inheritanceCount = getLong("inheritance_count"),
+                    )
+                )
+            }
+        }
 
     private fun ResultSet.toCatalogEntry(): CatalogEntryRecord =
         CatalogEntryRecord(

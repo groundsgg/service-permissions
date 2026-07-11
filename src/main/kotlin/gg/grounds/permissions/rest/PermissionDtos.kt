@@ -27,6 +27,8 @@ data class RoleResponse(
     val sortOrder: Int,
     val metadata: Map<String, String>,
     val default: Boolean,
+    val grantCount: Long = 0,
+    val inheritanceCount: Long = 0,
 )
 
 data class GrantRequest(
