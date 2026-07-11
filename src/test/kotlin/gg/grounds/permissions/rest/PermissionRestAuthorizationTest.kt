@@ -19,7 +19,7 @@ class PermissionRestAuthorizationTest {
 
     @BeforeEach
     fun mockRepository() {
-        whenever(repository.listRoles()).thenReturn(emptyList())
+        whenever(repository.listRolesWithAggregateCounts()).thenReturn(emptyList())
     }
 
     @Test
