@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/groundsgg/service-permissions/compare/v0.4.0...v0.5.0) (2026-07-11)
+
+
+### Features
+
+* **permissions:** expose role aggregate data ([#29](https://github.com/groundsgg/service-permissions/issues/29)) ([6c09832](https://github.com/groundsgg/service-permissions/commit/6c098323060e325188e4e67d17f2f10c6f51b015))
+
+
+### Bug Fixes
+
+* **ci:** publish the image for bare `v*` release tags ([#27](https://github.com/groundsgg/service-permissions/issues/27)) ([5b32a80](https://github.com/groundsgg/service-permissions/commit/5b32a80c0198bfc380f8c644f7a89fe0219476a5))
+
 ## [0.4.0](https://github.com/groundsgg/service-permissions/compare/v0.3.0...v0.4.0) (2026-07-11)
 
 
