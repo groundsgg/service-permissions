@@ -10,6 +10,7 @@ import jakarta.inject.Inject
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.hasItem
 import org.hamcrest.Matchers.hasSize
+import org.hamcrest.Matchers.nullValue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -126,23 +127,41 @@ class PermissionRestResourceTest {
     }
 
     @Test
-    fun roleListIncludesGrantAndInheritanceCountsForEachRole() {
+    fun roleListIncludesAccurateAggregateCountsWithoutOvercounting() {
         createRole("member", "Member")
+        createRole("guardian", "Guardian")
         createRole("moderator", "Moderator")
+        createRole("observer", "Observer")
 
-        createRoleGrant("member", "grounds.command.help")
         createRoleGrant("moderator", "grounds.command.moderate")
         createRoleGrant("moderator", "grounds.command.warn")
         given().put("/v1/permissions/roles/moderator/inherits/member").then().statusCode(204)
+        given().put("/v1/permissions/roles/moderator/inherits/guardian").then().statusCode(204)
 
         given()
             .get("/v1/permissions/roles")
             .then()
             .statusCode(200)
-            .body("find { it.key == 'member' }.grantCount", equalTo(1))
-            .body("find { it.key == 'member' }.inheritanceCount", equalTo(0))
             .body("find { it.key == 'moderator' }.grantCount", equalTo(2))
-            .body("find { it.key == 'moderator' }.inheritanceCount", equalTo(1))
+            .body("find { it.key == 'moderator' }.inheritanceCount", equalTo(2))
+            .body("find { it.key == 'observer' }.grantCount", equalTo(0))
+            .body("find { it.key == 'observer' }.inheritanceCount", equalTo(0))
+
+        given()
+            .get("/v1/permissions/roles/moderator")
+            .then()
+            .statusCode(200)
+            .body("grantCount", nullValue())
+            .body("inheritanceCount", nullValue())
+
+        given()
+            .contentType("application/json")
+            .body("""{"name":"Moderator","description":"Updated"}""")
+            .put("/v1/permissions/roles/moderator")
+            .then()
+            .statusCode(200)
+            .body("grantCount", nullValue())
+            .body("inheritanceCount", nullValue())
     }
 
     @Test

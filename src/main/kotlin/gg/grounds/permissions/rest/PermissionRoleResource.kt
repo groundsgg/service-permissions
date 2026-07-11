@@ -37,9 +37,9 @@ constructor(
 ) {
 
     @GET
-    fun listRoles(@Context headers: HttpHeaders): List<RoleResponse> {
+    fun listRoles(@Context headers: HttpHeaders): List<RoleListResponse> {
         requireAdmin(headers)
-        return repository.listRolesWithAggregateCounts().map { it.toResponse() }
+        return repository.listRolesWithAggregateCounts().map { it.toListResponse() }
     }
 
     @POST
@@ -221,8 +221,21 @@ fun RoleRecord.toResponse(): RoleResponse =
         default = isDefault,
     )
 
-fun RoleAggregateCountsRecord.toResponse(): RoleResponse =
-    role.toResponse().copy(grantCount = grantCount, inheritanceCount = inheritanceCount)
+fun RoleAggregateCountsRecord.toListResponse(): RoleListResponse =
+    with(role) {
+        RoleListResponse(
+            key = key,
+            name = name,
+            description = description,
+            prefix = prefix,
+            color = color,
+            sortOrder = sortOrder,
+            metadata = metadata,
+            default = isDefault,
+            grantCount = grantCount,
+            inheritanceCount = inheritanceCount,
+        )
+    }
 
 fun RoleGrantRecord.toResponse(): RoleGrantResponse =
     RoleGrantResponse(
