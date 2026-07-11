@@ -227,6 +227,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                     """
                     INSERT INTO permission_role_inheritance (parent_role_key, child_role_key)
                     VALUES (?, ?)
+                    ON CONFLICT (parent_role_key, child_role_key) DO NOTHING
                     """
                         .trimIndent()
                 )

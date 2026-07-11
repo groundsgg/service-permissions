@@ -85,6 +85,7 @@ class PermissionRestResourceTest {
         createRole("moderator", "Moderator")
 
         given().put("/v1/permissions/roles/moderator/inherits/default").then().statusCode(204)
+        given().put("/v1/permissions/roles/moderator/inherits/default").then().statusCode(204)
 
         given()
             .contentType("application/json")
