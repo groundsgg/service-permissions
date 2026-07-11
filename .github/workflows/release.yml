@@ -3,7 +3,14 @@ name: Release
 on:
   push:
     tags:
-      - "service-permissions-v*"
+      # release-please config sets `include-component-in-tag: false`, so it now
+      # cuts bare `v<semver>` tags. This workflow only listened for the old
+      # component-prefixed shape, so it never fired for v0.4.0 — the release and
+      # the Java build both went green while no versioned image was ever pushed
+      # to ghcr, and every platform-bundle provision then died on
+      # ImagePullBackOff for a tag that does not exist.
+      - "v*"
+      - "service-permissions-v*" # legacy shape (releases up to 0.3.0)
   workflow_dispatch:
     inputs:
       version:
@@ -35,10 +42,13 @@ jobs:
               echo "Invalid release version '${version}'. Expected SemVer, for example 0.1.0." >&2
               exit 1
             fi
-            ref="service-permissions-v${version}"
+            ref="v${version}"
           else
             ref="${GITHUB_REF_NAME}"
+            # Accept either tag shape: `service-permissions-v1.2.3` (legacy) or
+            # `v1.2.3` (what release-please cuts today).
             version="${ref#service-permissions-v}"
+            version="${version#v}"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
