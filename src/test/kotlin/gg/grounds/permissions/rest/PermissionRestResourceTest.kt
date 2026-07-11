@@ -144,6 +144,8 @@ class PermissionRestResourceTest {
             .statusCode(200)
             .body("find { it.key == 'moderator' }.grantCount", equalTo(2))
             .body("find { it.key == 'moderator' }.inheritanceCount", equalTo(2))
+            .body("find { it.key == 'moderator' }.parentRoleKeys", hasItem("guardian"))
+            .body("find { it.key == 'moderator' }.parentRoleKeys", hasItem("member"))
             .body("find { it.key == 'observer' }.grantCount", equalTo(0))
             .body("find { it.key == 'observer' }.inheritanceCount", equalTo(0))
 

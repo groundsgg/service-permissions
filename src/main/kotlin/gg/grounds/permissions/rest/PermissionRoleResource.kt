@@ -234,6 +234,7 @@ fun RoleAggregateCountsRecord.toListResponse(): RoleListResponse =
             default = isDefault,
             grantCount = grantCount,
             inheritanceCount = inheritanceCount,
+            parentRoleKeys = inheritedRoleKeys.toList(),
         )
     }
 

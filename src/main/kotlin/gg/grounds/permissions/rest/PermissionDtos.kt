@@ -40,6 +40,7 @@ data class RoleListResponse(
     val default: Boolean,
     val grantCount: Long,
     val inheritanceCount: Long,
+    val parentRoleKeys: List<String>,
 )
 
 data class GrantRequest(
