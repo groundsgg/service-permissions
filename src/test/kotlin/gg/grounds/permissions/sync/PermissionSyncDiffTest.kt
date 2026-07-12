@@ -1,5 +1,7 @@
 package gg.grounds.permissions.sync
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionScopeKind
 import java.util.UUID
@@ -24,6 +26,27 @@ class PermissionSyncDiffTest {
             }
 
         assertEquals("playerGrants must not be provided", error.message)
+    }
+
+    @Test
+    fun preservesDefaultRoleWireNameDuringSnapshotRoundTrip() {
+        val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
+        val json =
+            """
+            {
+              "snapshotId": "snapshot-1",
+              "roles": [{"key":"admin","name":"Admin","default":true}],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": []
+            }
+            """
+                .trimIndent()
+
+        val snapshot = mapper.readValue(json, GlobalPermissionSnapshot::class.java)
+
+        assertEquals(true, snapshot.roles.single().isDefault)
+        assertEquals(true, mapper.writeValueAsString(snapshot).contains("\"default\":true"))
     }
 
     @Test
