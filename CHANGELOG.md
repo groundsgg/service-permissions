@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/groundsgg/service-permissions/compare/v0.5.0...v0.6.0) (2026-07-12)
+
+
+### Features
+
+* support global permission snapshot sync ([#30](https://github.com/groundsgg/service-permissions/issues/30)) ([a365068](https://github.com/groundsgg/service-permissions/commit/a3650689e8c41d285392dd0a31339538b1cf74d9))
+
 ## [0.5.0](https://github.com/groundsgg/service-permissions/compare/v0.4.0...v0.5.0) (2026-07-11)
 
 
