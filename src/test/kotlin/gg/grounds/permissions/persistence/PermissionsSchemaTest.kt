@@ -34,6 +34,16 @@ class PermissionsSchemaTest {
     }
 
     @Test
+    fun flywayCreatesPermissionSyncMetadata() {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("SELECT 1 FROM permission_sync_metadata LIMIT 1").use {
+                statement ->
+                statement.executeQuery().use { resultSet -> assertTrue(!resultSet.next()) }
+            }
+        }
+    }
+
+    @Test
     fun flywayCreatesPolicyLookupIndexes() {
         val indexes =
             dataSource.connection.use { connection ->

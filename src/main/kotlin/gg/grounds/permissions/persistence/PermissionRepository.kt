@@ -11,6 +11,16 @@ import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.domain.PlayerPermissionGrant
 import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
+import gg.grounds.permissions.sync.GlobalPermissionSnapshot
+import gg.grounds.permissions.sync.PermissionProjectSnapshot
+import gg.grounds.permissions.sync.PermissionSyncAction
+import gg.grounds.permissions.sync.SyncAction
+import gg.grounds.permissions.sync.SyncCatalogEntry
+import gg.grounds.permissions.sync.SyncEntityType
+import gg.grounds.permissions.sync.SyncInheritance
+import gg.grounds.permissions.sync.SyncKeycloakMapping
+import gg.grounds.permissions.sync.SyncRole
+import gg.grounds.permissions.sync.SyncRoleGrant
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.sql.Connection
@@ -81,6 +91,12 @@ data class CatalogEntryRecord(
     val supportedScopes: List<PermissionScopeKind>,
     val custom: Boolean,
     val lastSeenAt: Instant? = null,
+)
+
+data class PermissionSyncMetadataRecord(
+    val snapshotId: String,
+    val actorUserId: String,
+    val importedAt: Instant,
 )
 
 @ApplicationScoped
@@ -293,6 +309,27 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                     buildList {
                         while (rows.next()) {
                             add(rows.toRoleGrantRecord())
+                        }
+                    }
+                }
+            }
+    }
+
+    fun listRoleInheritances(): List<SyncInheritance> = read { connection ->
+        connection
+            .prepareStatement(
+                "SELECT parent_role_key, child_role_key FROM permission_role_inheritance ORDER BY parent_role_key, child_role_key"
+            )
+            .use { statement ->
+                statement.executeQuery().use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(
+                                SyncInheritance(
+                                    rows.getString("parent_role_key"),
+                                    rows.getString("child_role_key"),
+                                )
+                            )
                         }
                     }
                 }
@@ -674,6 +711,78 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
             }
     }
 
+    fun permissionProjectSnapshot(): PermissionProjectSnapshot =
+        PermissionProjectSnapshot(
+            roles = listRoles().map { it.toSync() },
+            roleGrants =
+                listRoles().flatMap { role -> listRoleGrantRecords(role.key) }.map { it.toSync() },
+            inheritance = listRoleInheritances(),
+            catalogEntries = listCatalogEntries().map { it.toSync() },
+            keycloakMappings = listKeycloakGroupMappings().map { it.toSync() },
+        )
+
+    fun importPermissionSnapshot(
+        snapshot: GlobalPermissionSnapshot,
+        actions: List<PermissionSyncAction>,
+        actorUserId: String,
+    ): PermissionSyncMetadataRecord =
+        dataSource.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                val actionMap = actions.associateBy { it.entityType to it.technicalKey }
+                snapshot.roles.forEach { role ->
+                    val action = actionMap[SyncEntityType.ROLE to role.key]?.action
+                    if (action != SyncAction.KEEP_PROJECT) upsertRole(connection, role)
+                }
+                snapshot.roleGrants.forEach { grant ->
+                    val action = actionMap[SyncEntityType.ROLE_GRANT to grant.id.toString()]?.action
+                    if (action != SyncAction.KEEP_PROJECT) upsertRoleGrant(connection, grant)
+                }
+                snapshot.inheritance.forEach { inheritance ->
+                    val action = actionMap[SyncEntityType.INHERITANCE to inheritance.key()]?.action
+                    if (action != SyncAction.KEEP_PROJECT)
+                        upsertInheritance(connection, inheritance)
+                }
+                snapshot.catalogEntries.forEach { entry ->
+                    val action =
+                        actionMap[SyncEntityType.CATALOG_ENTRY to entry.permissionKey]?.action
+                    if (action != SyncAction.KEEP_PROJECT) upsertCatalog(connection, entry)
+                }
+                snapshot.keycloakMappings.orEmpty().forEach { mapping ->
+                    val action =
+                        actionMap[SyncEntityType.KEYCLOAK_MAPPING to mapping.id.toString()]?.action
+                    if (action != SyncAction.KEEP_PROJECT) upsertMapping(connection, mapping)
+                }
+                actions
+                    .filter { it.action == SyncAction.REMOVE_PROJECT_ENTRY }
+                    .forEach { action ->
+                        deleteSyncEntry(connection, action.entityType, action.technicalKey)
+                    }
+                incrementPolicyVersion(connection)
+                val importedAt = Instant.now()
+                connection
+                    .prepareStatement(
+                        "INSERT INTO permission_sync_metadata (snapshot_id, actor_user_id, imported_at) VALUES (?, ?, ?)"
+                    )
+                    .use { statement ->
+                        statement.setString(1, snapshot.snapshotId)
+                        statement.setString(2, actorUserId)
+                        statement.setTimestamp(3, Timestamp.from(importedAt))
+                        statement.executeUpdate()
+                    }
+                insertAuditEvent(
+                    connection,
+                    "permission.sync.imported",
+                    "snapshot:${snapshot.snapshotId}",
+                )
+                connection.commit()
+                PermissionSyncMetadataRecord(snapshot.snapshotId, actorUserId, importedAt)
+            } catch (error: Throwable) {
+                connection.rollback()
+                throw error
+            }
+        }
+
     fun deleteCustomCatalogEntry(permissionKey: String) {
         write("catalog.entry.deleted", "permission:$permissionKey") { connection ->
             connection
@@ -989,6 +1098,168 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                 statement.setString(1, permissionKey)
                 statement.executeQuery().use { rows -> rows.next() }
             }
+
+    private fun upsertRole(connection: Connection, role: SyncRole) {
+        connection
+            .prepareStatement(
+                """
+                INSERT INTO permission_roles (key, name, description, prefix, color, sort_order, metadata, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (key) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description,
+                    prefix=EXCLUDED.prefix, color=EXCLUDED.color, sort_order=EXCLUDED.sort_order,
+                    metadata=EXCLUDED.metadata, is_default=EXCLUDED.is_default, updated_at=now()
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, role.key)
+                statement.setString(2, role.name)
+                statement.setString(3, role.description)
+                statement.setString(4, role.prefix)
+                statement.setString(5, role.color)
+                statement.setInt(6, role.sortOrder)
+                statement.setObject(7, jsonb(role.metadata))
+                statement.setBoolean(8, role.isDefault)
+                statement.executeUpdate()
+            }
+    }
+
+    private fun upsertRoleGrant(connection: Connection, grant: SyncRoleGrant) {
+        connection
+            .prepareStatement(
+                """
+                INSERT INTO permission_role_grants (id, role_key, effect, permission_pattern, scope_kind, scope_value, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET role_key=EXCLUDED.role_key, effect=EXCLUDED.effect,
+                    permission_pattern=EXCLUDED.permission_pattern, scope_kind=EXCLUDED.scope_kind,
+                    scope_value=EXCLUDED.scope_value, expires_at=EXCLUDED.expires_at
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setObject(1, grant.id)
+                statement.setString(2, grant.roleKey)
+                statement.setString(3, grant.effect.name)
+                statement.setString(4, grant.permissionPattern)
+                statement.setString(5, grant.scopeKind.name)
+                statement.setString(6, grant.scopeValue)
+                statement.setTimestamp(7, grant.expiresAt?.let(Timestamp::from))
+                statement.executeUpdate()
+            }
+    }
+
+    private fun upsertInheritance(connection: Connection, inheritance: SyncInheritance) {
+        connection
+            .prepareStatement(
+                "INSERT INTO permission_role_inheritance (parent_role_key, child_role_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
+            )
+            .use { statement ->
+                statement.setString(1, inheritance.parentRoleKey)
+                statement.setString(2, inheritance.childRoleKey)
+                statement.executeUpdate()
+            }
+    }
+
+    private fun upsertCatalog(connection: Connection, entry: SyncCatalogEntry) {
+        connection
+            .prepareStatement(
+                """
+                INSERT INTO permission_catalog_entries (permission_key, label, description, source, source_version, supported_scopes, custom, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (permission_key) DO UPDATE SET label=EXCLUDED.label, description=EXCLUDED.description,
+                    source=EXCLUDED.source, source_version=EXCLUDED.source_version, supported_scopes=EXCLUDED.supported_scopes,
+                    custom=EXCLUDED.custom, last_seen_at=EXCLUDED.last_seen_at, updated_at=now()
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, entry.permissionKey)
+                statement.setString(2, entry.label)
+                statement.setString(3, entry.description)
+                statement.setString(4, entry.source)
+                statement.setString(5, entry.sourceVersion)
+                statement.setArray(
+                    6,
+                    connection.createArrayOf(
+                        "text",
+                        entry.supportedScopes.map { it.name }.toTypedArray(),
+                    ),
+                )
+                statement.setBoolean(7, entry.custom)
+                statement.setTimestamp(8, entry.lastSeenAt?.let(Timestamp::from))
+                statement.executeUpdate()
+            }
+    }
+
+    private fun upsertMapping(connection: Connection, mapping: SyncKeycloakMapping) {
+        connection
+            .prepareStatement(
+                """
+                INSERT INTO permission_keycloak_group_mappings (id, keycloak_group, role_key, expires_at)
+                VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET keycloak_group=EXCLUDED.keycloak_group,
+                    role_key=EXCLUDED.role_key, expires_at=EXCLUDED.expires_at
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setObject(1, mapping.id)
+                statement.setString(2, mapping.keycloakGroup)
+                statement.setString(3, mapping.roleKey)
+                statement.setTimestamp(4, mapping.expiresAt?.let(Timestamp::from))
+                statement.executeUpdate()
+            }
+    }
+
+    private fun deleteSyncEntry(connection: Connection, type: SyncEntityType, key: String) {
+        if (type == SyncEntityType.INHERITANCE) {
+            val parts = key.split("->", limit = 2)
+            require(parts.size == 2) { "Invalid inheritance technical key (technicalKey=$key)" }
+            connection
+                .prepareStatement(
+                    "DELETE FROM permission_role_inheritance WHERE parent_role_key = ? AND child_role_key = ?"
+                )
+                .use { statement ->
+                    statement.setString(1, parts[0])
+                    statement.setString(2, parts[1])
+                    statement.executeUpdate()
+                }
+            return
+        }
+        val (table, column) =
+            when (type) {
+                SyncEntityType.ROLE -> "permission_roles" to "key"
+                SyncEntityType.ROLE_GRANT -> "permission_role_grants" to "id"
+                SyncEntityType.CATALOG_ENTRY -> "permission_catalog_entries" to "permission_key"
+                SyncEntityType.KEYCLOAK_MAPPING -> "permission_keycloak_group_mappings" to "id"
+            }
+        connection.prepareStatement("DELETE FROM $table WHERE $column = ?").use { statement ->
+            statement.setObject(1, if (column == "id") UUID.fromString(key) else key)
+            statement.executeUpdate()
+        }
+    }
+
+    private fun RoleRecord.toSync() =
+        SyncRole(key, name, description, prefix, color, sortOrder, metadata, isDefault)
+
+    private fun RoleGrantRecord.toSync() =
+        SyncRoleGrant(id, roleKey, effect, pattern, scope.kind, scope.value, expiresAt)
+
+    private fun CatalogEntryRecord.toSync() =
+        SyncCatalogEntry(
+            key,
+            label,
+            description,
+            source,
+            sourceVersion,
+            supportedScopes,
+            custom,
+            lastSeenAt,
+        )
+
+    private fun KeycloakGroupMappingRecord.toSync() =
+        SyncKeycloakMapping(id, keycloakGroup, roleKey, expiresAt)
+
+    private fun SyncInheritance.key() = "$parentRoleKey->$childRoleKey"
 
     private fun ResultSet.toRoleRecords(): List<RoleRecord> = buildList {
         while (next()) {
