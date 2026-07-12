@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/groundsgg/service-permissions/compare/v0.6.0...v0.6.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* support Kotlin permission sync payloads ([#32](https://github.com/groundsgg/service-permissions/issues/32)) ([433acd1](https://github.com/groundsgg/service-permissions/commit/433acd177a19bb2003e9100dfd8d2d9e2ffa2037))
+
 ## [0.6.0](https://github.com/groundsgg/service-permissions/compare/v0.5.0...v0.6.0) (2026-07-12)
 
 
