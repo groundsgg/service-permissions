@@ -730,6 +730,11 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
             connection.autoCommit = false
             try {
                 val actionMap = actions.associateBy { it.entityType to it.technicalKey }
+                actions
+                    .filter { it.action == SyncAction.REMOVE_PROJECT_ENTRY }
+                    .forEach { action ->
+                        deleteSyncEntry(connection, action.entityType, action.technicalKey)
+                    }
                 snapshot.roles.forEach { role ->
                     val action = actionMap[SyncEntityType.ROLE to role.key]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertRole(connection, role)
@@ -740,8 +745,21 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                 }
                 snapshot.inheritance.forEach { inheritance ->
                     val action = actionMap[SyncEntityType.INHERITANCE to inheritance.key()]?.action
-                    if (action != SyncAction.KEEP_PROJECT)
+                    if (action != SyncAction.KEEP_PROJECT) {
+                        require(inheritance.parentRoleKey != inheritance.childRoleKey) {
+                            "Role inheritance would create a cycle (childRoleKey=${inheritance.childRoleKey}, parentRoleKey=${inheritance.parentRoleKey})"
+                        }
+                        require(
+                            !roleHasAncestor(
+                                connection,
+                                roleKey = inheritance.parentRoleKey,
+                                ancestorRoleKey = inheritance.childRoleKey,
+                            )
+                        ) {
+                            "Role inheritance would create a cycle (childRoleKey=${inheritance.childRoleKey}, parentRoleKey=${inheritance.parentRoleKey})"
+                        }
                         upsertInheritance(connection, inheritance)
+                    }
                 }
                 snapshot.catalogEntries.forEach { entry ->
                     val action =
@@ -753,11 +771,6 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                         actionMap[SyncEntityType.KEYCLOAK_MAPPING to mapping.id.toString()]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertMapping(connection, mapping)
                 }
-                actions
-                    .filter { it.action == SyncAction.REMOVE_PROJECT_ENTRY }
-                    .forEach { action ->
-                        deleteSyncEntry(connection, action.entityType, action.technicalKey)
-                    }
                 incrementPolicyVersion(connection)
                 val importedAt = Instant.now()
                 connection

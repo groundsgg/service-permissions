@@ -8,6 +8,8 @@ import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionSyncAction
 import gg.grounds.permissions.sync.SyncAction
 import gg.grounds.permissions.sync.SyncEntityType
+import gg.grounds.permissions.sync.SyncInheritance
+import gg.grounds.permissions.sync.SyncKeycloakMapping
 import gg.grounds.permissions.sync.SyncRole
 import gg.grounds.permissions.sync.SyncRoleGrant
 import io.quarkus.test.common.QuarkusTestResource
@@ -220,5 +222,63 @@ class PermissionRepositoryTest {
         }
 
         assertEquals(null, repository.getRole("imported"))
+    }
+
+    @Test
+    fun removesNaturalKeyConflictsBeforeImportingReplacementMappings() {
+        repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        val projectMappingId = UUID.randomUUID()
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(projectMappingId, "/staff", "moderator")
+        )
+        val globalMappingId = UUID.randomUUID()
+        val snapshot =
+            GlobalPermissionSnapshot(
+                snapshotId = "mapping-replacement",
+                roles = emptyList(),
+                roleGrants = emptyList(),
+                inheritance = emptyList(),
+                catalogEntries = emptyList(),
+                keycloakMappings =
+                    listOf(SyncKeycloakMapping(globalMappingId, "/staff", "moderator")),
+            )
+
+        repository.importPermissionSnapshot(
+            snapshot,
+            actions =
+                listOf(
+                    PermissionSyncAction(
+                        SyncEntityType.KEYCLOAK_MAPPING,
+                        projectMappingId.toString(),
+                        SyncAction.REMOVE_PROJECT_ENTRY,
+                    )
+                ),
+            actorUserId = "test-user",
+        )
+
+        assertEquals(globalMappingId, repository.listKeycloakGroupMappings().single().id)
+    }
+
+    @Test
+    fun rejectsCyclicInheritanceInImportedSnapshot() {
+        repository.createRole(RoleRecord(key = "alpha", name = "Alpha"))
+        repository.createRole(RoleRecord(key = "beta", name = "Beta"))
+        val snapshot =
+            GlobalPermissionSnapshot(
+                snapshotId = "cycle-test",
+                roles = emptyList(),
+                roleGrants = emptyList(),
+                inheritance =
+                    listOf(
+                        SyncInheritance(parentRoleKey = "alpha", childRoleKey = "beta"),
+                        SyncInheritance(parentRoleKey = "beta", childRoleKey = "alpha"),
+                    ),
+                catalogEntries = emptyList(),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.importPermissionSnapshot(snapshot, emptyList(), "test-user")
+        }
+        assertTrue(repository.listRoleInheritances().isEmpty())
     }
 }
