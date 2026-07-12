@@ -9,6 +9,7 @@ import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity
 import jakarta.inject.Inject
 import jakarta.ws.rs.Consumes
+import jakarta.ws.rs.GET
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.Path
 import jakarta.ws.rs.Produces
@@ -28,6 +29,13 @@ constructor(
     private val authorization: AdminAuthorizationService,
     private val identity: SecurityIdentity,
 ) {
+    @GET
+    @Path("/snapshot")
+    fun snapshot(@Context headers: HttpHeaders): GlobalPermissionSnapshot {
+        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        return sync.snapshot()
+    }
+
     @POST
     @Path("/preview")
     fun preview(
