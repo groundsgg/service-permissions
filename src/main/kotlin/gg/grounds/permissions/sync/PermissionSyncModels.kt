@@ -1,5 +1,6 @@
 package gg.grounds.permissions.sync
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionScopeKind
 import java.time.Instant
@@ -13,7 +14,7 @@ data class SyncRole(
     val color: String? = null,
     val sortOrder: Int = 0,
     val metadata: Map<String, String> = emptyMap(),
-    val isDefault: Boolean = false,
+    @get:JsonProperty("default") @param:JsonProperty("default") val isDefault: Boolean = false,
 )
 
 data class SyncRoleGrant(
