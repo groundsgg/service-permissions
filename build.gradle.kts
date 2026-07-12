@@ -44,6 +44,7 @@ dependencies {
     implementation("io.quarkus:quarkus-scheduler")
     implementation("io.quarkus:quarkus-opentelemetry")
 
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("com.google.protobuf:protobuf-kotlin")
 
     testImplementation("io.quarkus:quarkus-junit5")
