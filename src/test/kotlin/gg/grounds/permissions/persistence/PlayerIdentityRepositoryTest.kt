@@ -282,6 +282,44 @@ class PlayerIdentityRepositoryTest {
     }
 
     @Test
+    fun rejectsOverlappingSyncStartAndPreservesRunningSyncForCompletion() {
+        val existing =
+            identity(
+                "00000000-0000-0000-0000-000000000122",
+                "keycloak-overlapping-completion",
+                "CurrentPlayer",
+            )
+        val firstStartedAt = Instant.parse("2030-01-01T00:00:00Z")
+        identityRepository.replacePlayer(existing)
+        identityRepository.markSyncRunning(firstStartedAt)
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:04Z"))
+        }
+
+        assertEquals(firstStartedAt, identityRepository.currentSyncState().startedAt)
+        identityRepository.replaceAll(listOf(existing), Instant.parse("2030-01-01T00:00:05Z"))
+        assertEquals(5_000, identityRepository.currentSyncState().durationMs)
+    }
+
+    @Test
+    fun rejectsOverlappingSyncStartAndPreservesRunningSyncForFailure() {
+        val firstStartedAt = Instant.parse("2030-01-01T00:00:00Z")
+        identityRepository.markSyncRunning(firstStartedAt)
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:04Z"))
+        }
+
+        assertEquals(firstStartedAt, identityRepository.currentSyncState().startedAt)
+        identityRepository.markSyncFailed(
+            Instant.parse("2030-01-01T00:00:05Z"),
+            "keycloak_unavailable",
+        )
+        assertEquals(5_000, identityRepository.currentSyncState().durationMs)
+    }
+
+    @Test
     fun rejectsStaleCompletionAfterNewerSyncFailure() {
         val existing =
             identity(

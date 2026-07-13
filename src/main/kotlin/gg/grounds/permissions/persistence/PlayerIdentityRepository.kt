@@ -159,13 +159,13 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                         completed_at = NULL,
                         duration_ms = NULL,
                         failure_reason = NULL
-                    WHERE id = 1
+                    WHERE id = 1 AND status <> 'RUNNING'
                     """
                         .trimIndent()
                 )
                 .use { statement ->
                     statement.setTimestamp(1, Timestamp.from(startedAt))
-                    check(statement.executeUpdate() == 1) { "Identity sync state row is missing" }
+                    check(statement.executeUpdate() == 1) { "Identity sync is already running" }
                 }
         }
     }
