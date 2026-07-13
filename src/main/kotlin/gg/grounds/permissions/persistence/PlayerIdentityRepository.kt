@@ -30,54 +30,76 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         require(page >= 1) { "Page must be at least one (page=$page)" }
         require(perPage >= 1) { "perPage must be at least one (perPage=$perPage)" }
 
-        val normalizedQuery = query.lowercase(Locale.ROOT)
-        val rows =
+        val normalizedQuery = query.trim().lowercase(Locale.ROOT)
+        val searchPattern = "%${normalizedQuery.escapeLikePattern()}%"
+        val result =
             dataSource.connection.use { connection ->
                 connection
                     .prepareStatement(
                         """
-                        SELECT identities.player_id,
-                               identities.minecraft_username,
-                               COALESCE(role_grants.direct_role_grant_count, 0) AS direct_role_grant_count,
-                               COALESCE(permission_grants.direct_permission_grant_count, 0) AS direct_permission_grant_count,
-                               COUNT(*) OVER() AS total_count
-                        FROM permission_player_identities identities
-                        LEFT JOIN (
-                            SELECT player_id, COUNT(*) AS direct_role_grant_count
-                            FROM permission_player_role_grants
-                            GROUP BY player_id
-                        ) role_grants ON role_grants.player_id = identities.player_id
-                        LEFT JOIN (
-                            SELECT player_id, COUNT(*) AS direct_permission_grant_count
-                            FROM permission_player_grants
-                            GROUP BY player_id
-                        ) permission_grants ON permission_grants.player_id = identities.player_id
-                        WHERE ? = '' OR identities.minecraft_username_normalized LIKE ?
-                        ORDER BY identities.minecraft_username_normalized ASC, identities.player_id ASC
-                        LIMIT ? OFFSET ?
+                        WITH matching_identities AS (
+                            SELECT identities.player_id,
+                                   identities.minecraft_username,
+                                   identities.minecraft_username_normalized,
+                                   COALESCE(role_grants.direct_role_grant_count, 0) AS direct_role_grant_count,
+                                   COALESCE(permission_grants.direct_permission_grant_count, 0) AS direct_permission_grant_count
+                            FROM permission_player_identities identities
+                            LEFT JOIN (
+                                SELECT player_id, COUNT(*) AS direct_role_grant_count
+                                FROM permission_player_role_grants
+                                GROUP BY player_id
+                            ) role_grants ON role_grants.player_id = identities.player_id
+                            LEFT JOIN (
+                                SELECT player_id, COUNT(*) AS direct_permission_grant_count
+                                FROM permission_player_grants
+                                GROUP BY player_id
+                            ) permission_grants ON permission_grants.player_id = identities.player_id
+                            WHERE ? = '' OR identities.minecraft_username_normalized LIKE ? ESCAPE '\'
+                        ),
+                        paged_identities AS (
+                            SELECT *
+                            FROM matching_identities
+                            ORDER BY minecraft_username_normalized ASC, player_id ASC
+                            LIMIT ? OFFSET ?
+                        )
+                        SELECT paged_identities.player_id,
+                               paged_identities.minecraft_username,
+                               paged_identities.minecraft_username_normalized,
+                               paged_identities.direct_role_grant_count,
+                               paged_identities.direct_permission_grant_count,
+                               totals.total_count
+                        FROM (SELECT COUNT(*) AS total_count FROM matching_identities) totals
+                        LEFT JOIN paged_identities ON TRUE
+                        ORDER BY paged_identities.minecraft_username_normalized ASC,
+                                 paged_identities.player_id ASC
                         """
                             .trimIndent()
                     )
                     .use { statement ->
                         statement.setString(1, normalizedQuery)
-                        statement.setString(2, "%$normalizedQuery%")
+                        statement.setString(2, searchPattern)
                         statement.setInt(3, perPage)
                         statement.setLong(4, (page - 1L) * perPage)
                         statement.executeQuery().use { resultSet ->
-                            buildList {
+                            var total = 0L
+                            val items = buildList {
                                 while (resultSet.next()) {
-                                    add(resultSet.toSearchRow())
+                                    total = resultSet.getLong("total_count")
+                                    if (resultSet.getObject("player_id") != null) {
+                                        add(resultSet.toSearchItem())
+                                    }
                                 }
                             }
+                            SearchResult(items, total)
                         }
                     }
             }
 
         return PlayerSearchPage(
-            items = rows.map { it.item },
+            items = result.items,
             page = page,
             perPage = perPage,
-            total = rows.firstOrNull()?.total ?: 0,
+            total = result.total,
         )
     }
 
@@ -161,7 +183,7 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                             ELSE GREATEST(0, EXTRACT(EPOCH FROM (?::timestamptz - started_at)) * 1000)::BIGINT
                         END,
                         failure_reason = ?
-                    WHERE id = 1
+                    WHERE id = 1 AND status = 'RUNNING'
                     """
                         .trimIndent()
                 )
@@ -169,7 +191,7 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                     statement.setTimestamp(1, Timestamp.from(completedAt))
                     statement.setTimestamp(2, Timestamp.from(completedAt))
                     statement.setString(3, failureReason)
-                    check(statement.executeUpdate() == 1) { "Identity sync state row is missing" }
+                    check(statement.executeUpdate() == 1) { "Identity sync is not running" }
                 }
         }
     }
@@ -350,7 +372,7 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                     END,
                     player_count = ?,
                     failure_reason = NULL
-                WHERE id = 1
+                WHERE id = 1 AND status = 'RUNNING'
                 """
                     .trimIndent()
             )
@@ -359,7 +381,7 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 statement.setTimestamp(2, Timestamp.from(completedAt))
                 statement.setTimestamp(3, Timestamp.from(completedAt))
                 statement.setLong(4, playerCount)
-                check(statement.executeUpdate() == 1) { "Identity sync state row is missing" }
+                check(statement.executeUpdate() == 1) { "Identity sync is not running" }
             }
     }
 
@@ -449,15 +471,12 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
             sourceUpdatedAt = getTimestamp("source_updated_at")?.toInstant(),
         )
 
-    private fun ResultSet.toSearchRow() =
-        SearchRow(
-            PlayerSearchItem(
-                playerId = getObject("player_id", UUID::class.java),
-                minecraftUsername = getString("minecraft_username"),
-                directRoleGrantCount = getLong("direct_role_grant_count"),
-                directPermissionGrantCount = getLong("direct_permission_grant_count"),
-            ),
-            getLong("total_count"),
+    private fun ResultSet.toSearchItem() =
+        PlayerSearchItem(
+            playerId = getObject("player_id", UUID::class.java),
+            minecraftUsername = getString("minecraft_username"),
+            directRoleGrantCount = getLong("direct_role_grant_count"),
+            directPermissionGrantCount = getLong("direct_permission_grant_count"),
         )
 
     private fun ResultSet.toIdentitySyncState() =
@@ -474,5 +493,14 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     private fun ResultSet.getLongOrNull(column: String): Long? =
         getLong(column).takeUnless { wasNull() }
 
-    private data class SearchRow(val item: PlayerSearchItem, val total: Long)
+    private fun String.escapeLikePattern(): String = buildString {
+        this@escapeLikePattern.forEach { character ->
+            if (character == '\\' || character == '%' || character == '_') {
+                append('\\')
+            }
+            append(character)
+        }
+    }
+
+    private data class SearchResult(val items: List<PlayerSearchItem>, val total: Long)
 }

@@ -20,6 +20,7 @@ import jakarta.inject.Inject
 import java.time.Instant
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -56,11 +57,32 @@ class PermissionRepositoryTest {
             )
         )
         identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:00Z"))
+        identityRepository.replaceAll(
+            listOf(identityRepository.findByPlayerId(playerId)!!),
+            Instant.parse("2030-01-01T00:00:01Z"),
+        )
+        identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:02Z"))
+        identityRepository.markSyncFailed(Instant.parse("2030-01-01T00:00:03Z"), "cleanup_failure")
+        val populatedState = identityRepository.currentSyncState()
+        assertEquals(IdentitySyncStatus.FAILED, populatedState.status)
+        assertEquals(Instant.parse("2030-01-01T00:00:02Z"), populatedState.startedAt)
+        assertEquals(Instant.parse("2030-01-01T00:00:03Z"), populatedState.completedAt)
+        assertEquals(Instant.parse("2030-01-01T00:00:01Z"), populatedState.lastSuccessAt)
+        assertEquals(1_000, populatedState.durationMs)
+        assertEquals(1, populatedState.playerCount)
+        assertEquals("cleanup_failure", populatedState.failureReason)
 
         repository.deleteAllPermissionData()
 
         assertEquals(null, identityRepository.findByPlayerId(playerId))
-        assertEquals(IdentitySyncStatus.IDLE, identityRepository.currentSyncState().status)
+        val state = identityRepository.currentSyncState()
+        assertEquals(IdentitySyncStatus.IDLE, state.status)
+        assertNull(state.startedAt)
+        assertNull(state.completedAt)
+        assertNull(state.lastSuccessAt)
+        assertNull(state.durationMs)
+        assertEquals(0, state.playerCount)
+        assertNull(state.failureReason)
     }
 
     @Test

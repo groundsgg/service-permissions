@@ -6,7 +6,9 @@ import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
 import java.time.Instant
+import java.util.Locale
 import java.util.UUID
+import javax.sql.DataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.BeforeEach
@@ -22,6 +24,8 @@ class PlayerIdentityRepositoryTest {
     @Inject lateinit var identityRepository: PlayerIdentityRepository
 
     @Inject lateinit var permissionRepository: PermissionRepository
+
+    @Inject lateinit var dataSource: DataSource
 
     @BeforeEach
     fun resetDatabase() {
@@ -76,6 +80,84 @@ class PlayerIdentityRepositoryTest {
     }
 
     @Test
+    fun preservesTotalForOutOfRangeSearchPage() {
+        identityRepository.replacePlayer(
+            identity("00000000-0000-0000-0000-000000000111", "keycloak-first", "First")
+        )
+        identityRepository.replacePlayer(
+            identity("00000000-0000-0000-0000-000000000112", "keycloak-second", "Second")
+        )
+
+        val page = identityRepository.search("", page = 3, perPage = 1)
+
+        assertEquals(emptyList<Any>(), page.items)
+        assertEquals(2, page.total)
+    }
+
+    @Test
+    fun trimsAndLowercasesSearchQueryUsingRootLocale() {
+        identityRepository.replacePlayer(
+            identity("00000000-0000-0000-0000-000000000114", "keycloak-normalized", "Iris")
+        )
+
+        val previousDefault = Locale.getDefault()
+        Locale.setDefault(Locale.forLanguageTag("tr-TR"))
+        val result =
+            try {
+                identityRepository.search("  IR  ", page = 1, perPage = 10)
+            } finally {
+                Locale.setDefault(previousDefault)
+            }
+
+        assertEquals(listOf("Iris"), result.items.map { it.minecraftUsername })
+    }
+
+    @Test
+    fun treatsLikeMetacharactersAsLiteralSearchText() {
+        listOf(
+                identity(
+                    "00000000-0000-0000-0000-000000000115",
+                    "keycloak-percent",
+                    "Percent%Player",
+                ),
+                identity(
+                    "00000000-0000-0000-0000-000000000116",
+                    "keycloak-percent-control",
+                    "PercentXPlayer",
+                ),
+                identity(
+                    "00000000-0000-0000-0000-000000000117",
+                    "keycloak-underscore",
+                    "Under_Score",
+                ),
+                identity(
+                    "00000000-0000-0000-0000-000000000118",
+                    "keycloak-underscore-control",
+                    "UnderXScore",
+                ),
+                identity(
+                    "00000000-0000-0000-0000-000000000119",
+                    "keycloak-backslash",
+                    "Back\\Slash",
+                ),
+                identity(
+                    "00000000-0000-0000-0000-000000000120",
+                    "keycloak-backslash-control",
+                    "BackXSlash",
+                ),
+            )
+            .forEach(identityRepository::replacePlayer)
+
+        val percent = identityRepository.search("%", page = 1, perPage = 10)
+        val underscore = identityRepository.search("_", page = 1, perPage = 10)
+        val backslash = identityRepository.search("\\", page = 1, perPage = 10)
+
+        assertEquals(listOf("Percent%Player"), percent.items.map { it.minecraftUsername })
+        assertEquals(listOf("Under_Score"), underscore.items.map { it.minecraftUsername })
+        assertEquals(listOf("Back\\Slash"), backslash.items.map { it.minecraftUsername })
+    }
+
+    @Test
     fun findsProjectedIdentitiesByPlayerAndKeycloakIds() {
         val expected =
             identity("00000000-0000-0000-0000-000000000103", "keycloak-id", "IdentityPlayer")
@@ -100,6 +182,56 @@ class PlayerIdentityRepositoryTest {
         identityRepository.replacePlayer(replacement)
 
         assertEquals(replacement, identityRepository.findByPlayerId(original.playerId))
+    }
+
+    @Test
+    fun rollsBackPlayerAndGroupsWhenGroupReplacementFails() {
+        val original =
+            identity(
+                "00000000-0000-0000-0000-000000000121",
+                "keycloak-player-rollback",
+                "OriginalPlayer",
+                setOf("/original"),
+            )
+        identityRepository.replacePlayer(original)
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    ALTER TABLE permission_player_keycloak_groups
+                    ADD CONSTRAINT permission_player_groups_force_failure
+                    CHECK (keycloak_group_path <> '/force-failure')
+                    """
+                        .trimIndent()
+                )
+                .use { it.executeUpdate() }
+        }
+
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
+                identityRepository.replacePlayer(
+                    original.copy(
+                        minecraftUsername = "ChangedPlayer",
+                        normalizedUsername = "changedplayer",
+                        groupPaths = setOf("/force-failure"),
+                    )
+                )
+            }
+
+            assertEquals(original, identityRepository.findByPlayerId(original.playerId))
+        } finally {
+            dataSource.connection.use { connection ->
+                connection
+                    .prepareStatement(
+                        """
+                        ALTER TABLE permission_player_keycloak_groups
+                        DROP CONSTRAINT permission_player_groups_force_failure
+                        """
+                            .trimIndent()
+                    )
+                    .use { it.executeUpdate() }
+            }
+        }
     }
 
     @Test
@@ -147,6 +279,44 @@ class PlayerIdentityRepositoryTest {
         assertEquals(failedAt, state.completedAt)
         assertEquals(2_000, state.durationMs)
         assertEquals("keycloak_unavailable", state.failureReason)
+    }
+
+    @Test
+    fun rejectsStaleCompletionAfterNewerSyncFailure() {
+        val existing =
+            identity(
+                "00000000-0000-0000-0000-000000000113",
+                "keycloak-stale-completion",
+                "CurrentPlayer",
+            )
+        identityRepository.replacePlayer(existing)
+        identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:00Z"))
+        identityRepository.markSyncFailed(Instant.parse("2030-01-01T00:00:01Z"), "newer_failure")
+        val newerState = identityRepository.currentSyncState()
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            identityRepository.replaceAll(
+                listOf(existing.copy(minecraftUsername = "StalePlayer")),
+                Instant.parse("2030-01-01T00:00:02Z"),
+            )
+        }
+
+        assertEquals(existing, identityRepository.findByPlayerId(existing.playerId))
+        assertEquals(newerState, identityRepository.currentSyncState())
+    }
+
+    @Test
+    fun rejectsSyncFailureWhileIdle() {
+        val idleState = identityRepository.currentSyncState()
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            identityRepository.markSyncFailed(
+                Instant.parse("2030-01-01T00:00:01Z"),
+                "invalid_failure",
+            )
+        }
+
+        assertEquals(idleState, identityRepository.currentSyncState())
     }
 
     @Test
