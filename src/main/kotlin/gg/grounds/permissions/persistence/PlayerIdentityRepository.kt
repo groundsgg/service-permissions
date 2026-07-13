@@ -170,6 +170,29 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         }
     }
 
+    override fun tryMarkSyncRunning(startedAt: Instant, staleBefore: Instant): Boolean =
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    UPDATE permission_identity_sync_state
+                    SET status = 'RUNNING',
+                        started_at = ?,
+                        completed_at = NULL,
+                        duration_ms = NULL,
+                        failure_reason = NULL
+                    WHERE id = 1
+                      AND (status <> 'RUNNING' OR started_at < ?)
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setTimestamp(1, Timestamp.from(startedAt))
+                    statement.setTimestamp(2, Timestamp.from(staleBefore))
+                    statement.executeUpdate() == 1
+                }
+        }
+
     override fun markSyncFailed(completedAt: Instant, failureReason: String) {
         dataSource.connection.use { connection ->
             connection

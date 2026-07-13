@@ -11,6 +11,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.util.Collections
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -61,7 +62,16 @@ class PlayerIdentitySynchronizerTest {
         server.start()
 
         try {
-            val synchronizer = synchronizer(server, pageSize = 2)
+            val authorizationRequests = AtomicInteger()
+            val synchronizer =
+                synchronizer(
+                    server,
+                    pageSize = 2,
+                    authorizationProvider =
+                        KeycloakAuthorizationProvider {
+                            "Bearer read-token-${authorizationRequests.incrementAndGet()}"
+                        },
+                )
 
             val identities = synchronizer.loadAll()
 
@@ -80,7 +90,40 @@ class PlayerIdentitySynchronizerTest {
             )
             assertEquals(listOf(0, 2), userPages)
             assertEquals(listOf(0, 2), groupPages)
-            assertEquals(setOf("Bearer read-token"), authorizationHeaders.toSet())
+            assertEquals(
+                listOf(
+                    "Bearer read-token-1",
+                    "Bearer read-token-2",
+                    "Bearer read-token-3",
+                    "Bearer read-token-4",
+                ),
+                authorizationHeaders,
+            )
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun rejectsUuidTextThatOnlyBecomesCanonicalDuringParsing() {
+        val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        server.createContext("/admin/realms/grounds/users") { exchange ->
+            when (exchange.requestURI.path) {
+                "/admin/realms/grounds/users" ->
+                    exchange.respond(
+                        200,
+                        """[{"id":"non-canonical","attributes":{"minecraft_java_uuid":["1-1-1-1-1"],"minecraft_java_username":["InvalidPlayer"]}}]""",
+                    )
+                "/admin/realms/grounds/users/non-canonical/groups" -> exchange.respond(200, "[]")
+                else -> exchange.respond(404, "missing")
+            }
+        }
+        server.start()
+
+        try {
+            val identities = synchronizer(server, pageSize = 2).loadAll()
+
+            assertEquals(emptyList<ProjectedPlayerIdentity>(), identities)
         } finally {
             server.stop(0)
         }
@@ -111,6 +154,7 @@ class PlayerIdentitySynchronizerTest {
 
     @Test
     fun sanitizesGroupEndpointFailures() {
+        val groupRequests = AtomicInteger()
         val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
         server.createContext("/admin/realms/grounds/users") { exchange ->
             when (exchange.requestURI.path) {
@@ -120,7 +164,10 @@ class PlayerIdentitySynchronizerTest {
                         """[{"id":"linked","attributes":{"minecraft_java_uuid":["00000000-0000-0000-0000-000000000303"],"minecraft_java_username":["SkyPlayer"]}}]""",
                     )
                 "/admin/realms/grounds/users/linked/groups" ->
-                    exchange.respond(500, "remote-secret-body bearer-sensitive-token")
+                    exchange.respond(
+                        500,
+                        "remote-secret-body bearer-sensitive-token-${groupRequests.incrementAndGet()}",
+                    )
                 else -> exchange.respond(404, "missing")
             }
         }
@@ -133,16 +180,132 @@ class PlayerIdentitySynchronizerTest {
 
             assertEquals("Keycloak group query failed", error.message)
             assertNull(error.cause)
+            assertEquals(1, groupRequests.get())
         } finally {
             server.stop(0)
         }
     }
 
-    private fun synchronizer(server: HttpServer, pageSize: Int): PlayerIdentitySynchronizer =
+    @Test
+    fun invalidatesAuthorizationAndRetriesOnceAfterUnauthorizedResponse() {
+        val userRequests = AtomicInteger()
+        val authorizationHeaders = Collections.synchronizedList(mutableListOf<String?>())
+        val invalidatedAuthorizations = mutableListOf<String>()
+        val authorizationProvider =
+            object : KeycloakAuthorizationProvider {
+                private var authorization = "Bearer read-token-1"
+
+                override fun authorizationHeader(): String = authorization
+
+                override fun invalidate(authorizationHeader: String) {
+                    invalidatedAuthorizations += authorizationHeader
+                    if (authorization == authorizationHeader) {
+                        authorization = "Bearer read-token-2"
+                    }
+                }
+            }
+        val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        server.createContext("/admin/realms/grounds/users") { exchange ->
+            authorizationHeaders += exchange.requestHeaders.getFirst("Authorization")
+            when (exchange.requestURI.path) {
+                "/admin/realms/grounds/users" -> {
+                    if (userRequests.incrementAndGet() == 1) {
+                        exchange.respond(401, "expired bearer-sensitive-token")
+                    } else {
+                        exchange.respond(200, "[]")
+                    }
+                }
+                else -> exchange.respond(404, "missing")
+            }
+        }
+        server.start()
+
+        try {
+            val synchronizer =
+                synchronizer(server, pageSize = 2, authorizationProvider = authorizationProvider)
+
+            assertEquals(emptyList<ProjectedPlayerIdentity>(), synchronizer.loadAll())
+            assertEquals(2, userRequests.get())
+            assertEquals(listOf("Bearer read-token-1", "Bearer read-token-2"), authorizationHeaders)
+            assertEquals(listOf("Bearer read-token-1"), invalidatedAuthorizations)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun retriesUnauthorizedResponseExactlyOnce() {
+        val userRequests = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        server.createContext("/admin/realms/grounds/users") { exchange ->
+            userRequests.incrementAndGet()
+            exchange.respond(401, "expired bearer-sensitive-token")
+        }
+        server.start()
+
+        try {
+            val error =
+                assertThrows(KeycloakReadException::class.java) {
+                    synchronizer(server, pageSize = 2).loadAll()
+                }
+
+            assertEquals("Keycloak user query failed", error.message)
+            assertNull(error.cause)
+            assertEquals(2, userRequests.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun groupNotFoundReturnsNoProjectionForDisappearedUser() {
+        val authorizationRequests = AtomicInteger()
+        val authorizationHeaders = Collections.synchronizedList(mutableListOf<String?>())
+        val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        server.createContext("/admin/realms/grounds/users") { exchange ->
+            authorizationHeaders += exchange.requestHeaders.getFirst("Authorization")
+            when (exchange.requestURI.path) {
+                "/admin/realms/grounds/users/disappeared" ->
+                    exchange.respond(
+                        200,
+                        """{"id":"disappeared","attributes":{"minecraft_java_uuid":["00000000-0000-0000-0000-000000000304"],"minecraft_java_username":["GonePlayer"]}}""",
+                    )
+                "/admin/realms/grounds/users/disappeared/groups" -> exchange.respond(404, "deleted")
+                else -> exchange.respond(404, "missing")
+            }
+        }
+        server.start()
+
+        try {
+            val identity =
+                synchronizer(
+                        server,
+                        pageSize = 2,
+                        authorizationProvider =
+                            KeycloakAuthorizationProvider {
+                                "Bearer read-token-${authorizationRequests.incrementAndGet()}"
+                            },
+                    )
+                    .loadPlayer("disappeared")
+
+            assertNull(identity)
+            assertEquals(listOf("Bearer read-token-1", "Bearer read-token-2"), authorizationHeaders)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    private fun synchronizer(
+        server: HttpServer,
+        pageSize: Int,
+        authorizationProvider: KeycloakAuthorizationProvider = KeycloakAuthorizationProvider {
+            "Bearer read-token"
+        },
+    ): PlayerIdentitySynchronizer =
         PlayerIdentitySynchronizer(
             client =
                 TestHttpKeycloakAdminClient(URI.create("http://localhost:${server.address.port}")),
-            authorizationProvider = KeycloakAuthorizationProvider { "Bearer read-token" },
+            authorizationProvider = authorizationProvider,
             realm = "grounds",
             pageSize = pageSize,
             clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),

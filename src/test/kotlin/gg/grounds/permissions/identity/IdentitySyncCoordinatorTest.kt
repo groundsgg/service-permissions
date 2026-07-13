@@ -1,6 +1,7 @@
 package gg.grounds.permissions.identity
 
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -117,6 +118,101 @@ class IdentitySyncCoordinatorTest {
     }
 
     @Test
+    fun returnsAlreadyRunningForPersistedRunningStateAtTheStalenessThreshold() {
+        val now = Instant.parse("2030-01-01T06:00:00Z")
+        val persistedStartedAt = now.minus(Duration.ofHours(6))
+        val store = RecordingIdentityStore()
+        store.state =
+            store.state.copy(status = IdentitySyncStatus.RUNNING, startedAt = persistedStartedAt)
+        var sourceRead = false
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> {
+                            sourceRead = true
+                            return emptyList()
+                        }
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? =
+                            null
+                    },
+                clock = Clock.fixed(now, ZoneOffset.UTC),
+                maxStaleness = Duration.ofHours(6),
+            )
+
+        val outcome = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.ALREADY_RUNNING, outcome)
+        assertFalse(sourceRead)
+        assertEquals(persistedStartedAt, store.state.startedAt)
+    }
+
+    @Test
+    fun recoversPersistedRunningStateOlderThanTheStalenessThreshold() {
+        val now = Instant.parse("2030-01-01T06:00:00Z")
+        val completedAt = now.plusSeconds(2)
+        val store = RecordingIdentityStore()
+        store.state =
+            store.state.copy(
+                status = IdentitySyncStatus.RUNNING,
+                startedAt = now.minus(Duration.ofHours(6)).minusMillis(1),
+            )
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source = emptyIdentitySource(),
+                clock = SequenceClock(now, completedAt),
+                maxStaleness = Duration.ofHours(6),
+            )
+
+        val outcome = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, outcome)
+        assertEquals(IdentitySyncStatus.IDLE, store.state.status)
+        assertEquals(now, store.state.startedAt)
+        assertEquals(completedAt, store.state.completedAt)
+        assertEquals(2_000, store.state.durationMs)
+    }
+
+    @Test
+    fun marksRecoveredStaleSyncFailedWhenTheSourceFails() {
+        val now = Instant.parse("2030-01-01T06:00:00Z")
+        val failedAt = now.plusSeconds(1)
+        val store = RecordingIdentityStore()
+        store.state =
+            store.state.copy(
+                status = IdentitySyncStatus.RUNNING,
+                startedAt = now.minus(Duration.ofHours(7)),
+            )
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> {
+                            throw IllegalStateException("source unavailable")
+                        }
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? =
+                            null
+                    },
+                clock = SequenceClock(now, failedAt),
+                maxStaleness = Duration.ofHours(6),
+            )
+
+        val outcome = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.FAILED, outcome)
+        assertEquals(IdentitySyncStatus.FAILED, store.state.status)
+        assertEquals(now, store.state.startedAt)
+        assertEquals(failedAt, store.state.completedAt)
+        assertEquals(1_000, store.state.durationMs)
+        assertEquals("identity_sync_failed", store.state.failureReason)
+    }
+
+    @Test
     fun recordsSanitizedFailureReason() {
         val store = RecordingIdentityStore()
         val coordinator =
@@ -203,6 +299,13 @@ class IdentitySyncCoordinatorTest {
             syncedAt = Instant.parse("2030-01-01T00:00:00Z"),
             sourceUpdatedAt = null,
         )
+
+    private fun emptyIdentitySource(): PlayerIdentitySource =
+        object : PlayerIdentitySource {
+            override fun loadAll(): List<ProjectedPlayerIdentity> = emptyList()
+
+            override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? = null
+        }
 }
 
 private class RecordingIdentityStore : PlayerIdentityStore {
@@ -254,7 +357,17 @@ private class RecordingIdentityStore : PlayerIdentityStore {
 
     @Synchronized
     override fun markSyncRunning(startedAt: Instant) {
-        check(state.status != IdentitySyncStatus.RUNNING) { "Identity sync is already running" }
+        check(tryMarkSyncRunning(startedAt, Instant.MIN)) { "Identity sync is already running" }
+    }
+
+    @Synchronized
+    override fun tryMarkSyncRunning(startedAt: Instant, staleBefore: Instant): Boolean {
+        if (
+            state.status == IdentitySyncStatus.RUNNING &&
+                state.startedAt?.isBefore(staleBefore) != true
+        ) {
+            return false
+        }
         state =
             state.copy(
                 status = IdentitySyncStatus.RUNNING,
@@ -263,6 +376,7 @@ private class RecordingIdentityStore : PlayerIdentityStore {
                 durationMs = null,
                 failureReason = null,
             )
+        return true
     }
 
     @Synchronized

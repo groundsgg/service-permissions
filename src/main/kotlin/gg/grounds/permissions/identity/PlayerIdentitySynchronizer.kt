@@ -34,39 +34,33 @@ class PlayerIdentitySynchronizer(
     }
 
     override fun loadAll(): List<ProjectedPlayerIdentity> {
-        val authorization = authorizationProvider.authorizationHeader()
         var first = 0
         val identities = mutableListOf<ProjectedPlayerIdentity>()
         do {
-            val users = readUsers(authorization, first)
-            users.mapNotNullTo(identities) { user -> project(user, authorization) }
+            val users = readUsers(first)
+            users.mapNotNullTo(identities, ::project)
             first += users.size
         } while (users.size == pageSize)
         return identities
     }
 
     override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? {
-        val authorization = authorizationProvider.authorizationHeader()
-        val user = readUser(authorization, keycloakUserId) ?: return null
-        return project(user, authorization)
+        val user = readUser(keycloakUserId) ?: return null
+        return project(user)
     }
 
-    private fun project(
-        user: KeycloakUserRepresentation,
-        authorization: String,
-    ): ProjectedPlayerIdentity? {
+    private fun project(user: KeycloakUserRepresentation): ProjectedPlayerIdentity? {
         val playerId =
             user.attributes[MINECRAFT_UUID_ATTRIBUTE]
                 ?.firstOrNull()
                 ?.takeIf(String::isNotBlank)
-                ?.let { rawUuid -> runCatching { UUID.fromString(rawUuid) }.getOrNull() }
-                ?: return null
+                ?.let(::parseCanonicalUuid) ?: return null
         val username =
             user.attributes[MINECRAFT_USERNAME_ATTRIBUTE]
                 ?.firstOrNull()
                 ?.trim()
                 ?.takeIf(String::isNotBlank) ?: return null
-        val groups = readAllGroups(authorization, user.id)
+        val groups = readAllGroups(user.id) ?: return null
         return ProjectedPlayerIdentity(
             playerId = playerId,
             keycloakUserId = user.id,
@@ -78,44 +72,64 @@ class PlayerIdentitySynchronizer(
         )
     }
 
-    private fun readUsers(authorization: String, first: Int): List<KeycloakUserRepresentation> =
-        sanitizedRead("Keycloak user query failed") {
+    private fun parseCanonicalUuid(rawUuid: String): UUID? {
+        val trimmedUuid = rawUuid.trim()
+        val parsedUuid = runCatching { UUID.fromString(trimmedUuid) }.getOrNull() ?: return null
+        return parsedUuid.takeIf { it.toString().equals(trimmedUuid, ignoreCase = true) }
+    }
+
+    private fun readUsers(first: Int): List<KeycloakUserRepresentation> =
+        authorizedRead("Keycloak user query failed") { authorization ->
             client.listUsers(authorization, realm, first, pageSize)
-        }
+        }!!
 
-    private fun readUser(
-        authorization: String,
-        keycloakUserId: String,
-    ): KeycloakUserRepresentation? =
-        try {
+    private fun readUser(keycloakUserId: String): KeycloakUserRepresentation? =
+        authorizedRead("Keycloak user read failed", missingOnNotFound = true) { authorization ->
             client.getUser(authorization, realm, keycloakUserId)
-        } catch (error: KeycloakAdminException) {
-            if (error.statusCode == 404) null
-            else throw KeycloakReadException("Keycloak user read failed")
-        } catch (_: Exception) {
-            throw KeycloakReadException("Keycloak user read failed")
         }
 
-    private fun readAllGroups(authorization: String, keycloakUserId: String): Set<String> {
+    private fun readAllGroups(keycloakUserId: String): Set<String>? {
         var first = 0
         val paths = linkedSetOf<String>()
         do {
             val groups =
-                sanitizedRead("Keycloak group query failed") {
+                authorizedRead("Keycloak group query failed", missingOnNotFound = true) {
+                    authorization ->
                     client.listUserGroups(authorization, realm, keycloakUserId, first, pageSize)
-                }
+                } ?: return null
             groups.mapTo(paths) { it.path }.removeIf(String::isBlank)
             first += groups.size
         } while (groups.size == pageSize)
         return paths
     }
 
-    private fun <T> sanitizedRead(message: String, operation: () -> T): T =
-        try {
-            operation()
+    private fun <T> authorizedRead(
+        message: String,
+        missingOnNotFound: Boolean = false,
+        retryUnauthorized: Boolean = true,
+        operation: (String) -> T,
+    ): T? {
+        val authorization = authorizationProvider.authorizationHeader()
+        return try {
+            operation(authorization)
+        } catch (error: KeycloakAdminException) {
+            when {
+                missingOnNotFound && error.statusCode == 404 -> null
+                retryUnauthorized && error.statusCode == 401 -> {
+                    authorizationProvider.invalidate(authorization)
+                    authorizedRead(
+                        message = message,
+                        missingOnNotFound = missingOnNotFound,
+                        retryUnauthorized = false,
+                        operation = operation,
+                    )
+                }
+                else -> throw KeycloakReadException(message)
+            }
         } catch (_: Exception) {
             throw KeycloakReadException(message)
         }
+    }
 
     companion object {
         const val MINECRAFT_UUID_ATTRIBUTE = "minecraft_java_uuid"

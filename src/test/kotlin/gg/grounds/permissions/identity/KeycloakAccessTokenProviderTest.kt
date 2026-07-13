@@ -114,6 +114,41 @@ class KeycloakAccessTokenProviderTest {
         }
     }
 
+    @Test
+    fun invalidatesOnlyTheMatchingCachedToken() {
+        val requests = AtomicInteger()
+        val server = tokenServer { exchange ->
+            val token = "token-${requests.incrementAndGet()}"
+            val body = """{"access_token":"$token","expires_in":60}"""
+            val bytes = body.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+
+        try {
+            val provider =
+                KeycloakAccessTokenProvider(
+                    client = restClient(server),
+                    realm = "grounds",
+                    clientId = "service-permissions",
+                    clientSecret = "client-secret",
+                    clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                    refreshSkew = Duration.ofSeconds(10),
+                )
+
+            assertEquals("Bearer token-1", provider.authorizationHeader())
+            provider.invalidate("Bearer token-1")
+            assertEquals("Bearer token-2", provider.authorizationHeader())
+            provider.invalidate("Bearer token-1")
+
+            assertEquals("Bearer token-2", provider.authorizationHeader())
+            assertEquals(2, requests.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun tokenServer(handler: (com.sun.net.httpserver.HttpExchange) -> Unit): HttpServer =
         HttpServer.create(InetSocketAddress("localhost", 0), 0).also { server ->
             server.createContext("/realms/grounds/protocol/openid-connect/token", handler)

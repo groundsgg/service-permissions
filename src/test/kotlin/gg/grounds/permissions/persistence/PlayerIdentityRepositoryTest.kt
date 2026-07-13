@@ -10,7 +10,9 @@ import java.util.Locale
 import java.util.UUID
 import javax.sql.DataSource
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -247,7 +249,7 @@ class PlayerIdentityRepositoryTest {
         val completedAt = Instant.parse("2030-01-01T00:00:03Z")
 
         assertEquals(IdentitySyncStatus.IDLE, identityRepository.currentSyncState().status)
-        identityRepository.markSyncRunning(startedAt)
+        startSync(startedAt)
         assertEquals(IdentitySyncStatus.RUNNING, identityRepository.currentSyncState().status)
         identityRepository.replaceAll(
             listOf(retained.copy(groupPaths = setOf("/updated")), added),
@@ -271,7 +273,7 @@ class PlayerIdentityRepositoryTest {
         val startedAt = Instant.parse("2030-01-01T00:00:00Z")
         val failedAt = Instant.parse("2030-01-01T00:00:02Z")
 
-        identityRepository.markSyncRunning(startedAt)
+        startSync(startedAt)
         identityRepository.markSyncFailed(failedAt, "keycloak_unavailable")
 
         val state = identityRepository.currentSyncState()
@@ -291,11 +293,14 @@ class PlayerIdentityRepositoryTest {
             )
         val firstStartedAt = Instant.parse("2030-01-01T00:00:00Z")
         identityRepository.replacePlayer(existing)
-        identityRepository.markSyncRunning(firstStartedAt)
+        startSync(firstStartedAt)
 
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
-            identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:04Z"))
-        }
+        assertFalse(
+            identityRepository.tryMarkSyncRunning(
+                Instant.parse("2030-01-01T00:00:04Z"),
+                Instant.parse("2029-12-31T18:00:04Z"),
+            )
+        )
 
         assertEquals(firstStartedAt, identityRepository.currentSyncState().startedAt)
         identityRepository.replaceAll(listOf(existing), Instant.parse("2030-01-01T00:00:05Z"))
@@ -305,11 +310,14 @@ class PlayerIdentityRepositoryTest {
     @Test
     fun rejectsOverlappingSyncStartAndPreservesRunningSyncForFailure() {
         val firstStartedAt = Instant.parse("2030-01-01T00:00:00Z")
-        identityRepository.markSyncRunning(firstStartedAt)
+        startSync(firstStartedAt)
 
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
-            identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:04Z"))
-        }
+        assertFalse(
+            identityRepository.tryMarkSyncRunning(
+                Instant.parse("2030-01-01T00:00:04Z"),
+                Instant.parse("2029-12-31T18:00:04Z"),
+            )
+        )
 
         assertEquals(firstStartedAt, identityRepository.currentSyncState().startedAt)
         identityRepository.markSyncFailed(
@@ -317,6 +325,36 @@ class PlayerIdentityRepositoryTest {
             "keycloak_unavailable",
         )
         assertEquals(5_000, identityRepository.currentSyncState().durationMs)
+    }
+
+    @Test
+    fun preservesRunningSyncAtTheStalenessThreshold() {
+        val firstStartedAt = Instant.parse("2030-01-01T00:00:00Z")
+        val secondStartedAt = Instant.parse("2030-01-01T06:00:00Z")
+        startSync(firstStartedAt)
+
+        val started =
+            identityRepository.tryMarkSyncRunning(secondStartedAt, staleBefore = firstStartedAt)
+
+        assertEquals(false, started)
+        assertEquals(firstStartedAt, identityRepository.currentSyncState().startedAt)
+    }
+
+    @Test
+    fun atomicallyReplacesRunningSyncOlderThanTheStalenessThreshold() {
+        val firstStartedAt = Instant.parse("2030-01-01T00:00:00Z")
+        val secondStartedAt = Instant.parse("2030-01-01T06:00:00.001Z")
+        startSync(firstStartedAt)
+
+        val started =
+            identityRepository.tryMarkSyncRunning(
+                secondStartedAt,
+                staleBefore = secondStartedAt.minusSeconds(6 * 60 * 60),
+            )
+
+        assertEquals(true, started)
+        assertEquals(IdentitySyncStatus.RUNNING, identityRepository.currentSyncState().status)
+        assertEquals(secondStartedAt, identityRepository.currentSyncState().startedAt)
     }
 
     @Test
@@ -328,7 +366,7 @@ class PlayerIdentityRepositoryTest {
                 "CurrentPlayer",
             )
         identityRepository.replacePlayer(existing)
-        identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:00Z"))
+        startSync(Instant.parse("2030-01-01T00:00:00Z"))
         identityRepository.markSyncFailed(Instant.parse("2030-01-01T00:00:01Z"), "newer_failure")
         val newerState = identityRepository.currentSyncState()
 
@@ -367,7 +405,7 @@ class PlayerIdentityRepositoryTest {
                 setOf("/existing"),
             )
         identityRepository.replacePlayer(existing)
-        identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:00Z"))
+        startSync(Instant.parse("2030-01-01T00:00:00Z"))
 
         org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
             identityRepository.replaceAll(
@@ -385,6 +423,10 @@ class PlayerIdentityRepositoryTest {
 
         assertEquals(existing, identityRepository.findByPlayerId(existing.playerId))
         assertEquals(IdentitySyncStatus.RUNNING, identityRepository.currentSyncState().status)
+    }
+
+    private fun startSync(startedAt: Instant) {
+        assertTrue(identityRepository.tryMarkSyncRunning(startedAt, staleBefore = startedAt))
     }
 
     private fun identity(

@@ -9,6 +9,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 
 fun interface KeycloakAuthorizationProvider {
     fun authorizationHeader(): String
+
+    fun invalidate(authorizationHeader: String) = Unit
 }
 
 @ApplicationScoped
@@ -49,6 +51,14 @@ class KeycloakAccessTokenProvider(
             val synchronizedNow = clock.instant()
             cachedToken?.takeIf { synchronizedNow.isBefore(it.refreshAt) }?.authorizationHeader
                 ?: requestToken(synchronizedNow).also { cachedToken = it }.authorizationHeader
+        }
+    }
+
+    override fun invalidate(authorizationHeader: String) {
+        synchronized(this) {
+            if (cachedToken?.authorizationHeader == authorizationHeader) {
+                cachedToken = null
+            }
         }
     }
 

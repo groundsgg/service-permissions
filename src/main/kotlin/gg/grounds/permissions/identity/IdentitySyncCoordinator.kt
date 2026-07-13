@@ -5,7 +5,9 @@ import jakarta.inject.Inject
 import java.sql.Connection
 import java.time.Clock
 import java.time.Duration
+import java.util.concurrent.Executor
 import javax.sql.DataSource
+import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.jboss.logging.Logger
 
 enum class IdentitySyncOutcome {
@@ -33,21 +35,35 @@ interface IdentitySyncLock {
 @ApplicationScoped
 class PostgresIdentitySyncLock @Inject constructor(private val dataSource: DataSource) :
     IdentitySyncLock {
-    override fun <T> tryRun(operation: () -> T): IdentitySyncLockResult<T> =
-        dataSource.connection.use { connection ->
-            if (!tryAcquire(connection)) {
-                IdentitySyncLockResult.AlreadyLocked
-            } else {
-                try {
+    override fun <T> tryRun(operation: () -> T): IdentitySyncLockResult<T> {
+        val connection = dataSource.connection
+        var transactionStarted = false
+        var operationFailure: Throwable? = null
+        var result: IdentitySyncLockResult<T>? = null
+        try {
+            connection.autoCommit = false
+            transactionStarted = true
+            result =
+                if (tryAcquire(connection)) {
                     IdentitySyncLockResult.Acquired(operation())
-                } finally {
-                    release(connection)
+                } else {
+                    IdentitySyncLockResult.AlreadyLocked
                 }
+        } catch (error: Throwable) {
+            operationFailure = error
+        } finally {
+            if (transactionStarted) {
+                completeTransaction(connection, operationFailure)
             }
+            closeConnection(connection, operationFailure)
         }
 
+        operationFailure?.let { throw it }
+        return checkNotNull(result)
+    }
+
     private fun tryAcquire(connection: Connection): Boolean =
-        connection.prepareStatement("SELECT pg_try_advisory_lock(?)").use { statement ->
+        connection.prepareStatement("SELECT pg_try_advisory_xact_lock(?)").use { statement ->
             statement.setLong(1, LOCK_ID)
             statement.executeQuery().use { rows ->
                 check(rows.next()) { "Identity sync advisory lock query returned no result" }
@@ -55,19 +71,64 @@ class PostgresIdentitySyncLock @Inject constructor(private val dataSource: DataS
             }
         }
 
-    private fun release(connection: Connection) {
-        connection.prepareStatement("SELECT pg_advisory_unlock(?)").use { statement ->
-            statement.setLong(1, LOCK_ID)
-            statement.executeQuery().use { rows ->
-                check(rows.next() && rows.getBoolean(1)) {
-                    "Identity sync advisory lock was not held"
-                }
+    private fun completeTransaction(connection: Connection, operationFailure: Throwable?) {
+        try {
+            if (operationFailure == null) {
+                connection.commit()
+            } else {
+                connection.rollback()
             }
+        } catch (cleanupFailure: Throwable) {
+            recordCleanupFailure(cleanupFailure, operationFailure, TRANSACTION_PHASE)
+            abortConnection(connection, operationFailure ?: cleanupFailure)
         }
+    }
+
+    private fun closeConnection(connection: Connection, operationFailure: Throwable?) {
+        try {
+            connection.close()
+        } catch (cleanupFailure: Throwable) {
+            recordCleanupFailure(cleanupFailure, operationFailure, CLOSE_PHASE)
+            abortConnection(connection, operationFailure ?: cleanupFailure)
+        }
+    }
+
+    private fun abortConnection(connection: Connection, primaryFailure: Throwable) {
+        try {
+            connection.abort(DIRECT_EXECUTOR)
+        } catch (abortFailure: Throwable) {
+            primaryFailure.addSuppressed(abortFailure)
+            LOG.warnf(
+                "Identity sync lock cleanup failed (lockId=%d, phase=%s, reason=%s)",
+                LOCK_ID,
+                ABORT_PHASE,
+                CONNECTION_CLEANUP_FAILURE_REASON,
+            )
+        }
+    }
+
+    private fun recordCleanupFailure(
+        cleanupFailure: Throwable,
+        operationFailure: Throwable?,
+        phase: String,
+    ) {
+        operationFailure?.addSuppressed(cleanupFailure)
+        LOG.warnf(
+            "Identity sync lock cleanup failed (lockId=%d, phase=%s, reason=%s)",
+            LOCK_ID,
+            phase,
+            CONNECTION_CLEANUP_FAILURE_REASON,
+        )
     }
 
     private companion object {
         const val LOCK_ID = 0x67726F756E647350L
+        const val TRANSACTION_PHASE = "transaction"
+        const val CLOSE_PHASE = "close"
+        const val ABORT_PHASE = "abort"
+        const val CONNECTION_CLEANUP_FAILURE_REASON = "connection_cleanup_failed"
+        val DIRECT_EXECUTOR = Executor(Runnable::run)
+        val LOG: Logger = Logger.getLogger(PostgresIdentitySyncLock::class.java)
     }
 }
 
@@ -76,6 +137,7 @@ class IdentitySyncCoordinator(
     private val store: PlayerIdentityStore,
     private val source: PlayerIdentitySource,
     private val clock: Clock,
+    private val maxStaleness: Duration = DEFAULT_MAX_STALENESS,
     private val syncLock: IdentitySyncLock = UnlockedIdentitySyncLock,
 ) {
     @Inject
@@ -83,7 +145,8 @@ class IdentitySyncCoordinator(
         store: PlayerIdentityStore,
         source: PlayerIdentitySynchronizer,
         syncLock: PostgresIdentitySyncLock,
-    ) : this(store, source, Clock.systemUTC(), syncLock)
+        @ConfigProperty(name = "permissions.identity-sync.max-staleness") maxStaleness: Duration,
+    ) : this(store, source, Clock.systemUTC(), maxStaleness, syncLock)
 
     fun synchronizeAll(): IdentitySyncOutcome {
         val startedAt = clock.instant()
@@ -104,14 +167,9 @@ class IdentitySyncCoordinator(
     }
 
     private fun synchronizeLocked(startedAt: java.time.Instant): IdentitySyncOutcome {
-        try {
-            store.markSyncRunning(startedAt)
-        } catch (_: IllegalStateException) {
-            return if (store.currentSyncState().status == IdentitySyncStatus.RUNNING) {
-                IdentitySyncOutcome.ALREADY_RUNNING
-            } else {
-                IdentitySyncOutcome.FAILED
-            }
+        val staleBefore = startedAt.minus(maxStaleness)
+        if (!store.tryMarkSyncRunning(startedAt, staleBefore)) {
+            return IdentitySyncOutcome.ALREADY_RUNNING
         }
 
         return try {
@@ -176,6 +234,7 @@ class IdentitySyncCoordinator(
     private companion object {
         private const val SYNC_FAILURE_REASON = "identity_sync_failed"
         private const val REFRESH_FAILURE_REASON = "identity_refresh_failed"
+        private val DEFAULT_MAX_STALENESS = Duration.ofHours(6)
         private val LOG = Logger.getLogger(IdentitySyncCoordinator::class.java)
     }
 }

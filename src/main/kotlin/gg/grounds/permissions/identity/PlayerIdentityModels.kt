@@ -58,6 +58,8 @@ interface PlayerIdentityStore {
 
     fun markSyncRunning(startedAt: Instant)
 
+    fun tryMarkSyncRunning(startedAt: Instant, staleBefore: Instant): Boolean
+
     fun markSyncFailed(completedAt: Instant, failureReason: String)
 
     fun currentSyncState(): IdentitySyncState
