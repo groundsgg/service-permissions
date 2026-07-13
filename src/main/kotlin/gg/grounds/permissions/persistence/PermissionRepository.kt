@@ -848,6 +848,8 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
             connection.autoCommit = false
             try {
                 listOf(
+                        "permission_player_keycloak_groups",
+                        "permission_player_identities",
                         "permission_audit_events",
                         "permission_runtime_registrations",
                         "permission_catalog_entries",
@@ -864,6 +866,22 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                 connection
                     .prepareStatement(
                         "UPDATE permission_policy_versions SET version = 1, updated_at = now() WHERE id = 1"
+                    )
+                    .use { it.executeUpdate() }
+                connection
+                    .prepareStatement(
+                        """
+                        UPDATE permission_identity_sync_state
+                        SET status = 'IDLE',
+                            started_at = NULL,
+                            completed_at = NULL,
+                            last_success_at = NULL,
+                            duration_ms = NULL,
+                            player_count = 0,
+                            failure_reason = NULL
+                        WHERE id = 1
+                        """
+                            .trimIndent()
                     )
                     .use { it.executeUpdate() }
                 connection.commit()

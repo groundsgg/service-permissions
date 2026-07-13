@@ -4,6 +4,8 @@ import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
+import gg.grounds.permissions.identity.IdentitySyncStatus
+import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionSyncAction
 import gg.grounds.permissions.sync.SyncAction
@@ -32,9 +34,33 @@ class PermissionRepositoryTest {
 
     @Inject lateinit var repository: PermissionRepository
 
+    @Inject lateinit var identityRepository: PlayerIdentityRepository
+
     @BeforeEach
     fun resetDatabase() {
         repository.deleteAllPermissionData()
+    }
+
+    @Test
+    fun deletesProjectedIdentitiesAndResetsIdentitySyncState() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000110")
+        identityRepository.replacePlayer(
+            ProjectedPlayerIdentity(
+                playerId = playerId,
+                keycloakUserId = "keycloak-cleanup",
+                minecraftUsername = "CleanupPlayer",
+                normalizedUsername = "cleanupplayer",
+                groupPaths = setOf("/staff"),
+                syncedAt = Instant.parse("2030-01-01T00:00:00Z"),
+                sourceUpdatedAt = null,
+            )
+        )
+        identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:00Z"))
+
+        repository.deleteAllPermissionData()
+
+        assertEquals(null, identityRepository.findByPlayerId(playerId))
+        assertEquals(IdentitySyncStatus.IDLE, identityRepository.currentSyncState().status)
     }
 
     @Test
