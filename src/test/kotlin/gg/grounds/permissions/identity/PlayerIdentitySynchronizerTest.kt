@@ -112,16 +112,23 @@ class PlayerIdentitySynchronizerTest {
                 "/admin/realms/grounds/users" ->
                     exchange.respond(
                         200,
-                        """[{"id":"non-canonical","attributes":{"minecraft_java_uuid":["1-1-1-1-1"],"minecraft_java_username":["InvalidPlayer"]}}]""",
+                        """
+                        [
+                          {"id":"non-canonical","attributes":{"minecraft_java_uuid":["1-1-1-1-1"],"minecraft_java_username":["InvalidPlayer"]}},
+                          {"id":"spaced","attributes":{"minecraft_java_uuid":[" 00000000-0000-0000-0000-000000000301 "],"minecraft_java_username":["InvalidPlayer"]}}
+                        ]
+                        """
+                            .trimIndent(),
                     )
                 "/admin/realms/grounds/users/non-canonical/groups" -> exchange.respond(200, "[]")
+                "/admin/realms/grounds/users/spaced/groups" -> exchange.respond(200, "[]")
                 else -> exchange.respond(404, "missing")
             }
         }
         server.start()
 
         try {
-            val identities = synchronizer(server, pageSize = 2).loadAll()
+            val identities = synchronizer(server, pageSize = 3).loadAll()
 
             assertEquals(emptyList<ProjectedPlayerIdentity>(), identities)
         } finally {

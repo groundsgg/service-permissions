@@ -73,9 +73,8 @@ class PlayerIdentitySynchronizer(
     }
 
     private fun parseCanonicalUuid(rawUuid: String): UUID? {
-        val trimmedUuid = rawUuid.trim()
-        val parsedUuid = runCatching { UUID.fromString(trimmedUuid) }.getOrNull() ?: return null
-        return parsedUuid.takeIf { it.toString().equals(trimmedUuid, ignoreCase = true) }
+        val parsedUuid = runCatching { UUID.fromString(rawUuid) }.getOrNull() ?: return null
+        return parsedUuid.takeIf { it.toString().equals(rawUuid, ignoreCase = true) }
     }
 
     private fun readUsers(first: Int): List<KeycloakUserRepresentation> =

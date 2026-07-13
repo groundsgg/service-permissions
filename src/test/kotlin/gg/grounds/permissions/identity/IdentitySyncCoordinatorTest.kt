@@ -9,6 +9,8 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.logging.Handler
+import java.util.logging.LogRecord
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -213,20 +215,12 @@ class IdentitySyncCoordinatorTest {
     }
 
     @Test
-    fun recordsSanitizedFailureReason() {
-        val store = RecordingIdentityStore()
+    fun retriesAndReportsSanitizedSyncStatePersistenceFailures() {
+        val store = RecordingIdentityStore(markSyncFailuresRemaining = 1)
         val coordinator =
             IdentitySyncCoordinator(
                 store = store,
-                source =
-                    object : PlayerIdentitySource {
-                        override fun loadAll(): List<ProjectedPlayerIdentity> {
-                            throw IllegalStateException("remote-body bearer-sensitive-token")
-                        }
-
-                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? =
-                            null
-                    },
+                source = failingIdentitySource(),
                 clock =
                     SequenceClock(
                         Instant.parse("2030-01-01T00:00:00Z"),
@@ -237,10 +231,38 @@ class IdentitySyncCoordinatorTest {
         val outcome = coordinator.synchronizeAll()
 
         assertEquals(IdentitySyncOutcome.FAILED, outcome)
+        assertEquals(2, store.markSyncFailedAttempts)
         assertEquals(IdentitySyncStatus.FAILED, store.state.status)
         assertEquals("identity_sync_failed", store.state.failureReason)
         assertFalse(store.state.failureReason!!.contains("remote-body"))
         assertFalse(store.state.failureReason!!.contains("sensitive-token"))
+        val failedStore = RecordingIdentityStore(markSyncFailuresRemaining = 2)
+        val failedCoordinator =
+            IdentitySyncCoordinator(
+                store = failedStore,
+                source = failingIdentitySource(),
+                clock =
+                    SequenceClock(
+                        Instant.parse("2030-01-01T00:00:00Z"),
+                        Instant.parse("2030-01-01T00:00:01Z"),
+                    ),
+            )
+
+        val (failedOutcome, messages) = captureLogs(failedCoordinator::synchronizeAll)
+
+        assertEquals(IdentitySyncOutcome.FAILED, failedOutcome)
+        assertEquals(2, failedStore.markSyncFailedAttempts)
+        assertEquals(IdentitySyncStatus.RUNNING, failedStore.state.status)
+        assertEquals(
+            listOf(
+                "Player identity sync state update failed " +
+                    "(durationMs=1000, reason=identity_sync_state_update_failed)"
+            ),
+            messages.filter { it.contains("identity_sync_state_update_failed") },
+        )
+        assertFalse(messages.any { it.contains("remote-body") })
+        assertFalse(messages.any { it.contains("sensitive-token") })
+        assertEquals(1, messages.count { it.contains("reason=identity_sync_failed") })
     }
 
     @Test
@@ -306,11 +328,49 @@ class IdentitySyncCoordinatorTest {
 
             override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? = null
         }
+
+    private fun failingIdentitySource(): PlayerIdentitySource =
+        object : PlayerIdentitySource {
+            override fun loadAll(): List<ProjectedPlayerIdentity> {
+                throw IllegalStateException("remote-body bearer-sensitive-token")
+            }
+
+            override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? = null
+        }
+
+    private fun captureLogs(
+        operation: () -> IdentitySyncOutcome
+    ): Pair<IdentitySyncOutcome, List<String>> {
+        val records = mutableListOf<LogRecord>()
+        val handler =
+            object : Handler() {
+                override fun publish(record: LogRecord) {
+                    records += record
+                }
+
+                override fun flush() = Unit
+
+                override fun close() = Unit
+            }
+        val logger =
+            java.util.logging.Logger.getLogger(IdentitySyncCoordinator::class.java.name).apply {
+                addHandler(handler)
+            }
+        return try {
+            operation() to records.map(LogRecord::getMessage)
+        } finally {
+            logger.removeHandler(handler)
+        }
+    }
 }
 
-private class RecordingIdentityStore : PlayerIdentityStore {
+private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int = 0) :
+    PlayerIdentityStore {
     var identities: List<ProjectedPlayerIdentity> = emptyList()
     val deletedKeycloakUserIds = mutableListOf<String>()
+    var markSyncFailedAttempts = 0
+        private set
+
     var state =
         IdentitySyncState(
             status = IdentitySyncStatus.IDLE,
@@ -381,6 +441,11 @@ private class RecordingIdentityStore : PlayerIdentityStore {
 
     @Synchronized
     override fun markSyncFailed(completedAt: Instant, failureReason: String) {
+        markSyncFailedAttempts++
+        if (markSyncFailuresRemaining > 0) {
+            markSyncFailuresRemaining--
+            throw IllegalStateException("database-body bearer-sensitive-token")
+        }
         check(state.status == IdentitySyncStatus.RUNNING)
         state =
             state.copy(

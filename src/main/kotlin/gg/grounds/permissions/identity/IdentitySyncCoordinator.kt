@@ -184,7 +184,7 @@ class IdentitySyncCoordinator(
             IdentitySyncOutcome.COMPLETED
         } catch (_: Exception) {
             val completedAt = clock.instant()
-            runCatching { store.markSyncFailed(completedAt, SYNC_FAILURE_REASON) }
+            markSyncFailed(startedAt, completedAt)
             LOG.errorf(
                 "Player identity sync failed (durationMs=%d, reason=%s)",
                 elapsedMilliseconds(startedAt, completedAt),
@@ -192,6 +192,22 @@ class IdentitySyncCoordinator(
             )
             IdentitySyncOutcome.FAILED
         }
+    }
+
+    private fun markSyncFailed(startedAt: java.time.Instant, completedAt: java.time.Instant) {
+        repeat(SYNC_STATE_UPDATE_ATTEMPTS) {
+            try {
+                store.markSyncFailed(completedAt, SYNC_FAILURE_REASON)
+                return
+            } catch (_: Exception) {
+                // Retry once before reporting the persistence outcome.
+            }
+        }
+        LOG.errorf(
+            "Player identity sync state update failed (durationMs=%d, reason=%s)",
+            elapsedMilliseconds(startedAt, completedAt),
+            SYNC_STATE_UPDATE_FAILURE_REASON,
+        )
     }
 
     fun refreshPlayer(keycloakUserId: String): IdentityRefreshOutcome {
@@ -233,6 +249,8 @@ class IdentitySyncCoordinator(
 
     private companion object {
         private const val SYNC_FAILURE_REASON = "identity_sync_failed"
+        private const val SYNC_STATE_UPDATE_FAILURE_REASON = "identity_sync_state_update_failed"
+        private const val SYNC_STATE_UPDATE_ATTEMPTS = 2
         private const val REFRESH_FAILURE_REASON = "identity_refresh_failed"
         private val DEFAULT_MAX_STALENESS = Duration.ofHours(6)
         private val LOG = Logger.getLogger(IdentitySyncCoordinator::class.java)
