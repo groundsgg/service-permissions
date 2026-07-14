@@ -5,6 +5,8 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import org.eclipse.microprofile.health.HealthCheckResponse
+import org.eclipse.microprofile.health.Liveness
+import org.eclipse.microprofile.health.Readiness
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -15,6 +17,16 @@ import org.mockito.kotlin.whenever
 class IdentitySyncReadinessCheckTest {
     private val now = Instant.parse("2030-01-01T12:00:00Z")
     private val store = mock<PlayerIdentityStore>()
+
+    @Test
+    fun identityProjectionHealthCheckOnlyAffectsReadiness() {
+        assertTrue(
+            IdentitySyncReadinessCheck::class.java.isAnnotationPresent(Readiness::class.java)
+        )
+        assertFalse(
+            IdentitySyncReadinessCheck::class.java.isAnnotationPresent(Liveness::class.java)
+        )
+    }
 
     @Test
     fun reportsNotReadyBeforeTheFirstSuccessfulSync() {
