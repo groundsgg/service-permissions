@@ -5,9 +5,12 @@ import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
+import java.sql.Connection
 import java.time.Instant
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -348,6 +351,162 @@ class PlayerIdentityRepositoryTest {
     }
 
     @Test
+    fun doesNotRestoreDeletedIdentityWhenOlderFullSnapshotCompletesLater() {
+        val staleSnapshot =
+            identity(
+                    "00000000-0000-0000-0000-000000000129",
+                    "keycloak-deleted-during-full",
+                    "DeletedPlayer",
+                    setOf("/players"),
+                )
+                .copy(syncedAt = Instant.parse("2030-01-01T00:00:03Z"))
+        identityRepository.replacePlayer(
+            staleSnapshot.copy(syncedAt = Instant.parse("2030-01-01T00:00:00Z"))
+        )
+        startSync(Instant.parse("2030-01-01T00:00:01Z"))
+
+        identityRepository.deleteByKeycloakUserId(
+            staleSnapshot.keycloakUserId,
+            Instant.parse("2030-01-01T00:00:02Z"),
+        )
+        identityRepository.replaceAll(listOf(staleSnapshot), Instant.parse("2030-01-01T00:00:04Z"))
+
+        assertNull(identityRepository.findByKeycloakUserId(staleSnapshot.keycloakUserId))
+        assertEquals(
+            Instant.parse("2030-01-01T00:00:02Z"),
+            tombstoneDeletedAt(staleSnapshot.keycloakUserId),
+        )
+        assertEquals(IdentitySyncStatus.IDLE, identityRepository.currentSyncState().status)
+        assertEquals(0, identityRepository.currentSyncState().playerCount)
+    }
+
+    @Test
+    fun clearsTombstoneWhenTargetedIdentityIsCurrent() {
+        val deletedIdentity =
+            identity(
+                "00000000-0000-0000-0000-000000000130",
+                "keycloak-targeted-tombstone",
+                "DeletedPlayer",
+            )
+        val deletedAt = Instant.parse("2030-01-01T00:00:02Z")
+        identityRepository.replacePlayer(deletedIdentity)
+        identityRepository.deleteByKeycloakUserId(deletedIdentity.keycloakUserId, deletedAt)
+
+        identityRepository.replacePlayer(deletedIdentity.copy(syncedAt = deletedAt.minusSeconds(1)))
+
+        assertNull(identityRepository.findByKeycloakUserId(deletedIdentity.keycloakUserId))
+        assertEquals(deletedAt, tombstoneDeletedAt(deletedIdentity.keycloakUserId))
+
+        val restored = deletedIdentity.copy(syncedAt = deletedAt)
+        identityRepository.replacePlayer(restored)
+
+        assertEquals(restored, identityRepository.findByKeycloakUserId(restored.keycloakUserId))
+        assertNull(tombstoneDeletedAt(restored.keycloakUserId))
+    }
+
+    @Test
+    fun clearsTombstoneWhenFullSnapshotIsCurrent() {
+        val deletedIdentity =
+            identity(
+                "00000000-0000-0000-0000-000000000131",
+                "keycloak-full-tombstone",
+                "DeletedPlayer",
+            )
+        val deletedAt = Instant.parse("2030-01-01T00:00:02Z")
+        identityRepository.replacePlayer(deletedIdentity)
+        identityRepository.deleteByKeycloakUserId(deletedIdentity.keycloakUserId, deletedAt)
+        startSync(Instant.parse("2030-01-01T00:00:03Z"))
+
+        val restored = deletedIdentity.copy(syncedAt = deletedAt)
+        identityRepository.replaceAll(listOf(restored), Instant.parse("2030-01-01T00:00:04Z"))
+
+        assertEquals(restored, identityRepository.findByKeycloakUserId(restored.keycloakUserId))
+        assertNull(tombstoneDeletedAt(restored.keycloakUserId))
+    }
+
+    @Test
+    fun serializesTargetedDeletionAfterAnInFlightFullReconciliation() {
+        val staleSnapshot =
+            identity(
+                "00000000-0000-0000-0000-000000000132",
+                "keycloak-serialized-delete",
+                "DeletedPlayer",
+            )
+        val mutationLock = holdMutationLock()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            startSync(Instant.parse("2030-01-01T00:00:01Z"))
+            val fullReconciliation =
+                executor.submit {
+                    identityRepository.replaceAll(
+                        listOf(
+                            staleSnapshot.copy(syncedAt = Instant.parse("2030-01-01T00:00:03Z"))
+                        ),
+                        Instant.parse("2030-01-01T00:00:04Z"),
+                    )
+                }
+            awaitMutationLockWaiters(1)
+
+            val deletion =
+                executor.submit {
+                    identityRepository.deleteByKeycloakUserId(
+                        staleSnapshot.keycloakUserId,
+                        Instant.parse("2030-01-01T00:00:02Z"),
+                    )
+                }
+            awaitMutationLockWaiters(2)
+            assertFalse(fullReconciliation.isDone)
+            assertFalse(deletion.isDone)
+
+            mutationLock.commit()
+            fullReconciliation.get(5, TimeUnit.SECONDS)
+            deletion.get(5, TimeUnit.SECONDS)
+
+            assertNull(identityRepository.findByKeycloakUserId(staleSnapshot.keycloakUserId))
+        } finally {
+            if (!mutationLock.isClosed) {
+                mutationLock.rollback()
+                mutationLock.close()
+            }
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun blocksTargetedReplacementUntilMutationLockReleases() {
+        val replacement =
+            identity(
+                "00000000-0000-0000-0000-000000000133",
+                "keycloak-serialized-replacement",
+                "ReplacementPlayer",
+            )
+        val mutationLock = holdMutationLock()
+        val executor = Executors.newSingleThreadExecutor()
+
+        try {
+            val replacementFuture =
+                executor.submit { identityRepository.replacePlayer(replacement) }
+            awaitMutationLockWaiters(1)
+
+            assertFalse(replacementFuture.isDone)
+            mutationLock.commit()
+            replacementFuture.get(5, TimeUnit.SECONDS)
+
+            assertEquals(
+                replacement,
+                identityRepository.findByKeycloakUserId(replacement.keycloakUserId),
+            )
+        } finally {
+            if (!mutationLock.isClosed) {
+                mutationLock.rollback()
+                mutationLock.close()
+            }
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun preservesTargetedIdentityCreatedAfterOlderFullSnapshotStarted() {
         val newerTargeted =
             identity(
@@ -536,6 +695,61 @@ class PlayerIdentityRepositoryTest {
                 )
                 .use { statement ->
                     statement.setObject(1, playerId)
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        rows.getInt(1)
+                    }
+                }
+        }
+
+    private fun tombstoneDeletedAt(keycloakUserId: String): Instant? =
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    "SELECT deleted_at FROM permission_player_identity_tombstones WHERE keycloak_user_id = ?"
+                )
+                .use { statement ->
+                    statement.setString(1, keycloakUserId)
+                    statement.executeQuery().use { rows ->
+                        if (rows.next()) rows.getTimestamp("deleted_at").toInstant() else null
+                    }
+                }
+        }
+
+    private fun holdMutationLock(): Connection =
+        dataSource.connection.apply {
+            autoCommit = false
+            prepareStatement("SELECT pg_advisory_xact_lock(?)").use { statement ->
+                statement.setLong(1, PLAYER_IDENTITY_MUTATION_LOCK_ID)
+                statement.execute()
+            }
+        }
+
+    private fun awaitMutationLockWaiters(expectedCount: Int) {
+        repeat(100) {
+            if (mutationLockWaiterCount() >= expectedCount) {
+                return
+            }
+            Thread.sleep(10)
+        }
+        error("Timed out waiting for mutation lock waiters (expectedCount=$expectedCount)")
+    }
+
+    private fun mutationLockWaiterCount(): Int =
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    SELECT COUNT(*)
+                    FROM pg_locks
+                    WHERE locktype = 'advisory'
+                      AND NOT granted
+                      AND ((classid::bigint << 32) | objid::bigint) = ?
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setLong(1, PLAYER_IDENTITY_MUTATION_LOCK_ID)
                     statement.executeQuery().use { rows ->
                         check(rows.next())
                         rows.getInt(1)

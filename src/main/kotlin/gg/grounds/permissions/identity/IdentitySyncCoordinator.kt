@@ -216,7 +216,7 @@ class IdentitySyncCoordinator(
             val identity = source.loadPlayer(keycloakUserId)
             val outcome =
                 if (identity == null) {
-                    store.deleteByKeycloakUserId(keycloakUserId)
+                    store.deleteByKeycloakUserId(keycloakUserId, clock.instant())
                     IdentityRefreshOutcome.REMOVED
                 } else {
                     store.replacePlayer(identity)

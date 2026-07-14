@@ -16,6 +16,8 @@ import java.util.Locale
 import java.util.UUID
 import javax.sql.DataSource
 
+internal const val PLAYER_IDENTITY_MUTATION_LOCK_ID = 0x67726F756E647349L
+
 @ApplicationScoped
 class PlayerIdentityRepository @Inject constructor(private val dataSource: DataSource) :
     PlayerIdentityStore {
@@ -122,9 +124,12 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
-                deleteRelinkedIdentity(connection, identity)
-                upsertIdentity(connection, identity)
-                replaceGroups(connection, identity.playerId, identity.groupPaths)
+                acquireMutationLock(connection)
+                if (clearTombstoneIfAccepted(connection, identity)) {
+                    deleteRelinkedIdentity(connection, identity)
+                    upsertIdentity(connection, identity)
+                    replaceGroups(connection, identity.playerId, identity.groupPaths)
+                }
                 connection.commit()
             } catch (error: Throwable) {
                 connection.rollback()
@@ -133,16 +138,25 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         }
     }
 
-    override fun deleteByKeycloakUserId(keycloakUserId: String) {
+    override fun deleteByKeycloakUserId(keycloakUserId: String, deletedAt: Instant) {
         dataSource.connection.use { connection ->
-            connection
-                .prepareStatement(
-                    "DELETE FROM permission_player_identities WHERE keycloak_user_id = ?"
-                )
-                .use { statement ->
-                    statement.setString(1, keycloakUserId)
-                    statement.executeUpdate()
-                }
+            connection.autoCommit = false
+            try {
+                acquireMutationLock(connection)
+                upsertTombstone(connection, keycloakUserId, deletedAt)
+                connection
+                    .prepareStatement(
+                        "DELETE FROM permission_player_identities WHERE keycloak_user_id = ?"
+                    )
+                    .use { statement ->
+                        statement.setString(1, keycloakUserId)
+                        statement.executeUpdate()
+                    }
+                connection.commit()
+            } catch (error: Throwable) {
+                connection.rollback()
+                throw error
+            }
         }
     }
 
@@ -150,8 +164,10 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
+                acquireMutationLock(connection)
                 createReconciliationStage(connection)
                 identities.forEach { identity -> stageIdentity(connection, identity) }
+                clearObsoleteTombstones(connection)
                 deleteRelinkedIdentities(connection)
                 reconcileIdentities(connection)
                 reconcileGroups(connection)
@@ -269,6 +285,13 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
             }
         }
 
+    private fun acquireMutationLock(connection: Connection) {
+        connection.prepareStatement("SELECT pg_advisory_xact_lock(?)").use { statement ->
+            statement.setLong(1, PLAYER_IDENTITY_MUTATION_LOCK_ID)
+            statement.execute()
+        }
+    }
+
     private fun createReconciliationStage(connection: Connection) {
         connection
             .prepareStatement(
@@ -350,6 +373,16 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 FROM permission_player_identity_stage stage
                 WHERE NOT EXISTS (
                     SELECT 1
+                    FROM permission_player_identity_tombstones tombstone
+                    WHERE tombstone.keycloak_user_id = stage.keycloak_user_id
+                      AND tombstone.deleted_at > (
+                          SELECT started_at
+                          FROM permission_identity_sync_state
+                          WHERE id = 1
+                      )
+                )
+                  AND NOT EXISTS (
+                    SELECT 1
                     FROM permission_player_identities existing
                     WHERE (
                         existing.player_id = stage.player_id
@@ -388,6 +421,16 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                   AND identities.player_id <> stage.player_id
                   AND NOT EXISTS (
                       SELECT 1
+                      FROM permission_player_identity_tombstones tombstone
+                      WHERE tombstone.keycloak_user_id = stage.keycloak_user_id
+                        AND tombstone.deleted_at > (
+                            SELECT started_at
+                            FROM permission_identity_sync_state
+                            WHERE id = 1
+                        )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
                       FROM permission_player_identities existing
                       WHERE (
                           existing.player_id = stage.player_id
@@ -398,6 +441,24 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                             FROM permission_identity_sync_state
                             WHERE id = 1
                         )
+                  )
+                """
+                    .trimIndent()
+            )
+            .use { it.executeUpdate() }
+    }
+
+    private fun clearObsoleteTombstones(connection: Connection) {
+        connection
+            .prepareStatement(
+                """
+                DELETE FROM permission_player_identity_tombstones tombstone
+                USING permission_player_identity_stage stage
+                WHERE tombstone.keycloak_user_id = stage.keycloak_user_id
+                  AND tombstone.deleted_at <= (
+                      SELECT started_at
+                      FROM permission_identity_sync_state
+                      WHERE id = 1
                   )
                 """
                     .trimIndent()
@@ -514,6 +575,66 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 statement.setString(4, identity.normalizedUsername)
                 statement.setTimestamp(5, Timestamp.from(identity.syncedAt))
                 statement.setTimestamp(6, identity.sourceUpdatedAt?.let(Timestamp::from))
+                statement.executeUpdate()
+            }
+    }
+
+    private fun clearTombstoneIfAccepted(
+        connection: Connection,
+        identity: ProjectedPlayerIdentity,
+    ): Boolean {
+        connection
+            .prepareStatement(
+                """
+                DELETE FROM permission_player_identity_tombstones
+                WHERE keycloak_user_id = ? AND deleted_at <= ?
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, identity.keycloakUserId)
+                statement.setTimestamp(2, Timestamp.from(identity.syncedAt))
+                statement.executeUpdate()
+            }
+        return connection
+            .prepareStatement(
+                """
+                SELECT NOT EXISTS (
+                    SELECT 1
+                    FROM permission_player_identity_tombstones
+                    WHERE keycloak_user_id = ?
+                )
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, identity.keycloakUserId)
+                statement.executeQuery().use { rows ->
+                    check(rows.next())
+                    rows.getBoolean(1)
+                }
+            }
+    }
+
+    private fun upsertTombstone(
+        connection: Connection,
+        keycloakUserId: String,
+        deletedAt: Instant,
+    ) {
+        connection
+            .prepareStatement(
+                """
+                INSERT INTO permission_player_identity_tombstones (keycloak_user_id, deleted_at)
+                VALUES (?, ?)
+                ON CONFLICT (keycloak_user_id) DO UPDATE
+                SET deleted_at = EXCLUDED.deleted_at
+                WHERE permission_player_identity_tombstones.deleted_at < EXCLUDED.deleted_at
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, keycloakUserId)
+                statement.setTimestamp(2, Timestamp.from(deletedAt))
                 statement.executeUpdate()
             }
     }

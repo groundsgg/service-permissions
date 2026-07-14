@@ -152,6 +152,62 @@ class IdentitySyncCoordinatorTest {
     }
 
     @Test
+    fun doesNotRestoreRemovedPlayerWhenOlderFullSnapshotCompletesLater() {
+        val snapshotLoaded = CountDownLatch(1)
+        val releaseFullSync = CountDownLatch(1)
+        val staleIdentity = identity().copy(syncedAt = Instant.parse("2030-01-01T00:00:05Z"))
+        val store =
+            RecordingIdentityStore().apply {
+                identities =
+                    listOf(staleIdentity.copy(syncedAt = Instant.parse("2030-01-01T00:00:00Z")))
+            }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> {
+                            snapshotLoaded.countDown()
+                            check(releaseFullSync.await(5, TimeUnit.SECONDS))
+                            return listOf(staleIdentity)
+                        }
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? =
+                            null
+                    },
+                clock =
+                    SequenceClock(
+                        Instant.parse("2030-01-01T00:00:01Z"),
+                        Instant.parse("2030-01-01T00:00:02Z"),
+                        Instant.parse("2030-01-01T00:00:03Z"),
+                        Instant.parse("2030-01-01T00:00:04Z"),
+                        Instant.parse("2030-01-01T00:00:05Z"),
+                    ),
+            )
+        val executor = Executors.newSingleThreadExecutor()
+
+        try {
+            val fullSync = executor.submit<IdentitySyncOutcome> { coordinator.synchronizeAll() }
+            assertTrue(snapshotLoaded.await(5, TimeUnit.SECONDS))
+
+            assertEquals(
+                IdentityRefreshOutcome.REMOVED,
+                coordinator.refreshPlayer(staleIdentity.keycloakUserId),
+            )
+            releaseFullSync.countDown()
+
+            assertEquals(IdentitySyncOutcome.COMPLETED, fullSync.get(5, TimeUnit.SECONDS))
+            assertTrue(store.identities.isEmpty())
+            assertEquals(Instant.parse("2030-01-01T00:00:03Z"), store.deletionTimestamps.single())
+            assertEquals(IdentitySyncStatus.IDLE, store.state.status)
+            assertEquals(0, store.state.playerCount)
+        } finally {
+            releaseFullSync.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun returnsAlreadyRunningWithoutReadingKeycloakWhenAdvisoryLockIsUnavailable() {
         val store = RecordingIdentityStore()
         var sourceRead = false
@@ -349,6 +405,7 @@ class IdentitySyncCoordinatorTest {
 
         assertEquals(IdentityRefreshOutcome.REMOVED, outcome)
         assertEquals(listOf("deleted-user"), store.deletedKeycloakUserIds)
+        assertEquals(Instant.parse("2030-01-01T00:00:00Z"), store.deletionTimestamps.single())
     }
 
     @Test
@@ -432,6 +489,8 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
     PlayerIdentityStore {
     var identities: List<ProjectedPlayerIdentity> = emptyList()
     val deletedKeycloakUserIds = mutableListOf<String>()
+    val deletionTimestamps = mutableListOf<Instant>()
+    private val tombstones = mutableMapOf<String, Instant>()
     var markSyncFailedAttempts = 0
         private set
 
@@ -456,11 +515,18 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
         PlayerSearchPage(emptyList(), page, perPage, 0)
 
     override fun replacePlayer(identity: ProjectedPlayerIdentity) {
+        val deletedAt = tombstones[identity.keycloakUserId]
+        if (deletedAt?.isAfter(identity.syncedAt) == true) {
+            return
+        }
+        tombstones.remove(identity.keycloakUserId)
         identities = identities.filterNot { it.playerId == identity.playerId } + identity
     }
 
-    override fun deleteByKeycloakUserId(keycloakUserId: String) {
+    override fun deleteByKeycloakUserId(keycloakUserId: String, deletedAt: Instant) {
         deletedKeycloakUserIds += keycloakUserId
+        deletionTimestamps += deletedAt
+        tombstones.merge(keycloakUserId, deletedAt, ::maxOf)
         identities = identities.filterNot { it.keycloakUserId == keycloakUserId }
     }
 
@@ -469,7 +535,17 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
         check(state.status == IdentitySyncStatus.RUNNING)
         val snapshotStartedAt = checkNotNull(state.startedAt)
         val reconciled = this.identities.toMutableList()
-        identities.forEach { identity ->
+        val acceptedIdentities =
+            identities.filter { identity ->
+                val deletedAt = tombstones[identity.keycloakUserId]
+                if (deletedAt?.isAfter(snapshotStartedAt) == true) {
+                    false
+                } else {
+                    tombstones.remove(identity.keycloakUserId)
+                    true
+                }
+            }
+        acceptedIdentities.forEach { identity ->
             val conflicts =
                 reconciled.filter {
                     it.playerId == identity.playerId || it.keycloakUserId == identity.keycloakUserId
@@ -479,7 +555,7 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
                 reconciled += identity
             }
         }
-        val snapshotPlayerIds = identities.mapTo(mutableSetOf()) { it.playerId }
+        val snapshotPlayerIds = acceptedIdentities.mapTo(mutableSetOf()) { it.playerId }
         reconciled.removeIf {
             it.playerId !in snapshotPlayerIds && !it.syncedAt.isAfter(snapshotStartedAt)
         }

@@ -55,7 +55,7 @@ interface PlayerIdentityStore {
 
     fun replacePlayer(identity: ProjectedPlayerIdentity)
 
-    fun deleteByKeycloakUserId(keycloakUserId: String)
+    fun deleteByKeycloakUserId(keycloakUserId: String, deletedAt: Instant)
 
     fun replaceAll(identities: List<ProjectedPlayerIdentity>, completedAt: Instant)
 
