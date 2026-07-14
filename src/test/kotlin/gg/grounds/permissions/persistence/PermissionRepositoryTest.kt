@@ -2,8 +2,10 @@ package gg.grounds.permissions.persistence
 
 import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
+import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
+import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.identity.IdentitySyncStatus
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
@@ -144,6 +146,22 @@ class PermissionRepositoryTest {
                 expiresAt = expiresAt,
             )
         )
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(
+            listOf(
+                ProjectedPlayerIdentity(
+                    playerId = playerId,
+                    keycloakUserId = "keycloak-policy-player",
+                    minecraftUsername = "PolicyPlayer",
+                    normalizedUsername = "policyplayer",
+                    groupPaths = setOf("/staff"),
+                    syncedAt = syncedAt,
+                    sourceUpdatedAt = null,
+                )
+            ),
+            syncedAt,
+        )
         repository.upsertCatalogEntry(
             CatalogEntryRecord(
                 key = "grounds.command.moderate",
@@ -163,7 +181,6 @@ class PermissionRepositoryTest {
             repository.policyFor(
                 PermissionPolicyRequest(
                     playerId = playerId,
-                    keycloakGroups = setOf("/staff"),
                     serverType = "paper",
                     serverId = "survival-1",
                 )
@@ -181,8 +198,54 @@ class PermissionRepositoryTest {
             2,
             input.playerRoles.count { it.playerId == playerId && it.roleKey == "moderator" },
         )
+        assertTrue(
+            input.playerRoles.any {
+                it.roleKey == "moderator" &&
+                    it.assignmentSource == PermissionRoleAssignmentSource.GROUP_MAPPING &&
+                    it.mappingId == groupMappingId
+            }
+        )
         assertEquals(1, input.playerGrants.count { it.playerId == playerId })
         assertEquals(1, repository.listCatalogEntries().size)
+    }
+
+    @Test
+    fun freshProjectionWithoutAPlayerStillAllowsDefaultAndDirectRoles() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000124")
+        repository.createRole(RoleRecord(key = "default", name = "Default", isDefault = true))
+        repository.createRole(RoleRecord(key = "builder", name = "Builder"))
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "builder")
+        )
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "builder")
+        )
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(emptyList(), syncedAt)
+
+        val input =
+            repository.policyFor(
+                PermissionPolicyRequest(playerId, serverType = "paper", serverId = "server-1")
+            )
+
+        assertEquals(setOf("default", "builder"), input.roles.mapTo(linkedSetOf()) { it.key })
+        assertEquals(listOf("builder"), input.playerRoles.map { it.roleKey })
+    }
+
+    @Test
+    fun staleProjectionRejectsPolicyEvaluationWhenGroupMappingsExist() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000125")
+        repository.createRole(RoleRecord(key = "member", name = "Member"))
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/players", "member")
+        )
+
+        assertThrows(IdentityProjectionUnavailableException::class.java) {
+            repository.policyFor(
+                PermissionPolicyRequest(playerId, serverType = "paper", serverId = "server-1")
+            )
+        }
     }
 
     @Test

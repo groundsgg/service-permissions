@@ -18,7 +18,8 @@ service PermissionCatalogService {
 
 message GetPlayerSnapshotRequest {
   string player_id = 1;
-  repeated string keycloak_groups = 2;
+  reserved 2;
+  reserved "keycloak_groups";
   string server_type = 3;
   string server_id = 4;
 }
@@ -51,6 +52,14 @@ message PermissionGrant {
   PermissionScope scope = 3;
   PermissionGrantSource source = 4;
   google.protobuf.Timestamp expires_at = 5;
+  PermissionGrantOrigin origin = 6;
+}
+
+message PermissionGrantOrigin {
+  PermissionGrantOriginKind kind = 1;
+  string role_key = 2;
+  string mapping_id = 3;
+  repeated string inherited_path = 4;
 }
 
 message PermissionScope {
@@ -103,4 +112,12 @@ enum PermissionGrantSource {
   PERMISSION_GRANT_SOURCE_UNSPECIFIED = 0;
   PERMISSION_GRANT_SOURCE_ROLE = 1;
   PERMISSION_GRANT_SOURCE_PLAYER = 2;
+}
+
+enum PermissionGrantOriginKind {
+  PERMISSION_GRANT_ORIGIN_KIND_UNSPECIFIED = 0;
+  PERMISSION_GRANT_ORIGIN_KIND_DEFAULT_ROLE = 1;
+  PERMISSION_GRANT_ORIGIN_KIND_DIRECT_ROLE = 2;
+  PERMISSION_GRANT_ORIGIN_KIND_GROUP_MAPPING = 3;
+  PERMISSION_GRANT_ORIGIN_KIND_DIRECT_PERMISSION = 4;
 }

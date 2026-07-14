@@ -3,6 +3,9 @@ package gg.grounds.permissions.identity
 import java.time.Instant
 import java.util.UUID
 
+class IdentityProjectionUnavailableException :
+    IllegalStateException("Player identity projection is unavailable")
+
 data class ProjectedPlayerIdentity(
     val playerId: UUID,
     val keycloakUserId: String,

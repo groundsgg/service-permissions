@@ -165,7 +165,6 @@ constructor(
     @Path("/effective")
     fun effectivePermissions(
         @PathParam("playerId") playerId: String,
-        @QueryParam("keycloakGroup") keycloakGroups: List<String>?,
         @QueryParam("serverType") serverType: String?,
         @QueryParam("serverId") serverId: String?,
         @Context headers: HttpHeaders,
@@ -176,11 +175,6 @@ constructor(
             repository.policyFor(
                 PermissionPolicyRequest(
                     playerId = id,
-                    keycloakGroups =
-                        keycloakGroups
-                            .orEmpty()
-                            .mapNotNull { it.trim().takeIf(String::isNotEmpty) }
-                            .toSet(),
                     serverType = serverType?.trim().orEmpty(),
                     serverId = serverId?.trim().orEmpty(),
                 )

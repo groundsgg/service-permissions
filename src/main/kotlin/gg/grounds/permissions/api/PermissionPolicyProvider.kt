@@ -6,12 +6,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.util.UUID
 
-data class PermissionPolicyRequest(
-    val playerId: UUID,
-    val keycloakGroups: Set<String>,
-    val serverType: String,
-    val serverId: String,
-)
+data class PermissionPolicyRequest(val playerId: UUID, val serverType: String, val serverId: String)
 
 interface PermissionPolicyProvider {
     fun policyFor(request: PermissionPolicyRequest): PermissionPolicyInput

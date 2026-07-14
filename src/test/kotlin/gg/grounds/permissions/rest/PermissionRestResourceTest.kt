@@ -1,12 +1,16 @@
 package gg.grounds.permissions.rest
 
+import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
+import gg.grounds.permissions.persistence.PlayerIdentityRepository
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import jakarta.inject.Inject
+import java.time.Instant
+import java.util.UUID
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.hasItem
 import org.hamcrest.Matchers.hasSize
@@ -23,6 +27,7 @@ import org.junit.jupiter.api.Test
 class PermissionRestResourceTest {
 
     @Inject lateinit var repository: PermissionRepository
+    @Inject lateinit var identityRepository: PlayerIdentityRepository
 
     @BeforeEach
     fun resetDatabase() {
@@ -200,6 +205,7 @@ class PermissionRestResourceTest {
 
     @Test
     fun playerGroupAndEffectivePermissionCrud() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000123")
         createRole("default", "Default", default = true)
         createRole("moderator", "Moderator")
 
@@ -249,10 +255,26 @@ class PermissionRestResourceTest {
             .statusCode(201)
             .body("keycloakGroup", equalTo("/staff"))
 
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt)
+        identityRepository.replaceAll(
+            identities =
+                listOf(
+                    ProjectedPlayerIdentity(
+                        playerId = playerId,
+                        keycloakUserId = "keycloak-user-123",
+                        minecraftUsername = "TestPlayer",
+                        normalizedUsername = "testplayer",
+                        groupPaths = setOf("/staff"),
+                        syncedAt = syncedAt,
+                        sourceUpdatedAt = null,
+                    )
+                ),
+            completedAt = syncedAt,
+        )
+
         given()
-            .get(
-                "/v1/permissions/players/00000000-0000-0000-0000-000000000123/effective?keycloakGroup=/staff"
-            )
+            .get("/v1/permissions/players/$playerId/effective")
             .then()
             .statusCode(200)
             .body("roleKeys", hasItem("default"))
