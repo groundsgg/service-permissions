@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/groundsgg/service-permissions/compare/v0.6.1...v0.7.0) (2026-07-14)
+
+
+### Features
+
+* add player identity projection and management APIs ([#34](https://github.com/groundsgg/service-permissions/issues/34)) ([8a2df5b](https://github.com/groundsgg/service-permissions/commit/8a2df5b78bf2c187ccf2fbbe42b5a0d590a3dedb))
+
 ## [0.6.1](https://github.com/groundsgg/service-permissions/compare/v0.6.0...v0.6.1) (2026-07-12)
 
 
