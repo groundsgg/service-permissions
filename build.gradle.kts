@@ -42,11 +42,13 @@ dependencies {
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-smallrye-jwt")
+    implementation("io.quarkus:quarkus-smallrye-health")
     implementation("io.quarkus:quarkus-scheduler")
     implementation("io.quarkus:quarkus-opentelemetry")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("com.google.protobuf:protobuf-kotlin")
+    implementation("io.nats:jnats:2.25.2")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")
