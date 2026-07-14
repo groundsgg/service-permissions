@@ -58,8 +58,7 @@ class PlayerIdentitySynchronizer(
         val username =
             user.attributes[MINECRAFT_USERNAME_ATTRIBUTE]
                 ?.firstOrNull()
-                ?.trim()
-                ?.takeIf(String::isNotBlank) ?: return null
+                ?.takeIf(::isValidMinecraftUsername) ?: return null
         val groups = readAllGroups(user.id) ?: return null
         return ProjectedPlayerIdentity(
             playerId = playerId,

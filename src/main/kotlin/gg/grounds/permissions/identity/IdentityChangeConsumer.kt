@@ -26,7 +26,7 @@ interface IdentityEventDelivery {
 
     fun acknowledge()
 
-    fun negativelyAcknowledge()
+    fun negativelyAcknowledge(delay: Duration)
 
     fun terminate()
 }
@@ -35,7 +35,12 @@ data class IdentityEventConsumerConfig(
     val subject: String,
     val stream: String,
     val durableName: String,
-)
+    val maxDeliveries: Int = IdentityChangeConsumer.DEFAULT_MAX_DELIVERIES,
+) {
+    init {
+        require(maxDeliveries > 0) { "Identity event max deliveries must be positive" }
+    }
+}
 
 interface IdentityEventSubscription : AutoCloseable {
     fun next(timeout: Duration): IdentityEventDelivery?
@@ -54,9 +59,16 @@ class IdentityChangeConsumer(
     private val config: IdentityEventConsumerConfig? = null,
     private val executor: ExecutorService? = null,
     private val enabled: Boolean = true,
+    private val retryDelay: Duration = DEFAULT_RETRY_DELAY,
 ) {
     private val running = AtomicBoolean(false)
     @Volatile private var subscription: IdentityEventSubscription? = null
+
+    init {
+        require(!retryDelay.isZero && !retryDelay.isNegative) {
+            "Identity event retry delay must be positive"
+        }
+    }
 
     @Inject
     constructor(
@@ -72,6 +84,8 @@ class IdentityChangeConsumer(
         explicitConsumer: Optional<String>,
         @ConfigProperty(name = "grounds.project-id") projectId: Optional<String>,
         @ConfigProperty(name = "permissions.identity-events.enabled") enabled: Boolean,
+        @ConfigProperty(name = "permissions.identity-events.retry-delay") retryDelay: Duration,
+        @ConfigProperty(name = "permissions.identity-events.max-deliveries") maxDeliveries: Int,
     ) : this(
         objectMapper = objectMapper,
         coordinator = coordinator,
@@ -91,12 +105,14 @@ class IdentityChangeConsumer(
                     } else {
                         DISABLED_CONSUMER_NAME
                     },
+                maxDeliveries = maxDeliveries,
             ),
         executor =
             Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("identity-events-", 0).factory()
             ),
         enabled = enabled,
+        retryDelay = retryDelay,
     )
 
     fun onStartup(@Observes event: StartupEvent) {
@@ -129,7 +145,7 @@ class IdentityChangeConsumer(
         when (coordinator.refreshPlayer(event.keycloakUserId)) {
             IdentityRefreshOutcome.UPDATED,
             IdentityRefreshOutcome.REMOVED -> delivery.acknowledge()
-            IdentityRefreshOutcome.FAILED -> delivery.negativelyAcknowledge()
+            IdentityRefreshOutcome.FAILED -> delivery.negativelyAcknowledge(retryDelay)
         }
     }
 
@@ -221,6 +237,8 @@ class IdentityChangeConsumer(
         private const val CONSUMER_FAILURE_REASON = "event_consumer_failure"
         private const val CLOSE_FAILURE_REASON = "resource_close_failure"
         private const val DISABLED_CONSUMER_NAME = "disabled"
+        internal const val DEFAULT_MAX_DELIVERIES = 10
+        internal val DEFAULT_RETRY_DELAY: Duration = Duration.ofSeconds(5)
         private val LOG: Logger = Logger.getLogger(IdentityChangeConsumer::class.java)
     }
 }
@@ -247,7 +265,12 @@ internal fun buildPullSubscribeOptions(config: IdentityEventConsumerConfig): Pul
     PullSubscribeOptions.builder()
         .stream(config.stream)
         .durable(config.durableName)
-        .configuration(ConsumerConfiguration.builder().ackPolicy(AckPolicy.Explicit).build())
+        .configuration(
+            ConsumerConfiguration.builder()
+                .ackPolicy(AckPolicy.Explicit)
+                .maxDeliver(config.maxDeliveries.toLong())
+                .build()
+        )
         .build()
 
 private class NatsIdentityEventSubscription(private val subscription: JetStreamSubscription) :
@@ -268,8 +291,8 @@ private class NatsIdentityEventDelivery(private val message: Message) : Identity
         message.ack()
     }
 
-    override fun negativelyAcknowledge() {
-        message.nak()
+    override fun negativelyAcknowledge(delay: Duration) {
+        message.nakWithDelay(delay)
     }
 
     override fun terminate() {

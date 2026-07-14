@@ -4,6 +4,7 @@ import gg.grounds.permissions.auth.AdminAuthorizationService
 import gg.grounds.permissions.identity.MojangLookupResult
 import gg.grounds.permissions.identity.MojangProfileClient
 import gg.grounds.permissions.identity.PlayerSearchItem
+import gg.grounds.permissions.identity.isValidMinecraftUsername
 import gg.grounds.permissions.persistence.PlayerIdentityRepository
 import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity
@@ -68,7 +69,7 @@ constructor(
     }
 
     private fun externalFallback(query: String): PlayerSearchItemResponse? {
-        if (!MINECRAFT_USERNAME.matches(query)) {
+        if (!isValidMinecraftUsername(query)) {
             return null
         }
         if (identityRepository.findByNormalizedUsername(query.lowercase(Locale.ROOT)) != null) {
@@ -108,6 +109,5 @@ constructor(
     private companion object {
         const val MINIMUM_QUERY_LENGTH = 2
         const val MAXIMUM_PAGE_SIZE = 100
-        val MINECRAFT_USERNAME = Regex("^[A-Za-z0-9_]{3,16}$")
     }
 }

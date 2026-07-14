@@ -173,7 +173,7 @@ class IdentitySyncCoordinator(
         }
 
         return try {
-            val identities = source.loadAll()
+            val identities = reconcileOmittedExistingIdentities(source.loadAll())
             val completedAt = clock.instant()
             store.replaceAll(identities, completedAt)
             LOG.infof(
@@ -192,6 +192,22 @@ class IdentitySyncCoordinator(
             )
             IdentitySyncOutcome.FAILED
         }
+    }
+
+    private fun reconcileOmittedExistingIdentities(
+        listedIdentities: List<ProjectedPlayerIdentity>
+    ): List<ProjectedPlayerIdentity> {
+        val reconciled = listedIdentities.toMutableList()
+        val listedKeycloakUserIds = listedIdentities.mapTo(mutableSetOf()) { it.keycloakUserId }
+        store.listKeycloakUserIds().minus(listedKeycloakUserIds).forEach { keycloakUserId ->
+            source.loadPlayer(keycloakUserId)?.let { identity ->
+                check(identity.keycloakUserId == keycloakUserId) {
+                    "Targeted identity does not match the requested Keycloak user"
+                }
+                reconciled += identity
+            }
+        }
+        return reconciled
     }
 
     private fun markSyncFailed(startedAt: java.time.Instant, completedAt: java.time.Instant) {

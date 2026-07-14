@@ -9,7 +9,11 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
+import java.time.Clock
 import java.time.Duration
+import java.time.Instant
+import java.util.LinkedHashMap
+import java.util.Locale
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
@@ -29,20 +33,52 @@ class MojangProfileClient(
     private val baseUrl: String,
     private val timeout: Duration,
     private val httpClient: HttpClient,
+    private val clock: Clock = Clock.systemUTC(),
+    private val cacheTtl: Duration = DEFAULT_CACHE_TTL,
+    private val cacheMaxEntries: Int = DEFAULT_CACHE_MAX_ENTRIES,
 ) {
+    private val cache =
+        object : LinkedHashMap<String, CachedLookup>(16, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, CachedLookup>?
+            ): Boolean = size > cacheMaxEntries
+        }
+
     @Inject
     constructor(
         objectMapper: ObjectMapper,
         @ConfigProperty(name = "permissions.mojang.base-url") baseUrl: String,
         @ConfigProperty(name = "permissions.mojang.timeout") timeout: Duration,
+        @ConfigProperty(name = "permissions.mojang.cache-ttl") cacheTtl: Duration,
+        @ConfigProperty(name = "permissions.mojang.cache-max-entries") cacheMaxEntries: Int,
     ) : this(
         objectMapper = objectMapper,
         baseUrl = baseUrl,
         timeout = timeout,
         httpClient = HttpClient.newBuilder().connectTimeout(timeout).build(),
+        cacheTtl = cacheTtl,
+        cacheMaxEntries = cacheMaxEntries,
     )
 
+    init {
+        require(!cacheTtl.isZero && !cacheTtl.isNegative) { "Mojang cache TTL must be positive" }
+        require(cacheMaxEntries > 0) { "Mojang cache size must be positive" }
+    }
+
     fun lookupExactUsername(username: String): MojangLookupResult {
+        if (!isValidMinecraftUsername(username)) {
+            return MojangLookupResult.NotFound
+        }
+        val cacheKey = username.lowercase(Locale.ROOT)
+        cached(cacheKey)?.let {
+            return it
+        }
+        val result = requestProfile(username)
+        cache(cacheKey, result)
+        return result
+    }
+
+    private fun requestProfile(username: String): MojangLookupResult {
         val request =
             HttpRequest.newBuilder(profileUri(username))
                 .timeout(timeout)
@@ -62,10 +98,27 @@ class MojangProfileClient(
         }
     }
 
+    private fun cached(cacheKey: String): MojangLookupResult? =
+        synchronized(cache) {
+            val cached = cache[cacheKey] ?: return@synchronized null
+            if (clock.instant().isBefore(cached.expiresAt)) {
+                cached.result
+            } else {
+                cache.remove(cacheKey)
+                null
+            }
+        }
+
+    private fun cache(cacheKey: String, result: MojangLookupResult) {
+        synchronized(cache) {
+            cache[cacheKey] = CachedLookup(result, clock.instant().plus(cacheTtl))
+        }
+    }
+
     private fun parseProfile(requestedUsername: String, body: String): MojangLookupResult =
         try {
             val payload = objectMapper.readValue(body, MojangProfilePayload::class.java)
-            require(MINECRAFT_USERNAME.matches(payload.name)) {
+            require(isValidMinecraftUsername(payload.name)) {
                 "Mojang profile name must be a valid Minecraft username"
             }
             require(payload.name.equals(requestedUsername, ignoreCase = true)) {
@@ -96,7 +149,10 @@ class MojangProfileClient(
 
     private data class MojangProfilePayload(var id: String = "", var name: String = "")
 
+    private data class CachedLookup(val result: MojangLookupResult, val expiresAt: Instant)
+
     private companion object {
-        val MINECRAFT_USERNAME = Regex("^[A-Za-z0-9_]{3,16}$")
+        val DEFAULT_CACHE_TTL: Duration = Duration.ofMinutes(5)
+        const val DEFAULT_CACHE_MAX_ENTRIES = 512
     }
 }

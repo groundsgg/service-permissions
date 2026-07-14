@@ -50,6 +50,75 @@ class IdentitySyncCoordinatorTest {
     }
 
     @Test
+    fun reconcilesExistingIdentityOmittedFromPaginatedFullListing() {
+        val existingIdentity = identity()
+        val loadedPlayers = mutableListOf<String>()
+        val store = RecordingIdentityStore().apply { identities = listOf(existingIdentity) }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> = emptyList()
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? {
+                            loadedPlayers += keycloakUserId
+                            return existingIdentity
+                        }
+                    },
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+            )
+
+        val outcome = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, outcome)
+        assertEquals(listOf(existingIdentity.keycloakUserId), loadedPlayers)
+        assertEquals(listOf(existingIdentity), store.identities)
+    }
+
+    @Test
+    fun failsFullSyncWithoutDeletingIdentityWhenOmissionConfirmationFails() {
+        val existingIdentity = identity()
+        val store = RecordingIdentityStore().apply { identities = listOf(existingIdentity) }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> = emptyList()
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? {
+                            throw IllegalStateException("temporary Keycloak failure")
+                        }
+                    },
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+            )
+
+        val outcome = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.FAILED, outcome)
+        assertEquals(listOf(existingIdentity), store.identities)
+        assertEquals(IdentitySyncStatus.FAILED, store.state.status)
+    }
+
+    @Test
+    fun removesIdentityConfirmedMissingFromFullListing() {
+        val existingIdentity = identity()
+        val store = RecordingIdentityStore().apply { identities = listOf(existingIdentity) }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source = emptyIdentitySource(),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+            )
+
+        val outcome = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, outcome)
+        assertTrue(store.identities.isEmpty())
+    }
+
+    @Test
     fun returnsAlreadyRunningForAConcurrentFullSync() {
         val enteredSource = CountDownLatch(1)
         val releaseSource = CountDownLatch(1)
@@ -510,6 +579,9 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
 
     override fun findByKeycloakUserId(keycloakUserId: String): ProjectedPlayerIdentity? =
         identities.firstOrNull { it.keycloakUserId == keycloakUserId }
+
+    override fun listKeycloakUserIds(): Set<String> =
+        identities.mapTo(mutableSetOf()) { it.keycloakUserId }
 
     override fun search(query: String, page: Int, perPage: Int): PlayerSearchPage =
         PlayerSearchPage(emptyList(), page, perPage, 0)

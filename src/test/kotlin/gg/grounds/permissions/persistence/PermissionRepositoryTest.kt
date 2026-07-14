@@ -88,6 +88,27 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun deletesPlayerIdentityTombstones() {
+        val deletedAt = Instant.parse("2030-01-01T00:00:05Z")
+        val staleIdentity =
+            ProjectedPlayerIdentity(
+                playerId = UUID.fromString("00000000-0000-0000-0000-000000000111"),
+                keycloakUserId = "keycloak-tombstone-cleanup",
+                minecraftUsername = "CleanupPlayer",
+                normalizedUsername = "cleanupplayer",
+                groupPaths = emptySet(),
+                syncedAt = deletedAt.minusSeconds(1),
+                sourceUpdatedAt = null,
+            )
+        identityRepository.deleteByKeycloakUserId(staleIdentity.keycloakUserId, deletedAt)
+
+        repository.deleteAllPermissionData()
+        identityRepository.replacePlayer(staleIdentity)
+
+        assertEquals(staleIdentity, identityRepository.findByPlayerId(staleIdentity.playerId))
+    }
+
+    @Test
     fun writesPermissionPolicyAndLoadsEffectiveInput() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000123")
         val directPlayerGrantId = UUID.fromString("00000000-0000-0000-0000-000000000201")

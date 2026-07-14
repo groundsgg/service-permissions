@@ -137,6 +137,42 @@ class PlayerIdentitySynchronizerTest {
     }
 
     @Test
+    fun rejectsInvalidMinecraftUsernamesWithoutLoadingGroups() {
+        val groupRequests = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        server.createContext("/admin/realms/grounds/users") { exchange ->
+            when (exchange.requestURI.path) {
+                "/admin/realms/grounds/users" ->
+                    exchange.respond(
+                        200,
+                        """
+                        [
+                          {"id":"too-short","attributes":{"minecraft_java_uuid":["00000000-0000-0000-0000-000000000311"],"minecraft_java_username":["ab"]}},
+                          {"id":"invalid-character","attributes":{"minecraft_java_uuid":["00000000-0000-0000-0000-000000000312"],"minecraft_java_username":["Invalid Player"]}},
+                          {"id":"too-long","attributes":{"minecraft_java_uuid":["00000000-0000-0000-0000-000000000313"],"minecraft_java_username":["SeventeenCharacters"]}}
+                        ]
+                        """
+                            .trimIndent(),
+                    )
+                else -> {
+                    groupRequests.incrementAndGet()
+                    exchange.respond(200, "[]")
+                }
+            }
+        }
+        server.start()
+
+        try {
+            val identities = synchronizer(server, pageSize = 4).loadAll()
+
+            assertEquals(emptyList<ProjectedPlayerIdentity>(), identities)
+            assertEquals(0, groupRequests.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun returnsNoProjectionForDeletedOrUnlinkedUsers() {
         val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
         server.createContext("/admin/realms/grounds/users") { exchange ->

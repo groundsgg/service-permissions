@@ -3,6 +3,11 @@ package gg.grounds.permissions.identity
 import java.time.Instant
 import java.util.UUID
 
+internal val MINECRAFT_USERNAME_PATTERN = Regex("^[A-Za-z0-9_]{3,16}$")
+
+internal fun isValidMinecraftUsername(value: String): Boolean =
+    MINECRAFT_USERNAME_PATTERN.matches(value)
+
 class IdentityProjectionUnavailableException :
     IllegalStateException("Player identity projection is unavailable")
 
@@ -50,6 +55,8 @@ interface PlayerIdentityStore {
     fun findByPlayerId(playerId: UUID): ProjectedPlayerIdentity?
 
     fun findByKeycloakUserId(keycloakUserId: String): ProjectedPlayerIdentity?
+
+    fun listKeycloakUserIds(): Set<String>
 
     fun search(query: String, page: Int, perPage: Int): PlayerSearchPage
 

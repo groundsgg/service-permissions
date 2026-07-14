@@ -2,6 +2,7 @@ package gg.grounds.permissions.identity
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.nats.client.api.AckPolicy
+import java.time.Duration
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
@@ -57,6 +58,7 @@ class IdentityChangeConsumerTest {
         consumer.process(delivery)
 
         assertEquals(DeliveryOutcome.NEGATIVELY_ACKNOWLEDGED, delivery.outcome)
+        assertEquals(Duration.ofSeconds(5), delivery.retryDelay)
     }
 
     @Test
@@ -116,6 +118,7 @@ class IdentityChangeConsumerTest {
             )
 
         assertEquals(AckPolicy.Explicit, options.consumerConfiguration.ackPolicy)
+        assertEquals(10, options.consumerConfiguration.maxDeliver)
     }
 
     private fun validPayload(realmId: String = "grounds", reason: String = "identity_updated") =
@@ -140,12 +143,16 @@ private class RecordingDelivery(override val data: ByteArray) : IdentityEventDel
     var outcome: DeliveryOutcome = DeliveryOutcome.PENDING
         private set
 
+    var retryDelay: Duration? = null
+        private set
+
     override fun acknowledge() {
         outcome = DeliveryOutcome.ACKNOWLEDGED
     }
 
-    override fun negativelyAcknowledge() {
+    override fun negativelyAcknowledge(delay: Duration) {
         outcome = DeliveryOutcome.NEGATIVELY_ACKNOWLEDGED
+        retryDelay = delay
     }
 
     override fun terminate() {

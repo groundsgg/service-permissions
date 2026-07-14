@@ -28,6 +28,23 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     override fun findByKeycloakUserId(keycloakUserId: String): ProjectedPlayerIdentity? =
         findIdentity("keycloak_user_id = ?") { statement -> statement.setString(1, keycloakUserId) }
 
+    override fun listKeycloakUserIds(): Set<String> =
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    "SELECT keycloak_user_id FROM permission_player_identities ORDER BY keycloak_user_id"
+                )
+                .use { statement ->
+                    statement.executeQuery().use { rows ->
+                        buildSet {
+                            while (rows.next()) {
+                                add(rows.getString("keycloak_user_id"))
+                            }
+                        }
+                    }
+                }
+        }
+
     fun findByNormalizedUsername(normalizedUsername: String): ProjectedPlayerIdentity? =
         findIdentity("minecraft_username_normalized = ?") { statement ->
             statement.setString(1, normalizedUsername.trim().lowercase(Locale.ROOT))

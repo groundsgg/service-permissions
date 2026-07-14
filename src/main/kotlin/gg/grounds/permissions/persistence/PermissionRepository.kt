@@ -870,6 +870,7 @@ constructor(
             try {
                 listOf(
                         "permission_player_keycloak_groups",
+                        "permission_player_identity_tombstones",
                         "permission_player_identities",
                         "permission_audit_events",
                         "permission_runtime_registrations",
