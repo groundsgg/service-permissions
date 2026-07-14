@@ -73,7 +73,10 @@ data class EffectivePermissionSnapshot(
     val denyPatterns: List<PermissionGrant>,
     val roleKeys: Set<String>,
     val roleMetadata: List<RoleMetadata>,
+    val roleAssignments: List<EffectiveRoleAssignment>,
 )
+
+data class EffectiveRoleAssignment(val roleKey: String, val origin: PermissionGrantOrigin)
 
 data class RoleMetadata(
     val key: String,

@@ -253,6 +253,7 @@ fun PermissionScope.toGrantResponse(
     effect: gg.grounds.permissions.domain.PermissionEffect,
     pattern: String,
     expiresAt: java.time.Instant?,
+    origin: gg.grounds.permissions.domain.PermissionGrantOrigin,
 ): EffectiveGrantResponse =
     EffectiveGrantResponse(
         effect = effect,
@@ -260,4 +261,10 @@ fun PermissionScope.toGrantResponse(
         scopeKind = kind,
         scopeValue = value,
         expiresAt = expiresAt,
+        source = origin.kind,
+        roleKey = origin.roleKey,
+        mappingId = origin.mappingId,
+        inheritedPath = origin.inheritedPath,
+        editable =
+            origin.kind == gg.grounds.permissions.domain.PermissionGrantOriginKind.DIRECT_PERMISSION,
     )

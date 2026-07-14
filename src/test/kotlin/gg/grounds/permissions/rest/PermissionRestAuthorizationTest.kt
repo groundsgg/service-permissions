@@ -36,18 +36,23 @@ class PermissionRestAuthorizationTest {
     @Test
     fun rejectsAnonymousRoleRequests() {
         given().get("/v1/permissions/roles").then().statusCode(401)
+        given().get("/v1/permissions/players/search?query=ab").then().statusCode(401)
+        given().post("/v1/permissions/identity-sync").then().statusCode(401)
     }
 
     @Test
     @TestSecurity(user = "user-alpha")
     fun rejectsAuthenticatedUsersWithoutMinecraftPermissionManagementAccess() {
         given().get("/v1/permissions/roles").then().statusCode(403)
+        given().get("/v1/permissions/players/search?query=ab").then().statusCode(403)
+        given().post("/v1/permissions/identity-sync").then().statusCode(403)
     }
 
     @Test
     @TestSecurity(user = "admin-user", roles = ["MINECRAFT_PERMISSIONS_MANAGE"])
     fun allowsUsersWithMinecraftPermissionManagementAccess() {
         given().get("/v1/permissions/roles").then().statusCode(200)
+        given().get("/v1/permissions/players/search?query=x").then().statusCode(400)
     }
 
     @Test
@@ -75,6 +80,17 @@ class PermissionRestAuthorizationTest {
             .statusCode(200)
             .body("snapshotId", org.hamcrest.Matchers.equalTo("snapshot-1"))
     }
+
+    @Test
+    @TestSecurity(user = "project-editor")
+    fun allowsProjectEditorsOnPlayerManagementRoutes() {
+        given()
+            .header("X-Grounds-Project-Id", "project-a")
+            .header("X-Grounds-Project-Role", "editor")
+            .get("/v1/permissions/players/search?query=x")
+            .then()
+            .statusCode(400)
+    }
 }
 
 class PermissionRestAuthorizationTestProfile : QuarkusTestProfile {
@@ -83,5 +99,6 @@ class PermissionRestAuthorizationTestProfile : QuarkusTestProfile {
             "quarkus.flyway.migrate-at-start" to "false",
             "quarkus.datasource.devservices.enabled" to "false",
             "permissions.auth.allow-test-security-principal" to "true",
+            "permissions.auth.trust-forge-project-role" to "true",
         )
 }

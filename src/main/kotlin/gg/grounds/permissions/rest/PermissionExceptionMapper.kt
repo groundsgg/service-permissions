@@ -1,5 +1,6 @@
 package gg.grounds.permissions.rest
 
+import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.persistence.DuplicateRoleKeyException
 import jakarta.ws.rs.NotFoundException
 import jakarta.ws.rs.core.Response
@@ -19,6 +20,15 @@ class IllegalStateExceptionMapper : ExceptionMapper<IllegalStateException> {
     override fun toResponse(exception: IllegalStateException): Response =
         Response.status(Response.Status.BAD_REQUEST)
             .entity(ErrorResponse(exception.message ?: "invalid state"))
+            .build()
+}
+
+@Provider
+class IdentityProjectionUnavailableExceptionMapper :
+    ExceptionMapper<IdentityProjectionUnavailableException> {
+    override fun toResponse(exception: IdentityProjectionUnavailableException): Response =
+        Response.status(Response.Status.SERVICE_UNAVAILABLE)
+            .entity(ErrorResponse("identity_projection_unavailable"))
             .build()
 }
 

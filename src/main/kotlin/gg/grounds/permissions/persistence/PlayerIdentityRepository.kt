@@ -26,6 +26,11 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     override fun findByKeycloakUserId(keycloakUserId: String): ProjectedPlayerIdentity? =
         findIdentity("keycloak_user_id = ?") { statement -> statement.setString(1, keycloakUserId) }
 
+    fun findByNormalizedUsername(normalizedUsername: String): ProjectedPlayerIdentity? =
+        findIdentity("minecraft_username_normalized = ?") { statement ->
+            statement.setString(1, normalizedUsername.trim().lowercase(Locale.ROOT))
+        }
+
     override fun search(query: String, page: Int, perPage: Int): PlayerSearchPage {
         require(page >= 1) { "Page must be at least one (page=$page)" }
         require(perPage >= 1) { "perPage must be at least one (perPage=$perPage)" }
@@ -54,7 +59,9 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                                 FROM permission_player_grants
                                 GROUP BY player_id
                             ) permission_grants ON permission_grants.player_id = identities.player_id
-                            WHERE ? = '' OR identities.minecraft_username_normalized LIKE ? ESCAPE '\'
+                            WHERE ? = ''
+                               OR identities.minecraft_username_normalized LIKE ? ESCAPE '\'
+                               OR identities.player_id::text = ?
                         ),
                         paged_identities AS (
                             SELECT *
@@ -78,8 +85,9 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                     .use { statement ->
                         statement.setString(1, normalizedQuery)
                         statement.setString(2, searchPattern)
-                        statement.setInt(3, perPage)
-                        statement.setLong(4, (page - 1L) * perPage)
+                        statement.setString(3, normalizedQuery)
+                        statement.setInt(4, perPage)
+                        statement.setLong(5, (page - 1L) * perPage)
                         statement.executeQuery().use { resultSet ->
                             var total = 0L
                             val items = buildList {

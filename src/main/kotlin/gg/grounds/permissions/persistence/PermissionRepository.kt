@@ -862,6 +862,8 @@ constructor(
         )
     }
 
+    fun requiresIdentityProjection(): Boolean = hasKeycloakGroupMappings()
+
     fun deleteAllPermissionData() {
         dataSource.connection.use { connection ->
             connection.autoCommit = false

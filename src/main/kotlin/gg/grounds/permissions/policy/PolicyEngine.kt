@@ -1,6 +1,7 @@
 package gg.grounds.permissions.policy
 
 import gg.grounds.permissions.domain.EffectivePermissionSnapshot
+import gg.grounds.permissions.domain.EffectiveRoleAssignment
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrant
 import gg.grounds.permissions.domain.PermissionGrantOrigin
@@ -121,6 +122,10 @@ object PolicyEngine {
             denyPatterns = grants.filter { it.effect == PermissionEffect.DENY },
             roleKeys = roleKeys,
             roleMetadata = roleKeys.mapNotNull { rolesByKey[it]?.toMetadata() },
+            roleAssignments =
+                resolvedRoles
+                    .map { EffectiveRoleAssignment(roleKey = it.roleKey, origin = it.origin) }
+                    .distinct(),
         )
     }
 
