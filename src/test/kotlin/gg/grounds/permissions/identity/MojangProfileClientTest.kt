@@ -79,6 +79,26 @@ class MojangProfileClientTest {
         }
     }
 
+    @Test
+    fun rejectsSuccessfulResponsesForADifferentUsername() {
+        val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        server.createContext("/users/profiles/minecraft/ExpectedPlayer") { exchange ->
+            val body = """{"id":"00000000000000000000000000000410","name":"OtherPlayer"}"""
+            exchange.sendResponseHeaders(200, body.length.toLong())
+            exchange.responseBody.use { it.write(body.toByteArray()) }
+        }
+        server.start()
+
+        try {
+            assertSame(
+                MojangLookupResult.Unavailable,
+                client(server).lookupExactUsername("ExpectedPlayer"),
+            )
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun client(server: HttpServer): MojangProfileClient =
         MojangProfileClient(
             objectMapper = ObjectMapper(),

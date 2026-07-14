@@ -70,6 +70,7 @@ object PolicyEngine {
                                         PermissionRoleAssignmentSource.GROUP_MAPPING ->
                                             PermissionGrantOriginKind.GROUP_MAPPING
                                     },
+                                grantId = grant.grantId,
                                 mappingId = grant.mappingId,
                             ),
                     )
@@ -100,7 +101,10 @@ object PolicyEngine {
             includedPlayerGrants.map {
                 it.grant.toGrant(
                     PermissionGrantSource.PLAYER,
-                    PermissionGrantOrigin(PermissionGrantOriginKind.DIRECT_PERMISSION),
+                    PermissionGrantOrigin(
+                        PermissionGrantOriginKind.DIRECT_PERMISSION,
+                        grantId = it.grantId,
+                    ),
                 )
             }
         val grants = effectiveRoleGrants + playerGrants

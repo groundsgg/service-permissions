@@ -176,6 +176,56 @@ class PermissionPlayerSearchResourceTest {
     }
 
     @Test
+    fun paginatesAnExactMojangResultBeforePartialLocalMatchesWithAStableTotal() {
+        val externalPlayerId = UUID.fromString("00000000-0000-0000-0000-000000000411")
+        val localPlayerId = UUID.fromString("00000000-0000-0000-0000-000000000412")
+        identityRepository.replacePlayer(identity(localPlayerId, "Alexandra"))
+        whenever(mojangProfileClient.lookupExactUsername("Alex"))
+            .thenReturn(MojangLookupResult.Found(MojangProfile(externalPlayerId, "Alex")))
+
+        given()
+            .queryParam("query", "Alex")
+            .queryParam("page", 1)
+            .queryParam("perPage", 1)
+            .get("/v1/permissions/players/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(2))
+            .body("items", hasSize<Any>(1))
+            .body("items[0].playerId", equalTo(externalPlayerId.toString()))
+            .body("items[0].linked", equalTo(false))
+
+        given()
+            .queryParam("query", "Alex")
+            .queryParam("page", 2)
+            .queryParam("perPage", 1)
+            .get("/v1/permissions/players/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(2))
+            .body("items", hasSize<Any>(1))
+            .body("items[0].playerId", equalTo(localPlayerId.toString()))
+            .body("items[0].linked", equalTo(true))
+    }
+
+    @Test
+    fun keepsTheMojangOnlyTotalStableBeyondTheFirstPage() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000413")
+        whenever(mojangProfileClient.lookupExactUsername("OnlyExternal"))
+            .thenReturn(MojangLookupResult.Found(MojangProfile(playerId, "OnlyExternal")))
+
+        given()
+            .queryParam("query", "OnlyExternal")
+            .queryParam("page", 2)
+            .queryParam("perPage", 20)
+            .get("/v1/permissions/players/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(1))
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
     fun isolatesUnavailableMojangResponsesFromSearchResults() {
         whenever(mojangProfileClient.lookupExactUsername("UnavailablePlayer"))
             .thenReturn(MojangLookupResult.Unavailable)

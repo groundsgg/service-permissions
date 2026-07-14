@@ -977,7 +977,7 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT player_id, role_key, expires_at
+                SELECT id, player_id, role_key, expires_at
                 FROM permission_player_role_grants
                 WHERE player_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -991,6 +991,7 @@ constructor(
                         while (rows.next()) {
                             add(
                                 PlayerRoleGrant(
+                                    grantId = rows.getObject("id", UUID::class.java),
                                     playerId = rows.getObject("player_id", UUID::class.java),
                                     roleKey = rows.getString("role_key"),
                                     expiresAt = rows.instantOrNull("expires_at"),
@@ -1061,7 +1062,7 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT player_id, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value, expires_at
                 FROM permission_player_grants
                 WHERE player_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -1075,6 +1076,7 @@ constructor(
                         while (rows.next()) {
                             add(
                                 PlayerPermissionGrant(
+                                    grantId = rows.getObject("id", UUID::class.java),
                                     playerId = rows.getObject("player_id", UUID::class.java),
                                     grant = rows.toGrantSpec(),
                                 )

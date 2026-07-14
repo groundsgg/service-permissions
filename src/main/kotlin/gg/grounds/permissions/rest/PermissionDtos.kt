@@ -132,6 +132,7 @@ data class EffectiveGrantResponse(
     val scopeValue: String?,
     val expiresAt: Instant?,
     val source: PermissionGrantOriginKind,
+    val grantId: UUID?,
     val roleKey: String?,
     val mappingId: UUID?,
     val inheritedPath: List<String>,
@@ -141,6 +142,7 @@ data class EffectiveGrantResponse(
 data class EffectiveRoleAssignmentResponse(
     val roleKey: String,
     val source: PermissionGrantOriginKind,
+    val grantId: UUID?,
     val mappingId: UUID?,
     val inheritedPath: List<String>,
     val editable: Boolean,

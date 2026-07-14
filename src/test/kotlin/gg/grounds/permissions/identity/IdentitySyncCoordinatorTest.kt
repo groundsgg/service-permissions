@@ -88,6 +88,70 @@ class IdentitySyncCoordinatorTest {
     }
 
     @Test
+    fun preservesNewerTargetedRefreshWhenOlderFullSnapshotCompletesLater() {
+        val snapshotLoaded = CountDownLatch(1)
+        val releaseFullSync = CountDownLatch(1)
+        val oldIdentity =
+            identity()
+                .copy(
+                    minecraftUsername = "OldPlayer",
+                    normalizedUsername = "oldplayer",
+                    groupPaths = setOf("/old-group"),
+                    syncedAt = Instant.parse("2030-01-01T00:00:00Z"),
+                )
+        val newIdentity =
+            oldIdentity.copy(
+                minecraftUsername = "NewPlayer",
+                normalizedUsername = "newplayer",
+                groupPaths = setOf("/new-group"),
+                syncedAt = Instant.parse("2030-01-01T00:00:02Z"),
+            )
+        val store = RecordingIdentityStore()
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> {
+                            snapshotLoaded.countDown()
+                            check(releaseFullSync.await(5, TimeUnit.SECONDS))
+                            return listOf(oldIdentity)
+                        }
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity =
+                            newIdentity
+                    },
+                clock =
+                    SequenceClock(
+                        Instant.parse("2030-01-01T00:00:01Z"),
+                        Instant.parse("2030-01-01T00:00:02Z"),
+                        Instant.parse("2030-01-01T00:00:03Z"),
+                        Instant.parse("2030-01-01T00:00:04Z"),
+                    ),
+            )
+        val executor = Executors.newSingleThreadExecutor()
+
+        try {
+            val fullSync = executor.submit<IdentitySyncOutcome> { coordinator.synchronizeAll() }
+            assertTrue(snapshotLoaded.await(5, TimeUnit.SECONDS))
+
+            assertEquals(
+                IdentityRefreshOutcome.UPDATED,
+                coordinator.refreshPlayer(newIdentity.keycloakUserId),
+            )
+            releaseFullSync.countDown()
+
+            assertEquals(IdentitySyncOutcome.COMPLETED, fullSync.get(5, TimeUnit.SECONDS))
+            assertEquals(listOf(newIdentity), store.identities)
+            assertEquals(IdentitySyncStatus.IDLE, store.state.status)
+            assertEquals(1, store.state.playerCount)
+        } finally {
+            releaseFullSync.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun returnsAlreadyRunningWithoutReadingKeycloakWhenAdvisoryLockIsUnavailable() {
         val store = RecordingIdentityStore()
         var sourceRead = false
@@ -403,14 +467,30 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
     @Synchronized
     override fun replaceAll(identities: List<ProjectedPlayerIdentity>, completedAt: Instant) {
         check(state.status == IdentitySyncStatus.RUNNING)
-        this.identities = identities
+        val snapshotStartedAt = checkNotNull(state.startedAt)
+        val reconciled = this.identities.toMutableList()
+        identities.forEach { identity ->
+            val conflicts =
+                reconciled.filter {
+                    it.playerId == identity.playerId || it.keycloakUserId == identity.keycloakUserId
+                }
+            if (conflicts.none { it.syncedAt.isAfter(snapshotStartedAt) }) {
+                reconciled.removeAll(conflicts)
+                reconciled += identity
+            }
+        }
+        val snapshotPlayerIds = identities.mapTo(mutableSetOf()) { it.playerId }
+        reconciled.removeIf {
+            it.playerId !in snapshotPlayerIds && !it.syncedAt.isAfter(snapshotStartedAt)
+        }
+        this.identities = reconciled
         state =
             state.copy(
                 status = IdentitySyncStatus.IDLE,
                 completedAt = completedAt,
                 lastSuccessAt = completedAt,
                 durationMs = completedAt.toEpochMilli() - state.startedAt!!.toEpochMilli(),
-                playerCount = identities.size.toLong(),
+                playerCount = reconciled.size.toLong(),
                 failureReason = null,
             )
     }

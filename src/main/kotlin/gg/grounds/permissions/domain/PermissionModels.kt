@@ -58,6 +58,7 @@ enum class PermissionGrantOriginKind {
 
 data class PermissionGrantOrigin(
     val kind: PermissionGrantOriginKind,
+    val grantId: UUID? = null,
     val roleKey: String? = null,
     val mappingId: UUID? = null,
     val inheritedPath: List<String> = emptyList(),
@@ -109,6 +110,7 @@ data class PlayerRoleGrant(
     val expiresAt: Instant? = null,
     val assignmentSource: PermissionRoleAssignmentSource = PermissionRoleAssignmentSource.DIRECT,
     val mappingId: UUID? = null,
+    val grantId: UUID? = null,
 ) {
     init {
         require(
@@ -124,6 +126,7 @@ data class PlayerPermissionGrant(
     val playerId: UUID,
     val grant: PermissionGrantSpec,
     val assignmentExpiresAt: Instant? = null,
+    val grantId: UUID? = null,
 )
 
 data class PermissionPolicyInput(

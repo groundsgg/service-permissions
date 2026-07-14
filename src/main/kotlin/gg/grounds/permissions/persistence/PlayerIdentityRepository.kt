@@ -34,6 +34,13 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     override fun search(query: String, page: Int, perPage: Int): PlayerSearchPage {
         require(page >= 1) { "Page must be at least one (page=$page)" }
         require(perPage >= 1) { "perPage must be at least one (perPage=$perPage)" }
+        return searchAtOffset(query, (page - 1L) * perPage, perPage)
+            .copy(page = page, perPage = perPage)
+    }
+
+    fun searchAtOffset(query: String, offset: Long, limit: Int): PlayerSearchPage {
+        require(offset >= 0) { "offset must not be negative (offset=$offset)" }
+        require(limit >= 0) { "limit must not be negative (limit=$limit)" }
 
         val normalizedQuery = query.trim().lowercase(Locale.ROOT)
         val searchPattern = "%${normalizedQuery.escapeLikePattern()}%"
@@ -86,8 +93,8 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                         statement.setString(1, normalizedQuery)
                         statement.setString(2, searchPattern)
                         statement.setString(3, normalizedQuery)
-                        statement.setInt(4, perPage)
-                        statement.setLong(5, (page - 1L) * perPage)
+                        statement.setInt(4, limit)
+                        statement.setLong(5, offset)
                         statement.executeQuery().use { resultSet ->
                             var total = 0L
                             val items = buildList {
@@ -105,8 +112,8 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
 
         return PlayerSearchPage(
             items = result.items,
-            page = page,
-            perPage = perPage,
+            page = 1,
+            perPage = limit,
             total = result.total,
         )
     }
@@ -115,6 +122,7 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
+                deleteRelinkedIdentity(connection, identity)
                 upsertIdentity(connection, identity)
                 replaceGroups(connection, identity.playerId, identity.groupPaths)
                 connection.commit()
@@ -144,10 +152,11 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
             try {
                 createReconciliationStage(connection)
                 identities.forEach { identity -> stageIdentity(connection, identity) }
+                deleteRelinkedIdentities(connection)
                 reconcileIdentities(connection)
                 reconcileGroups(connection)
                 deleteMissingIdentities(connection)
-                completeSync(connection, identities.size.toLong(), completedAt)
+                completeSync(connection, completedAt)
                 connection.commit()
             } catch (error: Throwable) {
                 connection.rollback()
@@ -338,13 +347,58 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 )
                 SELECT player_id, keycloak_user_id, minecraft_username, minecraft_username_normalized,
                        synced_at, source_updated_at
-                FROM permission_player_identity_stage
+                FROM permission_player_identity_stage stage
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM permission_player_identities existing
+                    WHERE (
+                        existing.player_id = stage.player_id
+                        OR existing.keycloak_user_id = stage.keycloak_user_id
+                    )
+                      AND existing.synced_at > (
+                          SELECT started_at
+                          FROM permission_identity_sync_state
+                          WHERE id = 1
+                      )
+                )
                 ON CONFLICT (player_id) DO UPDATE
                 SET keycloak_user_id = EXCLUDED.keycloak_user_id,
                     minecraft_username = EXCLUDED.minecraft_username,
                     minecraft_username_normalized = EXCLUDED.minecraft_username_normalized,
                     synced_at = EXCLUDED.synced_at,
                     source_updated_at = EXCLUDED.source_updated_at
+                WHERE permission_player_identities.synced_at <= (
+                    SELECT started_at
+                    FROM permission_identity_sync_state
+                    WHERE id = 1
+                )
+                """
+                    .trimIndent()
+            )
+            .use { it.executeUpdate() }
+    }
+
+    private fun deleteRelinkedIdentities(connection: Connection) {
+        connection
+            .prepareStatement(
+                """
+                DELETE FROM permission_player_identities identities
+                USING permission_player_identity_stage stage
+                WHERE identities.keycloak_user_id = stage.keycloak_user_id
+                  AND identities.player_id <> stage.player_id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM permission_player_identities existing
+                      WHERE (
+                          existing.player_id = stage.player_id
+                          OR existing.keycloak_user_id = stage.keycloak_user_id
+                      )
+                        AND existing.synced_at > (
+                            SELECT started_at
+                            FROM permission_identity_sync_state
+                            WHERE id = 1
+                        )
+                  )
                 """
                     .trimIndent()
             )
@@ -356,7 +410,14 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
             .prepareStatement(
                 """
                 DELETE FROM permission_player_keycloak_groups
-                WHERE player_id IN (SELECT player_id FROM permission_player_identity_stage)
+                WHERE player_id IN (
+                    SELECT stage.player_id
+                    FROM permission_player_identity_stage stage
+                    JOIN permission_player_identities identities
+                      ON identities.player_id = stage.player_id
+                     AND identities.keycloak_user_id = stage.keycloak_user_id
+                     AND identities.synced_at = stage.synced_at
+                )
                 """
                     .trimIndent()
             )
@@ -366,7 +427,16 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 """
                 INSERT INTO permission_player_keycloak_groups (player_id, keycloak_group_path)
                 SELECT player_id, keycloak_group_path
-                FROM permission_player_group_stage
+                FROM permission_player_group_stage groups
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM permission_player_identity_stage stage
+                    JOIN permission_player_identities identities
+                      ON identities.player_id = stage.player_id
+                     AND identities.keycloak_user_id = stage.keycloak_user_id
+                     AND identities.synced_at = stage.synced_at
+                    WHERE stage.player_id = groups.player_id
+                )
                 """
                     .trimIndent()
             )
@@ -383,13 +453,18 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                     FROM permission_player_identity_stage stage
                     WHERE stage.player_id = identities.player_id
                 )
+                  AND identities.synced_at <= (
+                      SELECT started_at
+                      FROM permission_identity_sync_state
+                      WHERE id = 1
+                  )
                 """
                     .trimIndent()
             )
             .use { it.executeUpdate() }
     }
 
-    private fun completeSync(connection: Connection, playerCount: Long, completedAt: Instant) {
+    private fun completeSync(connection: Connection, completedAt: Instant) {
         connection
             .prepareStatement(
                 """
@@ -401,7 +476,7 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                         WHEN started_at IS NULL THEN NULL
                         ELSE GREATEST(0, EXTRACT(EPOCH FROM (?::timestamptz - started_at)) * 1000)::BIGINT
                     END,
-                    player_count = ?,
+                    player_count = (SELECT COUNT(*) FROM permission_player_identities),
                     failure_reason = NULL
                 WHERE id = 1 AND status = 'RUNNING'
                 """
@@ -411,7 +486,6 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 statement.setTimestamp(1, Timestamp.from(completedAt))
                 statement.setTimestamp(2, Timestamp.from(completedAt))
                 statement.setTimestamp(3, Timestamp.from(completedAt))
-                statement.setLong(4, playerCount)
                 check(statement.executeUpdate() == 1) { "Identity sync is not running" }
             }
     }
@@ -440,6 +514,22 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 statement.setString(4, identity.normalizedUsername)
                 statement.setTimestamp(5, Timestamp.from(identity.syncedAt))
                 statement.setTimestamp(6, identity.sourceUpdatedAt?.let(Timestamp::from))
+                statement.executeUpdate()
+            }
+    }
+
+    private fun deleteRelinkedIdentity(connection: Connection, identity: ProjectedPlayerIdentity) {
+        connection
+            .prepareStatement(
+                """
+                DELETE FROM permission_player_identities
+                WHERE keycloak_user_id = ? AND player_id <> ?
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, identity.keycloakUserId)
+                statement.setObject(2, identity.playerId)
                 statement.executeUpdate()
             }
     }

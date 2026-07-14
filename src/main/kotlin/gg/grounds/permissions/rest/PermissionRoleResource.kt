@@ -262,6 +262,7 @@ fun PermissionScope.toGrantResponse(
         scopeValue = value,
         expiresAt = expiresAt,
         source = origin.kind,
+        grantId = origin.grantId,
         roleKey = origin.roleKey,
         mappingId = origin.mappingId,
         inheritedPath = origin.inheritedPath,

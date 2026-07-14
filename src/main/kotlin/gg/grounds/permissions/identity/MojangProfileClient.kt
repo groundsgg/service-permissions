@@ -52,7 +52,7 @@ class MojangProfileClient(
         return try {
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
             when (response.statusCode()) {
-                200 -> parseProfile(response.body())
+                200 -> parseProfile(username, response.body())
                 204,
                 404 -> MojangLookupResult.NotFound
                 else -> MojangLookupResult.Unavailable
@@ -62,11 +62,14 @@ class MojangProfileClient(
         }
     }
 
-    private fun parseProfile(body: String): MojangLookupResult =
+    private fun parseProfile(requestedUsername: String, body: String): MojangLookupResult =
         try {
             val payload = objectMapper.readValue(body, MojangProfilePayload::class.java)
             require(MINECRAFT_USERNAME.matches(payload.name)) {
                 "Mojang profile name must be a valid Minecraft username"
+            }
+            require(payload.name.equals(requestedUsername, ignoreCase = true)) {
+                "Mojang profile name must match the requested username"
             }
             MojangLookupResult.Found(
                 MojangProfile(playerId = hyphenatedUuid(payload.id), name = payload.name)

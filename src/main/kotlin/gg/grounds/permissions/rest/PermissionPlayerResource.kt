@@ -197,6 +197,7 @@ constructor(
                     EffectiveRoleAssignmentResponse(
                         roleKey = assignment.roleKey,
                         source = assignment.origin.kind,
+                        grantId = assignment.origin.grantId,
                         mappingId = assignment.origin.mappingId,
                         inheritedPath = assignment.origin.inheritedPath,
                         editable =
@@ -222,8 +223,7 @@ constructor(
             projectedIdentity?.syncedAt?.isBefore(Instant.now().minus(identityMaxStaleness)) ==
                 false
         val evaluationSafe =
-            !repository.requiresIdentityProjection() ||
-                (projectedIdentity != null && readinessCheck.isIdentityPolicyAvailable())
+            !repository.requiresIdentityProjection() || readinessCheck.isIdentityPolicyAvailable()
         return PlayerIdentityResponse(
             playerId = id,
             name = projectedIdentity?.minecraftUsername,

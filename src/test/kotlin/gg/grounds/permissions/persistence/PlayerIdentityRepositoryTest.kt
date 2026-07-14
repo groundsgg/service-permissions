@@ -187,6 +187,31 @@ class PlayerIdentityRepositoryTest {
     }
 
     @Test
+    fun relinksKeycloakUserToNewPlayerDuringTargetedReplacement() {
+        val oldIdentity =
+            identity(
+                "00000000-0000-0000-0000-000000000123",
+                "keycloak-relinked-targeted",
+                "OldPlayer",
+                setOf("/old-group"),
+            )
+        val newIdentity =
+            identity(
+                "00000000-0000-0000-0000-000000000124",
+                oldIdentity.keycloakUserId,
+                "NewPlayer",
+                setOf("/new-group"),
+            )
+        identityRepository.replacePlayer(oldIdentity)
+
+        identityRepository.replacePlayer(newIdentity)
+
+        assertNull(identityRepository.findByPlayerId(oldIdentity.playerId))
+        assertEquals(newIdentity, identityRepository.findByPlayerId(newIdentity.playerId))
+        assertEquals(0, groupCount(oldIdentity.playerId))
+    }
+
+    @Test
     fun rollsBackPlayerAndGroupsWhenGroupReplacementFails() {
         val original =
             identity(
@@ -266,6 +291,80 @@ class PlayerIdentityRepositoryTest {
         assertEquals(completedAt, identityRepository.currentSyncState().lastSuccessAt)
         assertEquals(3_000, identityRepository.currentSyncState().durationMs)
         assertEquals(2, identityRepository.currentSyncState().playerCount)
+    }
+
+    @Test
+    fun relinksKeycloakUserToNewPlayerDuringFullReconciliation() {
+        val oldIdentity =
+            identity(
+                "00000000-0000-0000-0000-000000000125",
+                "keycloak-relinked-full",
+                "OldPlayer",
+                setOf("/old-group"),
+            )
+        val newIdentity =
+            identity(
+                "00000000-0000-0000-0000-000000000126",
+                oldIdentity.keycloakUserId,
+                "NewPlayer",
+                setOf("/new-group"),
+            )
+        identityRepository.replacePlayer(oldIdentity)
+        startSync(Instant.parse("2030-01-01T00:00:01Z"))
+
+        identityRepository.replaceAll(listOf(newIdentity), Instant.parse("2030-01-01T00:00:02Z"))
+
+        assertNull(identityRepository.findByPlayerId(oldIdentity.playerId))
+        assertEquals(newIdentity, identityRepository.findByPlayerId(newIdentity.playerId))
+        assertEquals(0, groupCount(oldIdentity.playerId))
+        assertEquals(IdentitySyncStatus.IDLE, identityRepository.currentSyncState().status)
+        assertEquals(1, identityRepository.currentSyncState().playerCount)
+    }
+
+    @Test
+    fun preservesNewerTargetedProjectionWhenOlderFullSnapshotCompletesLater() {
+        val staleSnapshot =
+            identity(
+                "00000000-0000-0000-0000-000000000127",
+                "keycloak-newer-targeted",
+                "OldPlayer",
+                setOf("/old-group"),
+            )
+        val newerTargeted =
+            staleSnapshot.copy(
+                minecraftUsername = "NewPlayer",
+                normalizedUsername = "newplayer",
+                groupPaths = setOf("/new-group"),
+                syncedAt = Instant.parse("2030-01-01T00:00:02Z"),
+            )
+        startSync(Instant.parse("2030-01-01T00:00:01Z"))
+        identityRepository.replacePlayer(newerTargeted)
+
+        identityRepository.replaceAll(listOf(staleSnapshot), Instant.parse("2030-01-01T00:00:03Z"))
+
+        assertEquals(newerTargeted, identityRepository.findByPlayerId(newerTargeted.playerId))
+        assertEquals(IdentitySyncStatus.IDLE, identityRepository.currentSyncState().status)
+        assertEquals(1, identityRepository.currentSyncState().playerCount)
+    }
+
+    @Test
+    fun preservesTargetedIdentityCreatedAfterOlderFullSnapshotStarted() {
+        val newerTargeted =
+            identity(
+                    "00000000-0000-0000-0000-000000000128",
+                    "keycloak-created-during-full",
+                    "NewPlayer",
+                    setOf("/new-group"),
+                )
+                .copy(syncedAt = Instant.parse("2030-01-01T00:00:02Z"))
+        startSync(Instant.parse("2030-01-01T00:00:01Z"))
+        identityRepository.replacePlayer(newerTargeted)
+
+        identityRepository.replaceAll(emptyList(), Instant.parse("2030-01-01T00:00:03Z"))
+
+        assertEquals(newerTargeted, identityRepository.findByPlayerId(newerTargeted.playerId))
+        assertEquals(IdentitySyncStatus.IDLE, identityRepository.currentSyncState().status)
+        assertEquals(1, identityRepository.currentSyncState().playerCount)
     }
 
     @Test
@@ -428,6 +527,21 @@ class PlayerIdentityRepositoryTest {
     private fun startSync(startedAt: Instant) {
         assertTrue(identityRepository.tryMarkSyncRunning(startedAt, staleBefore = startedAt))
     }
+
+    private fun groupCount(playerId: UUID): Int =
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    "SELECT COUNT(*) FROM permission_player_keycloak_groups WHERE player_id = ?"
+                )
+                .use { statement ->
+                    statement.setObject(1, playerId)
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        rows.getInt(1)
+                    }
+                }
+        }
 
     private fun identity(
         playerId: String,

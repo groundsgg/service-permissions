@@ -230,22 +230,25 @@ class PermissionRestResourceTest {
             .statusCode(200)
             .body("roleKey", equalTo("default"))
 
-        given()
-            .contentType("application/json")
-            .body(
-                """
-                {
-                  "effect": "DENY",
-                  "permissionPattern": "grounds.command.op",
-                  "scopeKind": "GLOBAL"
-                }
-                """
-                    .trimIndent()
-            )
-            .post("/v1/permissions/players/00000000-0000-0000-0000-000000000123/grants")
-            .then()
-            .statusCode(201)
-            .body("permissionPattern", equalTo("grounds.command.op"))
+        val playerGrantId =
+            given()
+                .contentType("application/json")
+                .body(
+                    """
+                    {
+                      "effect": "DENY",
+                      "permissionPattern": "grounds.command.op",
+                      "scopeKind": "GLOBAL"
+                    }
+                    """
+                        .trimIndent()
+                )
+                .post("/v1/permissions/players/00000000-0000-0000-0000-000000000123/grants")
+                .then()
+                .statusCode(201)
+                .body("permissionPattern", equalTo("grounds.command.op"))
+                .extract()
+                .path<String>("id")
 
         given()
             .contentType("application/json")
@@ -291,12 +294,20 @@ class PermissionRestResourceTest {
                 equalTo(true),
             )
             .body(
+                "denyPatterns.find { it.permissionPattern == 'grounds.command.op' }.grantId",
+                equalTo(playerGrantId),
+            )
+            .body(
                 "roleAssignments.find { it.roleKey == 'default' && it.source == 'DEFAULT_ROLE' }.editable",
                 equalTo(false),
             )
             .body(
                 "roleAssignments.find { it.roleKey == 'default' && it.source == 'DIRECT_ROLE' }.editable",
                 equalTo(true),
+            )
+            .body(
+                "roleAssignments.find { it.roleKey == 'default' && it.source == 'DIRECT_ROLE' }.grantId",
+                equalTo(playerRoleGrantId),
             )
             .body(
                 "roleAssignments.find { it.roleKey == 'moderator' && it.source == 'GROUP_MAPPING' }.editable",
@@ -315,6 +326,7 @@ class PermissionRestResourceTest {
             .body("allowed", equalTo(false))
             .body("winningGrant.permissionPattern", equalTo("grounds.command.op"))
             .body("winningGrant.source", equalTo("DIRECT_PERMISSION"))
+            .body("winningGrant.grantId", equalTo(playerGrantId))
 
         given()
             .get("/v1/permissions/players/$playerId/identity")
@@ -387,6 +399,31 @@ class PermissionRestResourceTest {
             .then()
             .statusCode(503)
             .body("error", equalTo("identity_projection_unavailable"))
+    }
+
+    @Test
+    fun reportsAnAbsentPlayerAsEvaluationSafeAfterAFreshFullProjection() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000126")
+        createRole("moderator", "Moderator")
+        given()
+            .contentType("application/json")
+            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .post("/v1/permissions/keycloak-groups")
+            .then()
+            .statusCode(201)
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt)
+        identityRepository.replaceAll(emptyList(), syncedAt)
+
+        given()
+            .get("/v1/permissions/players/$playerId/identity")
+            .then()
+            .statusCode(200)
+            .body("linked", equalTo(false))
+            .body("fresh", equalTo(false))
+            .body("evaluationSafe", equalTo(true))
+
+        given().get("/v1/permissions/players/$playerId/effective").then().statusCode(200)
     }
 
     private fun createRole(key: String, name: String, default: Boolean = false) {
