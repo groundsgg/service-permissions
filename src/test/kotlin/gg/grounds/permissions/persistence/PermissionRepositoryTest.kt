@@ -2,8 +2,12 @@ package gg.grounds.permissions.persistence
 
 import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
+import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
+import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
+import gg.grounds.permissions.identity.IdentitySyncStatus
+import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionSyncAction
 import gg.grounds.permissions.sync.SyncAction
@@ -18,6 +22,7 @@ import jakarta.inject.Inject
 import java.time.Instant
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -32,9 +37,75 @@ class PermissionRepositoryTest {
 
     @Inject lateinit var repository: PermissionRepository
 
+    @Inject lateinit var identityRepository: PlayerIdentityRepository
+
     @BeforeEach
     fun resetDatabase() {
         repository.deleteAllPermissionData()
+    }
+
+    @Test
+    fun deletesProjectedIdentitiesAndResetsIdentitySyncState() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000110")
+        identityRepository.replacePlayer(
+            ProjectedPlayerIdentity(
+                playerId = playerId,
+                keycloakUserId = "keycloak-cleanup",
+                minecraftUsername = "CleanupPlayer",
+                normalizedUsername = "cleanupplayer",
+                groupPaths = setOf("/staff"),
+                syncedAt = Instant.parse("2030-01-01T00:00:00Z"),
+                sourceUpdatedAt = null,
+            )
+        )
+        identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:00Z"))
+        identityRepository.replaceAll(
+            listOf(identityRepository.findByPlayerId(playerId)!!),
+            Instant.parse("2030-01-01T00:00:01Z"),
+        )
+        identityRepository.markSyncRunning(Instant.parse("2030-01-01T00:00:02Z"))
+        identityRepository.markSyncFailed(Instant.parse("2030-01-01T00:00:03Z"), "cleanup_failure")
+        val populatedState = identityRepository.currentSyncState()
+        assertEquals(IdentitySyncStatus.FAILED, populatedState.status)
+        assertEquals(Instant.parse("2030-01-01T00:00:02Z"), populatedState.startedAt)
+        assertEquals(Instant.parse("2030-01-01T00:00:03Z"), populatedState.completedAt)
+        assertEquals(Instant.parse("2030-01-01T00:00:01Z"), populatedState.lastSuccessAt)
+        assertEquals(1_000, populatedState.durationMs)
+        assertEquals(1, populatedState.playerCount)
+        assertEquals("cleanup_failure", populatedState.failureReason)
+
+        repository.deleteAllPermissionData()
+
+        assertEquals(null, identityRepository.findByPlayerId(playerId))
+        val state = identityRepository.currentSyncState()
+        assertEquals(IdentitySyncStatus.IDLE, state.status)
+        assertNull(state.startedAt)
+        assertNull(state.completedAt)
+        assertNull(state.lastSuccessAt)
+        assertNull(state.durationMs)
+        assertEquals(0, state.playerCount)
+        assertNull(state.failureReason)
+    }
+
+    @Test
+    fun deletesPlayerIdentityTombstones() {
+        val deletedAt = Instant.parse("2030-01-01T00:00:05Z")
+        val staleIdentity =
+            ProjectedPlayerIdentity(
+                playerId = UUID.fromString("00000000-0000-0000-0000-000000000111"),
+                keycloakUserId = "keycloak-tombstone-cleanup",
+                minecraftUsername = "CleanupPlayer",
+                normalizedUsername = "cleanupplayer",
+                groupPaths = emptySet(),
+                syncedAt = deletedAt.minusSeconds(1),
+                sourceUpdatedAt = null,
+            )
+        identityRepository.deleteByKeycloakUserId(staleIdentity.keycloakUserId, deletedAt)
+
+        repository.deleteAllPermissionData()
+        identityRepository.replacePlayer(staleIdentity)
+
+        assertEquals(staleIdentity, identityRepository.findByPlayerId(staleIdentity.playerId))
     }
 
     @Test
@@ -96,6 +167,22 @@ class PermissionRepositoryTest {
                 expiresAt = expiresAt,
             )
         )
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(
+            listOf(
+                ProjectedPlayerIdentity(
+                    playerId = playerId,
+                    keycloakUserId = "keycloak-policy-player",
+                    minecraftUsername = "PolicyPlayer",
+                    normalizedUsername = "policyplayer",
+                    groupPaths = setOf("/staff"),
+                    syncedAt = syncedAt,
+                    sourceUpdatedAt = null,
+                )
+            ),
+            syncedAt,
+        )
         repository.upsertCatalogEntry(
             CatalogEntryRecord(
                 key = "grounds.command.moderate",
@@ -115,7 +202,6 @@ class PermissionRepositoryTest {
             repository.policyFor(
                 PermissionPolicyRequest(
                     playerId = playerId,
-                    keycloakGroups = setOf("/staff"),
                     serverType = "paper",
                     serverId = "survival-1",
                 )
@@ -133,8 +219,54 @@ class PermissionRepositoryTest {
             2,
             input.playerRoles.count { it.playerId == playerId && it.roleKey == "moderator" },
         )
+        assertTrue(
+            input.playerRoles.any {
+                it.roleKey == "moderator" &&
+                    it.assignmentSource == PermissionRoleAssignmentSource.GROUP_MAPPING &&
+                    it.mappingId == groupMappingId
+            }
+        )
         assertEquals(1, input.playerGrants.count { it.playerId == playerId })
         assertEquals(1, repository.listCatalogEntries().size)
+    }
+
+    @Test
+    fun freshProjectionWithoutAPlayerStillAllowsDefaultAndDirectRoles() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000124")
+        repository.createRole(RoleRecord(key = "default", name = "Default", isDefault = true))
+        repository.createRole(RoleRecord(key = "builder", name = "Builder"))
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "builder")
+        )
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "builder")
+        )
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(emptyList(), syncedAt)
+
+        val input =
+            repository.policyFor(
+                PermissionPolicyRequest(playerId, serverType = "paper", serverId = "server-1")
+            )
+
+        assertEquals(setOf("default", "builder"), input.roles.mapTo(linkedSetOf()) { it.key })
+        assertEquals(listOf("builder"), input.playerRoles.map { it.roleKey })
+    }
+
+    @Test
+    fun staleProjectionRejectsPolicyEvaluationWhenGroupMappingsExist() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000125")
+        repository.createRole(RoleRecord(key = "member", name = "Member"))
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/players", "member")
+        )
+
+        assertThrows(IdentityProjectionUnavailableException::class.java) {
+            repository.policyFor(
+                PermissionPolicyRequest(playerId, serverType = "paper", serverId = "server-1")
+            )
+        }
     }
 
     @Test

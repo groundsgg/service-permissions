@@ -4,6 +4,8 @@ import com.google.protobuf.Timestamp
 import gg.grounds.grpc.permissions.GetPlayerSnapshotRequest
 import gg.grounds.grpc.permissions.PermissionEffect
 import gg.grounds.grpc.permissions.PermissionGrant
+import gg.grounds.grpc.permissions.PermissionGrantOrigin
+import gg.grounds.grpc.permissions.PermissionGrantOriginKind
 import gg.grounds.grpc.permissions.PermissionGrantSource
 import gg.grounds.grpc.permissions.PermissionScope
 import gg.grounds.grpc.permissions.PermissionScopeKind
@@ -61,13 +63,10 @@ constructor(private val policyProvider: PermissionPolicyProvider) : PermissionSn
         val playerId = request.playerId.toRequiredUuid("player_id")
         val serverType = request.serverType.normalizedOptional("server_type")
         val serverId = request.serverId.normalizedOptional("server_id")
-        val keycloakGroups =
-            request.keycloakGroupsList.mapNotNull { it.trim().takeIf(String::isNotEmpty) }.toSet()
         val input =
             policyProvider.policyFor(
                 PermissionPolicyRequest(
                     playerId = playerId,
-                    keycloakGroups = keycloakGroups,
                     serverType = serverType,
                     serverId = serverId,
                 )
@@ -104,7 +103,30 @@ constructor(private val policyProvider: PermissionPolicyProvider) : PermissionSn
             .setPattern(pattern)
             .setScope(scope.toGrpc())
             .setSource(source.toGrpc())
+            .setOrigin(origin.toGrpc())
             .also { builder -> expiresAt?.let { builder.setExpiresAt(it.toTimestamp()) } }
+            .build()
+
+    private fun gg.grounds.permissions.domain.PermissionGrantOrigin.toGrpc():
+        PermissionGrantOrigin =
+        PermissionGrantOrigin.newBuilder()
+            .setKind(
+                when (kind) {
+                    gg.grounds.permissions.domain.PermissionGrantOriginKind.DEFAULT_ROLE ->
+                        PermissionGrantOriginKind.PERMISSION_GRANT_ORIGIN_KIND_DEFAULT_ROLE
+                    gg.grounds.permissions.domain.PermissionGrantOriginKind.DIRECT_ROLE ->
+                        PermissionGrantOriginKind.PERMISSION_GRANT_ORIGIN_KIND_DIRECT_ROLE
+                    gg.grounds.permissions.domain.PermissionGrantOriginKind.GROUP_MAPPING ->
+                        PermissionGrantOriginKind.PERMISSION_GRANT_ORIGIN_KIND_GROUP_MAPPING
+                    gg.grounds.permissions.domain.PermissionGrantOriginKind.DIRECT_PERMISSION ->
+                        PermissionGrantOriginKind.PERMISSION_GRANT_ORIGIN_KIND_DIRECT_PERMISSION
+                }
+            )
+            .also { builder ->
+                roleKey?.let { builder.roleKey = it }
+                mappingId?.let { builder.mappingId = it.toString() }
+            }
+            .addAllInheritedPath(inheritedPath)
             .build()
 
     private fun gg.grounds.permissions.domain.PermissionScope.toGrpc(): PermissionScope =

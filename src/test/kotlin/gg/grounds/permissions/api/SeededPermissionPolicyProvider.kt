@@ -14,7 +14,6 @@ import java.time.Instant
 class SeededPermissionPolicyProvider : PermissionPolicyProvider {
     private var policyVersion: Long = 1
     private var roles: List<RoleDefinition> = emptyList()
-    private var keycloakRoleMappings: Map<String, Set<String>> = emptyMap()
     private var playerRoles: List<PlayerRoleGrant> = emptyList()
     private var playerGrants: List<PlayerPermissionGrant> = emptyList()
     private var refreshAfterOffset: Duration = Duration.ofMinutes(5)
@@ -24,7 +23,6 @@ class SeededPermissionPolicyProvider : PermissionPolicyProvider {
     fun replacePolicy(
         policyVersion: Long = 1,
         roles: List<RoleDefinition> = emptyList(),
-        keycloakRoleMappings: Map<String, Set<String>> = emptyMap(),
         playerRoles: List<PlayerRoleGrant> = emptyList(),
         playerGrants: List<PlayerPermissionGrant> = emptyList(),
         refreshAfterOffset: Duration = Duration.ofMinutes(5),
@@ -32,7 +30,6 @@ class SeededPermissionPolicyProvider : PermissionPolicyProvider {
     ) {
         this.policyVersion = policyVersion
         this.roles = roles
-        this.keycloakRoleMappings = keycloakRoleMappings
         this.playerRoles = playerRoles
         this.playerGrants = playerGrants
         this.refreshAfterOffset = refreshAfterOffset
@@ -42,18 +39,11 @@ class SeededPermissionPolicyProvider : PermissionPolicyProvider {
     @Synchronized
     override fun policyFor(request: PermissionPolicyRequest): PermissionPolicyInput {
         val now = Instant.now()
-        val mappedRoles =
-            request.keycloakGroups
-                .asSequence()
-                .flatMap { keycloakRoleMappings[it].orEmpty().asSequence() }
-                .distinct()
-                .map { roleKey -> PlayerRoleGrant(request.playerId, roleKey) }
-                .toList()
 
         return PermissionPolicyInput(
             policyVersion = policyVersion,
             roles = roles,
-            playerRoles = playerRoles + mappedRoles,
+            playerRoles = playerRoles,
             playerGrants = playerGrants,
             refreshAfter = now.plus(refreshAfterOffset),
             expiresAt = now.plus(expiresAfterOffset),

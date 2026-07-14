@@ -1,6 +1,7 @@
 package gg.grounds.permissions.rest
 
 import gg.grounds.permissions.domain.PermissionEffect
+import gg.grounds.permissions.domain.PermissionGrantOriginKind
 import gg.grounds.permissions.domain.PermissionScopeKind
 import java.time.Instant
 import java.util.UUID
@@ -119,6 +120,7 @@ data class EffectivePermissionResponse(
     val roleKeys: Set<String>,
     val allowPatterns: List<EffectiveGrantResponse>,
     val denyPatterns: List<EffectiveGrantResponse>,
+    val roleAssignments: List<EffectiveRoleAssignmentResponse>,
     val refreshAfter: Instant,
     val expiresAt: Instant,
 )
@@ -129,4 +131,62 @@ data class EffectiveGrantResponse(
     val scopeKind: PermissionScopeKind,
     val scopeValue: String?,
     val expiresAt: Instant?,
+    val source: PermissionGrantOriginKind,
+    val grantId: UUID?,
+    val roleKey: String?,
+    val mappingId: UUID?,
+    val inheritedPath: List<String>,
+    val editable: Boolean,
+)
+
+data class EffectiveRoleAssignmentResponse(
+    val roleKey: String,
+    val source: PermissionGrantOriginKind,
+    val grantId: UUID?,
+    val mappingId: UUID?,
+    val inheritedPath: List<String>,
+    val editable: Boolean,
+)
+
+data class PermissionCheckResponse(
+    val playerId: UUID,
+    val permission: String,
+    val allowed: Boolean,
+    val winningGrant: EffectiveGrantResponse?,
+)
+
+data class PlayerIdentityResponse(
+    val playerId: UUID,
+    val name: String?,
+    val linked: Boolean,
+    val syncedAt: Instant?,
+    val sourceUpdatedAt: Instant?,
+    val fresh: Boolean,
+    val evaluationSafe: Boolean,
+)
+
+data class PlayerSearchItemResponse(
+    val playerId: UUID,
+    val name: String,
+    val linked: Boolean,
+    val directRoleGrantCount: Long,
+    val directPermissionGrantCount: Long,
+)
+
+data class PlayerSearchResponse(
+    val items: List<PlayerSearchItemResponse>,
+    val page: Int,
+    val perPage: Int,
+    val total: Long,
+)
+
+data class IdentitySyncStatusResponse(
+    val status: String,
+    val startedAt: Instant?,
+    val completedAt: Instant?,
+    val lastSuccessAt: Instant?,
+    val durationMs: Long?,
+    val playerCount: Long,
+    val failureReason: String?,
+    val stale: Boolean,
 )

@@ -1,12 +1,16 @@
 package gg.grounds.permissions.rest
 
+import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
+import gg.grounds.permissions.persistence.PlayerIdentityRepository
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import jakarta.inject.Inject
+import java.time.Instant
+import java.util.UUID
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.hasItem
 import org.hamcrest.Matchers.hasSize
@@ -23,6 +27,7 @@ import org.junit.jupiter.api.Test
 class PermissionRestResourceTest {
 
     @Inject lateinit var repository: PermissionRepository
+    @Inject lateinit var identityRepository: PlayerIdentityRepository
 
     @BeforeEach
     fun resetDatabase() {
@@ -200,6 +205,7 @@ class PermissionRestResourceTest {
 
     @Test
     fun playerGroupAndEffectivePermissionCrud() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000123")
         createRole("default", "Default", default = true)
         createRole("moderator", "Moderator")
 
@@ -224,22 +230,25 @@ class PermissionRestResourceTest {
             .statusCode(200)
             .body("roleKey", equalTo("default"))
 
-        given()
-            .contentType("application/json")
-            .body(
-                """
-                {
-                  "effect": "DENY",
-                  "permissionPattern": "grounds.command.op",
-                  "scopeKind": "GLOBAL"
-                }
-                """
-                    .trimIndent()
-            )
-            .post("/v1/permissions/players/00000000-0000-0000-0000-000000000123/grants")
-            .then()
-            .statusCode(201)
-            .body("permissionPattern", equalTo("grounds.command.op"))
+        val playerGrantId =
+            given()
+                .contentType("application/json")
+                .body(
+                    """
+                    {
+                      "effect": "DENY",
+                      "permissionPattern": "grounds.command.op",
+                      "scopeKind": "GLOBAL"
+                    }
+                    """
+                        .trimIndent()
+                )
+                .post("/v1/permissions/players/00000000-0000-0000-0000-000000000123/grants")
+                .then()
+                .statusCode(201)
+                .body("permissionPattern", equalTo("grounds.command.op"))
+                .extract()
+                .path<String>("id")
 
         given()
             .contentType("application/json")
@@ -248,16 +257,173 @@ class PermissionRestResourceTest {
             .then()
             .statusCode(201)
             .body("keycloakGroup", equalTo("/staff"))
+        given().put("/v1/permissions/roles/moderator/inherits/default").then().statusCode(204)
+
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt)
+        identityRepository.replaceAll(
+            identities =
+                listOf(
+                    ProjectedPlayerIdentity(
+                        playerId = playerId,
+                        keycloakUserId = "keycloak-user-123",
+                        minecraftUsername = "TestPlayer",
+                        normalizedUsername = "testplayer",
+                        groupPaths = setOf("/staff"),
+                        syncedAt = syncedAt,
+                        sourceUpdatedAt = null,
+                    )
+                ),
+            completedAt = syncedAt,
+        )
 
         given()
-            .get(
-                "/v1/permissions/players/00000000-0000-0000-0000-000000000123/effective?keycloakGroup=/staff"
-            )
+            .queryParam("keycloakGroup", "/spoofed")
+            .get("/v1/permissions/players/$playerId/effective")
             .then()
             .statusCode(200)
             .body("roleKeys", hasItem("default"))
             .body("roleKeys", hasItem("moderator"))
             .body("denyPatterns.permissionPattern", hasItem("grounds.command.op"))
+            .body(
+                "denyPatterns.find { it.permissionPattern == 'grounds.command.op' }.source",
+                equalTo("DIRECT_PERMISSION"),
+            )
+            .body(
+                "denyPatterns.find { it.permissionPattern == 'grounds.command.op' }.editable",
+                equalTo(true),
+            )
+            .body(
+                "denyPatterns.find { it.permissionPattern == 'grounds.command.op' }.grantId",
+                equalTo(playerGrantId),
+            )
+            .body(
+                "roleAssignments.find { it.roleKey == 'default' && it.source == 'DEFAULT_ROLE' }.editable",
+                equalTo(false),
+            )
+            .body(
+                "roleAssignments.find { it.roleKey == 'default' && it.source == 'DIRECT_ROLE' }.editable",
+                equalTo(true),
+            )
+            .body(
+                "roleAssignments.find { it.roleKey == 'default' && it.source == 'DIRECT_ROLE' }.grantId",
+                equalTo(playerRoleGrantId),
+            )
+            .body(
+                "roleAssignments.find { it.roleKey == 'moderator' && it.source == 'GROUP_MAPPING' }.editable",
+                equalTo(false),
+            )
+            .body(
+                "roleAssignments.find { it.inheritedPath == ['moderator', 'default'] }.editable",
+                equalTo(false),
+            )
+
+        given()
+            .queryParam("permission", "grounds.command.op")
+            .get("/v1/permissions/players/$playerId/check")
+            .then()
+            .statusCode(200)
+            .body("allowed", equalTo(false))
+            .body("winningGrant.permissionPattern", equalTo("grounds.command.op"))
+            .body("winningGrant.source", equalTo("DIRECT_PERMISSION"))
+            .body("winningGrant.grantId", equalTo(playerGrantId))
+
+        given()
+            .get("/v1/permissions/players/$playerId/identity")
+            .then()
+            .statusCode(200)
+            .body("linked", equalTo(true))
+            .body("name", equalTo("TestPlayer"))
+            .body("fresh", equalTo(true))
+            .body("evaluationSafe", equalTo(true))
+    }
+
+    @Test
+    fun reportsUnavailableIdentityProjectionWithoutLeakingItsFailure() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000124")
+        createRole("moderator", "Moderator")
+        given()
+            .contentType("application/json")
+            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .post("/v1/permissions/keycloak-groups")
+            .then()
+            .statusCode(201)
+
+        given()
+            .get("/v1/permissions/players/$playerId/identity")
+            .then()
+            .statusCode(200)
+            .body("linked", equalTo(false))
+            .body("fresh", equalTo(false))
+            .body("evaluationSafe", equalTo(false))
+
+        given()
+            .get("/v1/permissions/players/$playerId/effective")
+            .then()
+            .statusCode(503)
+            .body("error", equalTo("identity_projection_unavailable"))
+    }
+
+    @Test
+    fun reportsFreshTargetedIdentityAsUnsafeWhenTheGlobalProjectionIsStale() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000125")
+        createRole("moderator", "Moderator")
+        given()
+            .contentType("application/json")
+            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .post("/v1/permissions/keycloak-groups")
+            .then()
+            .statusCode(201)
+        identityRepository.replacePlayer(
+            ProjectedPlayerIdentity(
+                playerId = playerId,
+                keycloakUserId = "keycloak-user-125",
+                minecraftUsername = "FreshPlayer",
+                normalizedUsername = "freshplayer",
+                groupPaths = setOf("/staff"),
+                syncedAt = Instant.now(),
+                sourceUpdatedAt = null,
+            )
+        )
+
+        given()
+            .get("/v1/permissions/players/$playerId/identity")
+            .then()
+            .statusCode(200)
+            .body("linked", equalTo(true))
+            .body("fresh", equalTo(true))
+            .body("evaluationSafe", equalTo(false))
+
+        given()
+            .get("/v1/permissions/players/$playerId/effective")
+            .then()
+            .statusCode(503)
+            .body("error", equalTo("identity_projection_unavailable"))
+    }
+
+    @Test
+    fun reportsAnAbsentPlayerAsEvaluationSafeAfterAFreshFullProjection() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000126")
+        createRole("moderator", "Moderator")
+        given()
+            .contentType("application/json")
+            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .post("/v1/permissions/keycloak-groups")
+            .then()
+            .statusCode(201)
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt)
+        identityRepository.replaceAll(emptyList(), syncedAt)
+
+        given()
+            .get("/v1/permissions/players/$playerId/identity")
+            .then()
+            .statusCode(200)
+            .body("linked", equalTo(false))
+            .body("fresh", equalTo(false))
+            .body("evaluationSafe", equalTo(true))
+
+        given().get("/v1/permissions/players/$playerId/effective").then().statusCode(200)
     }
 
     private fun createRole(key: String, name: String, default: Boolean = false) {

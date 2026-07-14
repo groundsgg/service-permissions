@@ -1,11 +1,15 @@
 package gg.grounds.permissions.policy
 
 import gg.grounds.permissions.domain.EffectivePermissionSnapshot
+import gg.grounds.permissions.domain.EffectiveRoleAssignment
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrant
+import gg.grounds.permissions.domain.PermissionGrantOrigin
+import gg.grounds.permissions.domain.PermissionGrantOriginKind
 import gg.grounds.permissions.domain.PermissionGrantSource
 import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionPolicyInput
+import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.domain.PlayerPermissionGrant
@@ -45,19 +49,47 @@ object PolicyEngine {
                 .filter { it.playerId == playerId }
                 .filterNot { it.isExpired(now) }
                 .toList()
-        val assignedRoleKeys =
-            input.roles.filter { it.isDefault }.mapTo(linkedSetOf()) { it.key } +
-                includedPlayerRoleGrants.map { it.roleKey }
+        val roleAssignments =
+            input.roles
+                .filter { it.isDefault }
+                .map {
+                    RoleAssignment(
+                        roleKey = it.key,
+                        origin = PermissionGrantOrigin(PermissionGrantOriginKind.DEFAULT_ROLE),
+                    )
+                } +
+                includedPlayerRoleGrants.map { grant ->
+                    RoleAssignment(
+                        roleKey = grant.roleKey,
+                        origin =
+                            PermissionGrantOrigin(
+                                kind =
+                                    when (grant.assignmentSource) {
+                                        PermissionRoleAssignmentSource.DIRECT ->
+                                            PermissionGrantOriginKind.DIRECT_ROLE
+                                        PermissionRoleAssignmentSource.GROUP_MAPPING ->
+                                            PermissionGrantOriginKind.GROUP_MAPPING
+                                    },
+                                grantId = grant.grantId,
+                                mappingId = grant.mappingId,
+                            ),
+                    )
+                }
 
-        val roleKeys = flattenRoleKeys(assignedRoleKeys, rolesByKey)
+        val resolvedRoles = resolveRoles(roleAssignments, rolesByKey)
+        val roleKeys = resolvedRoles.mapTo(linkedSetOf()) { it.roleKey }
         val roleGrants =
-            roleKeys
-                .asSequence()
-                .mapNotNull { rolesByKey[it] }
-                .flatMap { it.grants.asSequence() }
-                .filterNot { it.isExpired(now) }
-                .toList()
-        val effectiveRoleGrants = roleGrants.map { it.toGrant(PermissionGrantSource.ROLE) }
+            resolvedRoles.flatMap { resolved ->
+                rolesByKey
+                    .getValue(resolved.roleKey)
+                    .grants
+                    .asSequence()
+                    .filterNot { it.isExpired(now) }
+                    .map { grant -> grant to resolved.origin }
+                    .toList()
+            }
+        val effectiveRoleGrants =
+            roleGrants.map { (grant, origin) -> grant.toGrant(PermissionGrantSource.ROLE, origin) }
         val includedPlayerGrants =
             input.playerGrants
                 .asSequence()
@@ -66,7 +98,15 @@ object PolicyEngine {
                 .filterNot { it.grant.isExpired(now) }
                 .toList()
         val playerGrants =
-            includedPlayerGrants.map { it.grant.toGrant(PermissionGrantSource.PLAYER) }
+            includedPlayerGrants.map {
+                it.grant.toGrant(
+                    PermissionGrantSource.PLAYER,
+                    PermissionGrantOrigin(
+                        PermissionGrantOriginKind.DIRECT_PERMISSION,
+                        grantId = it.grantId,
+                    ),
+                )
+            }
         val grants = effectiveRoleGrants + playerGrants
 
         return EffectivePermissionSnapshot(
@@ -78,7 +118,7 @@ object PolicyEngine {
                 earliestOf(
                     listOf(input.expiresAt) +
                         includedPlayerRoleGrants.mapNotNull { it.expiresAt } +
-                        roleGrants.mapNotNull { it.expiresAt } +
+                        roleGrants.mapNotNull { it.first.expiresAt } +
                         includedPlayerGrants.mapNotNull { it.assignmentExpiresAt } +
                         includedPlayerGrants.mapNotNull { it.grant.expiresAt }
                 ),
@@ -86,6 +126,10 @@ object PolicyEngine {
             denyPatterns = grants.filter { it.effect == PermissionEffect.DENY },
             roleKeys = roleKeys,
             roleMetadata = roleKeys.mapNotNull { rolesByKey[it]?.toMetadata() },
+            roleAssignments =
+                resolvedRoles
+                    .map { EffectiveRoleAssignment(roleKey = it.roleKey, origin = it.origin) }
+                    .distinct(),
         )
     }
 
@@ -94,9 +138,16 @@ object PolicyEngine {
         permission: String,
         scope: PermissionCheckScope,
         now: Instant = Instant.now(),
-    ): Boolean {
+    ): Boolean = checkPermission(snapshot, permission, scope, now).allowed
+
+    fun checkPermission(
+        snapshot: EffectivePermissionSnapshot,
+        permission: String,
+        scope: PermissionCheckScope,
+        now: Instant = Instant.now(),
+    ): PermissionDecision {
         if (!snapshot.expiresAt.isAfter(now)) {
-            return false
+            return PermissionDecision(allowed = false, winningGrant = null)
         }
 
         val candidate =
@@ -111,7 +162,45 @@ object PolicyEngine {
                         .thenBy { it.effectSpecificity }
                 )
 
-        return candidate?.grant?.effect == PermissionEffect.ALLOW
+        return PermissionDecision(
+            allowed = candidate?.grant?.effect == PermissionEffect.ALLOW,
+            winningGrant = candidate?.grant,
+        )
+    }
+
+    private fun resolveRoles(
+        assignments: List<RoleAssignment>,
+        rolesByKey: Map<String, RoleDefinition>,
+    ): List<ResolvedRole> = buildList {
+        assignments.forEach { assignment ->
+            fun visit(roleKey: String, path: List<String>, visiting: Set<String>) {
+                require(roleKey !in visiting) {
+                    "Role inheritance cycle detected (roleKey=$roleKey)"
+                }
+                val role =
+                    rolesByKey[roleKey]
+                        ?: throw IllegalArgumentException(
+                            "Unknown role referenced (roleKey=$roleKey)"
+                        )
+                val inheritedPath = if (path.isEmpty()) emptyList() else path + roleKey
+                add(
+                    ResolvedRole(
+                        roleKey = roleKey,
+                        origin =
+                            assignment.origin.copy(roleKey = roleKey, inheritedPath = inheritedPath),
+                    )
+                )
+                role.inheritedRoleKeys.forEach { inheritedRoleKey ->
+                    visit(
+                        inheritedRoleKey,
+                        if (path.isEmpty()) listOf(roleKey) else path + roleKey,
+                        visiting + roleKey,
+                    )
+                }
+            }
+
+            visit(assignment.roleKey, emptyList(), emptySet())
+        }
     }
 
     private fun List<RoleDefinition>.toRoleMap(): Map<String, RoleDefinition> {
@@ -196,13 +285,17 @@ object PolicyEngine {
     private fun PlayerRoleGrant.isExpired(now: Instant): Boolean =
         expiresAt?.let { !it.isAfter(now) } ?: false
 
-    private fun PermissionGrantSpec.toGrant(source: PermissionGrantSource): PermissionGrant =
+    private fun PermissionGrantSpec.toGrant(
+        source: PermissionGrantSource,
+        origin: PermissionGrantOrigin,
+    ): PermissionGrant =
         PermissionGrant(
             effect = effect,
             pattern = pattern,
             scope = scope,
             source = source,
             expiresAt = expiresAt,
+            origin = origin,
         )
 
     private fun earliestOf(instants: List<Instant>): Instant =
@@ -211,6 +304,12 @@ object PolicyEngine {
     private fun RoleDefinition.toMetadata(): RoleMetadata =
         RoleMetadata(key = key, name = name, prefix = prefix, color = color, sortOrder = sortOrder)
 }
+
+data class PermissionDecision(val allowed: Boolean, val winningGrant: PermissionGrant?)
+
+private data class RoleAssignment(val roleKey: String, val origin: PermissionGrantOrigin)
+
+private data class ResolvedRole(val roleKey: String, val origin: PermissionGrantOrigin)
 
 private data class PermissionCandidate(
     val grant: PermissionGrant,

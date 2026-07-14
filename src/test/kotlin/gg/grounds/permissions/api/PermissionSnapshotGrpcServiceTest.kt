@@ -3,6 +3,8 @@ package gg.grounds.permissions.api
 import gg.grounds.grpc.permissions.GetPlayerSnapshotRequest
 import gg.grounds.grpc.permissions.PermissionCatalogService
 import gg.grounds.grpc.permissions.PermissionEffect.PERMISSION_EFFECT_DENY
+import gg.grounds.grpc.permissions.PermissionGrantOriginKind.PERMISSION_GRANT_ORIGIN_KIND_DIRECT_PERMISSION
+import gg.grounds.grpc.permissions.PermissionGrantOriginKind.PERMISSION_GRANT_ORIGIN_KIND_GROUP_MAPPING
 import gg.grounds.grpc.permissions.PermissionGrantSource.PERMISSION_GRANT_SOURCE_PLAYER
 import gg.grounds.grpc.permissions.PermissionManifestEntry
 import gg.grounds.grpc.permissions.PermissionScopeKind.PERMISSION_SCOPE_KIND_GLOBAL
@@ -13,9 +15,11 @@ import gg.grounds.grpc.permissions.RefreshOnlinePlayersRequest
 import gg.grounds.grpc.permissions.RegisterPermissionManifestRequest
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantSpec
+import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.domain.PlayerPermissionGrant
+import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
@@ -60,6 +64,7 @@ class PermissionSnapshotGrpcServiceTest {
     @Test
     fun snapshotIncludesDefaultMappedRolesAndDirectDeny() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000123")
+        val mappingId = UUID.fromString("00000000-0000-0000-0000-000000000124")
         policyProvider.replacePolicy(
             policyVersion = 7,
             roles =
@@ -72,9 +77,29 @@ class PermissionSnapshotGrpcServiceTest {
                         sortOrder = 100,
                         isDefault = true,
                     ),
-                    RoleDefinition(key = "moderator", name = "Moderator", sortOrder = 50),
+                    RoleDefinition(
+                        key = "moderator",
+                        name = "Moderator",
+                        sortOrder = 50,
+                        grants =
+                            listOf(
+                                PermissionGrantSpec(
+                                    effect = PermissionEffect.ALLOW,
+                                    pattern = "grounds.command.moderate",
+                                    scope = PermissionScope(PermissionScopeKind.GLOBAL),
+                                )
+                            ),
+                    ),
                 ),
-            keycloakRoleMappings = mapOf("/staff" to setOf("moderator")),
+            playerRoles =
+                listOf(
+                    PlayerRoleGrant(
+                        playerId = playerId,
+                        roleKey = "moderator",
+                        assignmentSource = PermissionRoleAssignmentSource.GROUP_MAPPING,
+                        mappingId = mappingId,
+                    )
+                ),
             playerGrants =
                 listOf(
                     PlayerPermissionGrant(
@@ -94,7 +119,6 @@ class PermissionSnapshotGrpcServiceTest {
                 .getPlayerSnapshot(
                     GetPlayerSnapshotRequest.newBuilder()
                         .setPlayerId(playerId.toString())
-                        .addKeycloakGroups("/staff")
                         .setServerType("paper")
                         .setServerId("survival-1")
                         .build()
@@ -112,6 +136,13 @@ class PermissionSnapshotGrpcServiceTest {
         assertEquals(PERMISSION_EFFECT_DENY, denyGrant.effect)
         assertEquals(PERMISSION_GRANT_SOURCE_PLAYER, denyGrant.source)
         assertEquals(PERMISSION_SCOPE_KIND_GLOBAL, denyGrant.scope.kind)
+        assertEquals(PERMISSION_GRANT_ORIGIN_KIND_DIRECT_PERMISSION, denyGrant.origin.kind)
+
+        val mappedGrant =
+            snapshot.allowPatternsList.single { it.pattern == "grounds.command.moderate" }
+        assertEquals(PERMISSION_GRANT_ORIGIN_KIND_GROUP_MAPPING, mappedGrant.origin.kind)
+        assertEquals("moderator", mappedGrant.origin.roleKey)
+        assertEquals(mappingId.toString(), mappedGrant.origin.mappingId)
 
         val playerRole = snapshot.roleMetadataList.single { it.key == "player" }
         assertEquals("Player", playerRole.name)
@@ -156,26 +187,12 @@ class PermissionSnapshotGrpcServiceTest {
     }
 
     @Test
-    fun snapshotIgnoresBlankKeycloakGroups() {
-        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000123")
-        policyProvider.replacePolicy(
-            roles = listOf(RoleDefinition(key = "admin", name = "Admin")),
-            keycloakRoleMappings = mapOf("" to setOf("admin"), "   " to setOf("admin")),
-        )
+    fun snapshotRequestReservesRemovedKeycloakGroupsField() {
+        val descriptor = GetPlayerSnapshotRequest.getDescriptor().toProto()
 
-        val snapshot =
-            service
-                .getPlayerSnapshot(
-                    GetPlayerSnapshotRequest.newBuilder()
-                        .setPlayerId(playerId.toString())
-                        .addKeycloakGroups("")
-                        .addKeycloakGroups("   ")
-                        .build()
-                )
-                .await()
-                .indefinitely()
-
-        assertFalse(snapshot.roleKeysList.contains("admin"))
+        assertTrue(descriptor.reservedRangeList.any { it.start == 2 && it.end == 3 })
+        assertTrue(descriptor.reservedNameList.contains("keycloak_groups"))
+        assertFalse(descriptor.fieldList.any { it.name == "keycloak_groups" })
     }
 
     @Test

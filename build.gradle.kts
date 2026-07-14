@@ -3,7 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
-    id("gg.grounds.base-conventions") version "0.5.1"
+    id("gg.grounds.base-conventions") version "0.8.0"
     id("io.quarkus") version "3.37.2"
 }
 
@@ -35,17 +35,20 @@ dependencies {
     implementation("io.quarkus:quarkus-grpc")
     implementation("io.quarkus:quarkus-rest")
     implementation("io.quarkus:quarkus-rest-jackson")
+    implementation("io.quarkus:quarkus-rest-client-jackson")
     implementation("io.quarkus:quarkus-jackson")
     implementation("io.quarkus:quarkus-agroal")
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-smallrye-jwt")
+    implementation("io.quarkus:quarkus-smallrye-health")
     implementation("io.quarkus:quarkus-scheduler")
     implementation("io.quarkus:quarkus-opentelemetry")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("com.google.protobuf:protobuf-kotlin")
+    implementation("io.nats:jnats:2.25.2")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")

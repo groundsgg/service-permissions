@@ -6,11 +6,14 @@ import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionPolicyInput
+import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.domain.PlayerPermissionGrant
 import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
+import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
+import gg.grounds.permissions.identity.IdentitySyncReadinessCheck
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionProjectSnapshot
 import gg.grounds.permissions.sync.PermissionSyncAction
@@ -30,6 +33,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import javax.sql.DataSource
+import org.eclipse.microprofile.health.Readiness
 import org.postgresql.util.PGobject
 import org.postgresql.util.PSQLException
 
@@ -103,7 +107,12 @@ data class PermissionSyncMetadataRecord(
 @ApplicationScoped
 class PermissionRepository
 @Inject
-constructor(private val dataSource: DataSource, private val objectMapper: ObjectMapper) {
+constructor(
+    private val dataSource: DataSource,
+    private val objectMapper: ObjectMapper,
+    private val identityRepository: PlayerIdentityRepository,
+    @param:Readiness private val identityReadinessCheck: IdentitySyncReadinessCheck,
+) {
 
     fun createRole(role: RoleRecord): RoleRecord =
         try {
@@ -830,7 +839,17 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
         val now = Instant.now()
         val roles = listRoleDefinitions()
         val directPlayerRoles = listPlayerRoleGrants(request.playerId)
-        val mappedRoles = listMappedRoleGrants(request)
+        val mappedRoles =
+            if (hasKeycloakGroupMappings()) {
+                if (!identityReadinessCheck.isIdentityPolicyAvailable()) {
+                    throw IdentityProjectionUnavailableException()
+                }
+                val groupPaths =
+                    identityRepository.findByPlayerId(request.playerId)?.groupPaths.orEmpty()
+                listMappedRoleGrants(request.playerId, groupPaths)
+            } else {
+                emptyList()
+            }
         val playerGrants = listPlayerGrants(request.playerId)
 
         return PermissionPolicyInput(
@@ -843,11 +862,16 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
         )
     }
 
+    fun requiresIdentityProjection(): Boolean = hasKeycloakGroupMappings()
+
     fun deleteAllPermissionData() {
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
                 listOf(
+                        "permission_player_keycloak_groups",
+                        "permission_player_identity_tombstones",
+                        "permission_player_identities",
                         "permission_audit_events",
                         "permission_runtime_registrations",
                         "permission_catalog_entries",
@@ -864,6 +888,22 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                 connection
                     .prepareStatement(
                         "UPDATE permission_policy_versions SET version = 1, updated_at = now() WHERE id = 1"
+                    )
+                    .use { it.executeUpdate() }
+                connection
+                    .prepareStatement(
+                        """
+                        UPDATE permission_identity_sync_state
+                        SET status = 'IDLE',
+                            started_at = NULL,
+                            completed_at = NULL,
+                            last_success_at = NULL,
+                            duration_ms = NULL,
+                            player_count = 0,
+                            failure_reason = NULL
+                        WHERE id = 1
+                        """
+                            .trimIndent()
                     )
                     .use { it.executeUpdate() }
                 connection.commit()
@@ -938,7 +978,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
         connection
             .prepareStatement(
                 """
-                SELECT player_id, role_key, expires_at
+                SELECT id, player_id, role_key, expires_at
                 FROM permission_player_role_grants
                 WHERE player_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -952,6 +992,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                         while (rows.next()) {
                             add(
                                 PlayerRoleGrant(
+                                    grantId = rows.getObject("id", UUID::class.java),
                                     playerId = rows.getObject("player_id", UUID::class.java),
                                     roleKey = rows.getString("role_key"),
                                     expiresAt = rows.instantOrNull("expires_at"),
@@ -963,8 +1004,22 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
             }
     }
 
-    private fun listMappedRoleGrants(request: PermissionPolicyRequest): List<PlayerRoleGrant> {
-        if (request.keycloakGroups.isEmpty()) {
+    private fun hasKeycloakGroupMappings(): Boolean = read { connection ->
+        connection
+            .prepareStatement("SELECT EXISTS (SELECT 1 FROM permission_keycloak_group_mappings)")
+            .use { statement ->
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "Failed to determine whether group mappings exist" }
+                    rows.getBoolean(1)
+                }
+            }
+    }
+
+    private fun listMappedRoleGrants(
+        playerId: UUID,
+        keycloakGroups: Set<String>,
+    ): List<PlayerRoleGrant> {
+        if (keycloakGroups.isEmpty()) {
             return emptyList()
         }
 
@@ -972,7 +1027,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
             connection
                 .prepareStatement(
                     """
-                    SELECT role_key, expires_at
+                    SELECT id, role_key, expires_at
                     FROM permission_keycloak_group_mappings
                     WHERE keycloak_group = ANY (?)
                     ORDER BY created_at ASC, id ASC
@@ -982,16 +1037,19 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                 .use { statement ->
                     statement.setArray(
                         1,
-                        connection.createArrayOf("text", request.keycloakGroups.toTypedArray()),
+                        connection.createArrayOf("text", keycloakGroups.toTypedArray()),
                     )
                     statement.executeQuery().use { rows ->
                         buildList {
                             while (rows.next()) {
                                 add(
                                     PlayerRoleGrant(
-                                        playerId = request.playerId,
+                                        playerId = playerId,
                                         roleKey = rows.getString("role_key"),
                                         expiresAt = rows.instantOrNull("expires_at"),
+                                        assignmentSource =
+                                            PermissionRoleAssignmentSource.GROUP_MAPPING,
+                                        mappingId = rows.getObject("id", UUID::class.java),
                                     )
                                 )
                             }
@@ -1005,7 +1063,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
         connection
             .prepareStatement(
                 """
-                SELECT player_id, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value, expires_at
                 FROM permission_player_grants
                 WHERE player_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -1019,6 +1077,7 @@ constructor(private val dataSource: DataSource, private val objectMapper: Object
                         while (rows.next()) {
                             add(
                                 PlayerPermissionGrant(
+                                    grantId = rows.getObject("id", UUID::class.java),
                                     playerId = rows.getObject("player_id", UUID::class.java),
                                     grant = rows.toGrantSpec(),
                                 )
