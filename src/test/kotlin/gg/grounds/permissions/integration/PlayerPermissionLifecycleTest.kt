@@ -76,7 +76,7 @@ class PlayerPermissionLifecycleTest {
 
     @Test
     fun coversReleasedPlayerPermissionLifecycle() {
-        val clock = MutableClock(Instant.now())
+        val clock = MutableClock(Instant.parse("2035-01-01T00:00:00Z"))
         val keycloak = MutableKeycloakAdminClient(playerId, keycloakUserId, setOf("/builders"))
         val coordinator = coordinator(keycloak, clock)
         val consumer = IdentityChangeConsumer(objectMapper, coordinator, "grounds")
@@ -86,26 +86,35 @@ class PlayerPermissionLifecycleTest {
         assertEquals(setOf("/builders"), identityRepository.findByPlayerId(playerId)?.groupPaths)
 
         createPolicy()
-        val initialSnapshot = snapshot()
+        val initialSnapshot = snapshot(clock.instant())
 
         assertEquals(setOf("builder", "moderator"), initialSnapshot.roleKeys)
-        assertTrue(decision(initialSnapshot, "grounds.build").allowed)
+        assertTrue(decision(initialSnapshot, "grounds.build", clock.instant()).allowed)
         assertEquals(
             GROUP_MAPPING,
-            decision(initialSnapshot, "grounds.build").winningGrant?.origin?.kind,
+            decision(initialSnapshot, "grounds.build", clock.instant()).winningGrant?.origin?.kind,
         )
         assertEquals(
             mappingId,
-            decision(initialSnapshot, "grounds.build").winningGrant?.origin?.mappingId,
+            decision(initialSnapshot, "grounds.build", clock.instant())
+                .winningGrant
+                ?.origin
+                ?.mappingId,
         )
         assertEquals(
             DIRECT_ROLE,
-            decision(initialSnapshot, "grounds.moderate").winningGrant?.origin?.kind,
+            decision(initialSnapshot, "grounds.moderate", clock.instant())
+                .winningGrant
+                ?.origin
+                ?.kind,
         )
         assertEquals(
             DIRECT_PERMISSION,
-            decision(initialSnapshot, "grounds.fly").winningGrant?.origin?.kind,
+            decision(initialSnapshot, "grounds.fly", clock.instant()).winningGrant?.origin?.kind,
         )
+
+        clock.advance(Duration.ofMinutes(10))
+        assertFalse(decision(initialSnapshot, "grounds.build", clock.instant()).allowed)
 
         keycloak.groupPaths = setOf("/visitors")
         clock.advance(Duration.ofSeconds(1))
@@ -119,7 +128,7 @@ class PlayerPermissionLifecycleTest {
         assertTrue(secondDuplicate.acknowledged)
         assertEquals(2, keycloak.targetedUserReads)
         assertEquals(setOf("/visitors"), identityRepository.findByPlayerId(playerId)?.groupPaths)
-        assertEquals(setOf("moderator", "visitor"), snapshot().roleKeys)
+        assertEquals(setOf("moderator", "visitor"), snapshot(clock.instant()).roleKeys)
 
         val expiredAt = clock.instant().minusSeconds(1)
         permissionRepository.updatePlayerRoleGrant(
@@ -134,9 +143,9 @@ class PlayerPermissionLifecycleTest {
         )
         permissionRepository.deletePlayerGrant(playerId, directPermissionGrantId)
 
-        val afterGrantRemoval = snapshot()
-        assertFalse(decision(afterGrantRemoval, "grounds.moderate").allowed)
-        assertFalse(decision(afterGrantRemoval, "grounds.fly").allowed)
+        val afterGrantRemoval = snapshot(clock.instant())
+        assertFalse(decision(afterGrantRemoval, "grounds.moderate", clock.instant()).allowed)
+        assertFalse(decision(afterGrantRemoval, "grounds.fly", clock.instant()).allowed)
         assertEquals(setOf("visitor"), afterGrantRemoval.roleKeys)
 
         keycloak.groupPaths = setOf("/builders")
@@ -146,11 +155,13 @@ class PlayerPermissionLifecycleTest {
         lifecycle.reconcileScheduled()
 
         assertEquals(setOf("/builders"), identityRepository.findByPlayerId(playerId)?.groupPaths)
-        assertEquals(setOf("builder"), snapshot().roleKeys)
+        assertEquals(setOf("builder"), snapshot(clock.instant()).roleKeys)
 
         forceIdentityProjectionStale(clock.instant().minus(Duration.ofHours(7)))
 
-        assertThrows(IdentityProjectionUnavailableException::class.java) { snapshot() }
+        assertThrows(IdentityProjectionUnavailableException::class.java) {
+            snapshot(clock.instant())
+        }
     }
 
     private fun coordinator(
@@ -224,18 +235,21 @@ class PlayerPermissionLifecycleTest {
         )
     }
 
-    private fun snapshot() =
+    private fun snapshot(now: Instant) =
         PolicyEngine.createSnapshot(
             playerId,
             permissionRepository.policyFor(
-                PermissionPolicyRequest(playerId, serverType = "paper", serverId = "survival-1")
+                PermissionPolicyRequest(playerId, serverType = "paper", serverId = "survival-1"),
+                now,
             ),
+            now,
         )
 
     private fun decision(
         snapshot: gg.grounds.permissions.domain.EffectivePermissionSnapshot,
         permission: String,
-    ) = PolicyEngine.checkPermission(snapshot, permission, PermissionCheckScope.global())
+        now: Instant,
+    ) = PolicyEngine.checkPermission(snapshot, permission, PermissionCheckScope.global(), now)
 
     private fun eventPayload(reason: String): ByteArray =
         objectMapper.writeValueAsBytes(

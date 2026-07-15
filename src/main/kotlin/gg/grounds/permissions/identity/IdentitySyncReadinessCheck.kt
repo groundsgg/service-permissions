@@ -4,6 +4,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.health.HealthCheck
 import org.eclipse.microprofile.health.HealthCheckResponse
@@ -24,7 +25,7 @@ class IdentitySyncReadinessCheck(
 
     override fun call(): HealthCheckResponse {
         val state = store.currentSyncState()
-        val available = isAvailable(state)
+        val available = isAvailable(state, clock.instant())
         val builder =
             HealthCheckResponse.named(CHECK_NAME)
                 .status(available)
@@ -35,11 +36,14 @@ class IdentitySyncReadinessCheck(
         return builder.build()
     }
 
-    fun isIdentityPolicyAvailable(): Boolean = isAvailable(store.currentSyncState())
+    fun isIdentityPolicyAvailable(): Boolean = isIdentityPolicyAvailable(clock.instant())
 
-    private fun isAvailable(state: IdentitySyncState): Boolean {
+    fun isIdentityPolicyAvailable(now: Instant): Boolean =
+        isAvailable(store.currentSyncState(), now)
+
+    private fun isAvailable(state: IdentitySyncState, now: Instant): Boolean {
         val lastSuccessAt = state.lastSuccessAt ?: return false
-        return !lastSuccessAt.isBefore(clock.instant().minus(maxStaleness))
+        return !lastSuccessAt.isBefore(now.minus(maxStaleness))
     }
 
     private companion object {
