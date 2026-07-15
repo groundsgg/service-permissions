@@ -76,6 +76,7 @@ class IdentityChangeConsumer(
         coordinator: IdentitySyncCoordinator,
         @ConfigProperty(name = "permissions.keycloak.realm") realmId: String,
         @ConfigProperty(name = "permissions.identity-events.nats-url") natsUrl: String,
+        @ConfigProperty(name = "grounds.token-file") tokenFile: Optional<String>,
         @ConfigProperty(name = "permissions.identity-events.subject") subject: String,
         @ConfigProperty(name = "permissions.identity-events.stream") stream: String,
         @ConfigProperty(name = "permissions.identity-events.consumer-prefix")
@@ -90,7 +91,7 @@ class IdentityChangeConsumer(
         objectMapper = objectMapper,
         coordinator = coordinator,
         realmId = realmId,
-        transport = NatsIdentityEventTransport(natsUrl),
+        transport = NatsIdentityEventTransport(natsUrl, tokenFile.orElse(null)),
         config =
             IdentityEventConsumerConfig(
                 subject = subject,
@@ -243,12 +244,14 @@ class IdentityChangeConsumer(
     }
 }
 
-private class NatsIdentityEventTransport(private val natsUrl: String) : IdentityEventTransport {
+internal class NatsIdentityEventTransport(natsUrl: String, tokenFile: String?) :
+    IdentityEventTransport {
+    internal val connectionOptions = buildNatsConnectionOptions(natsUrl, tokenFile)
     @Volatile private var connection: Connection? = null
 
     override fun open(config: IdentityEventConsumerConfig): IdentityEventSubscription {
         close()
-        val openedConnection = Nats.connect(natsUrl)
+        val openedConnection = Nats.connect(connectionOptions)
         connection = openedConnection
         val options = buildPullSubscribeOptions(config)
         val subscription = openedConnection.jetStream().subscribe(config.subject, options)

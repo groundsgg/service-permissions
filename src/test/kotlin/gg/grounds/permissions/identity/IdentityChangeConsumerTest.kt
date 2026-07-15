@@ -2,16 +2,23 @@ package gg.grounds.permissions.identity
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.nats.client.api.AckPolicy
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Duration
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 class IdentityChangeConsumerTest {
+    @TempDir lateinit var tempDir: Path
+
     private val coordinator = mock<IdentitySyncCoordinator>()
     private val consumer = IdentityChangeConsumer(jacksonObjectMapper(), coordinator, "grounds")
 
@@ -119,6 +126,40 @@ class IdentityChangeConsumerTest {
 
         assertEquals(AckPolicy.Explicit, options.consumerConfiguration.ackPolicy)
         assertEquals(10, options.consumerConfiguration.maxDeliver)
+    }
+
+    @Test
+    fun wiresRotatingTokenSupplierIntoNatsConnectionOptions() {
+        val tokenFile = tempDir.resolve("token")
+        Files.writeString(tokenFile, "first-token")
+        val transport = NatsIdentityEventTransport("nats://localhost:4222", tokenFile.toString())
+
+        assertEquals(
+            "nats://localhost:4222",
+            transport.connectionOptions.servers.single().toString(),
+        )
+        assertArrayEquals("first-token".toCharArray(), transport.connectionOptions.tokenChars)
+
+        Files.writeString(tokenFile, "rotated-token")
+
+        assertArrayEquals("rotated-token".toCharArray(), transport.connectionOptions.tokenChars)
+    }
+
+    @Test
+    fun leavesNatsConnectionUnauthenticatedWhenTokenFileIsAbsent() {
+        val transport = NatsIdentityEventTransport("nats://localhost:4222", null)
+
+        assertNull(transport.connectionOptions.tokenChars)
+    }
+
+    @Test
+    fun rejectsBlankConfiguredTokenFilePath() {
+        val exception =
+            assertThrows(IllegalArgumentException::class.java) {
+                NatsIdentityEventTransport("nats://localhost:4222", " ")
+            }
+
+        assertEquals("NATS authentication token file path must not be blank", exception.message)
     }
 
     private fun validPayload(realmId: String = "grounds", reason: String = "identity_updated") =
