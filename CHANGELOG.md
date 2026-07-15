@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/groundsgg/service-permissions/compare/v0.7.0...v0.8.0) (2026-07-15)
+
+
+### Features
+
+* **identity:** authenticate NATS with rotating token ([#38](https://github.com/groundsgg/service-permissions/issues/38)) ([eabb279](https://github.com/groundsgg/service-permissions/commit/eabb279f13f296afd044278866539fb46ebc06de))
+
 ## [0.7.0](https://github.com/groundsgg/service-permissions/compare/v0.6.1...v0.7.0) (2026-07-14)
 
 
