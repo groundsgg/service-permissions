@@ -48,7 +48,7 @@ dependencies {
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("com.google.protobuf:protobuf-kotlin")
-    implementation("io.nats:jnats:2.25.2")
+    implementation("io.nats:jnats:2.26.0")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")
