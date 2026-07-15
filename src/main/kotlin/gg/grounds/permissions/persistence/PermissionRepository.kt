@@ -835,13 +835,15 @@ constructor(
             }
     }
 
-    fun policyFor(request: PermissionPolicyRequest): PermissionPolicyInput {
-        val now = Instant.now()
+    fun policyFor(
+        request: PermissionPolicyRequest,
+        now: Instant = Instant.now(),
+    ): PermissionPolicyInput {
         val roles = listRoleDefinitions()
         val directPlayerRoles = listPlayerRoleGrants(request.playerId)
         val mappedRoles =
             if (hasKeycloakGroupMappings()) {
-                if (!identityReadinessCheck.isIdentityPolicyAvailable()) {
+                if (!identityReadinessCheck.isIdentityPolicyAvailable(now)) {
                     throw IdentityProjectionUnavailableException()
                 }
                 val groupPaths =
