@@ -295,7 +295,7 @@ object PolicyEngine {
             scope = scope,
             source = source,
             expiresAt = expiresAt,
-            origin = origin,
+            origin = origin.copy(permissionGrantId = permissionGrantId),
         )
 
     private fun earliestOf(instants: List<Instant>): Instant =

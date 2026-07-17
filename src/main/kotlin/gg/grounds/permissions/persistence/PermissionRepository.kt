@@ -104,6 +104,8 @@ data class PermissionSyncMetadataRecord(
     val importedAt: Instant,
 )
 
+data class PagedRecords<T>(val items: List<T>, val total: Long)
+
 @ApplicationScoped
 class PermissionRepository
 @Inject
@@ -330,6 +332,87 @@ constructor(
             }
     }
 
+    fun searchRoleGrantRecords(
+        roleKey: String,
+        query: String,
+        page: Int,
+        perPage: Int,
+        sortBy: String,
+        sortDirection: String,
+    ): PagedRecords<RoleGrantRecord> = consistentRead { connection ->
+        val pattern = searchPattern(query)
+        val total =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT COUNT(*)
+                    FROM permission_role_grants
+                    WHERE role_key = ?
+                      AND (
+                          permission_pattern ILIKE ? ESCAPE '\'
+                          OR effect ILIKE ? ESCAPE '\'
+                          OR scope_kind ILIKE ? ESCAPE '\'
+                          OR COALESCE(scope_value, '') ILIKE ? ESCAPE '\'
+                      )
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setString(1, roleKey)
+                    (2..5).forEach { statement.setString(it, pattern) }
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        rows.getLong(1)
+                    }
+                }
+        val orderBy =
+            searchOrderBy(
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                allowedSorts =
+                    mapOf(
+                        "permission" to listOf("LOWER(permission_pattern)"),
+                        "effect" to listOf("effect"),
+                        "scope" to listOf("scope_kind", "LOWER(COALESCE(scope_value, ''))"),
+                        "expiration" to listOf("expires_at"),
+                    ),
+                tieBreaker = "id",
+            )
+        val items =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value,
+                           expires_at
+                    FROM permission_role_grants
+                    WHERE role_key = ?
+                      AND (
+                          permission_pattern ILIKE ? ESCAPE '\'
+                          OR effect ILIKE ? ESCAPE '\'
+                          OR scope_kind ILIKE ? ESCAPE '\'
+                          OR COALESCE(scope_value, '') ILIKE ? ESCAPE '\'
+                      )
+                    ORDER BY $orderBy
+                    OFFSET ? LIMIT ?
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setString(1, roleKey)
+                    (2..5).forEach { statement.setString(it, pattern) }
+                    statement.setLong(6, pageOffset(page, perPage))
+                    statement.setInt(7, perPage)
+                    statement.executeQuery().use { rows ->
+                        buildList {
+                            while (rows.next()) {
+                                add(rows.toRoleGrantRecord())
+                            }
+                        }
+                    }
+                }
+        PagedRecords(items, total)
+    }
+
     fun listRoleInheritances(): List<SyncInheritance> = read { connection ->
         connection
             .prepareStatement(
@@ -531,6 +614,87 @@ constructor(
             }
     }
 
+    fun searchPlayerGrantRecords(
+        playerId: UUID,
+        query: String,
+        page: Int,
+        perPage: Int,
+        sortBy: String,
+        sortDirection: String,
+    ): PagedRecords<PlayerGrantRecord> = consistentRead { connection ->
+        val pattern = searchPattern(query)
+        val total =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT COUNT(*)
+                    FROM permission_player_grants
+                    WHERE player_id = ?
+                      AND (
+                          permission_pattern ILIKE ? ESCAPE '\'
+                          OR effect ILIKE ? ESCAPE '\'
+                          OR scope_kind ILIKE ? ESCAPE '\'
+                          OR COALESCE(scope_value, '') ILIKE ? ESCAPE '\'
+                      )
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setObject(1, playerId)
+                    (2..5).forEach { statement.setString(it, pattern) }
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        rows.getLong(1)
+                    }
+                }
+        val orderBy =
+            searchOrderBy(
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                allowedSorts =
+                    mapOf(
+                        "permission" to listOf("LOWER(permission_pattern)"),
+                        "effect" to listOf("effect"),
+                        "scope" to listOf("scope_kind", "LOWER(COALESCE(scope_value, ''))"),
+                        "expiration" to listOf("expires_at"),
+                    ),
+                tieBreaker = "id",
+            )
+        val items =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value,
+                           expires_at
+                    FROM permission_player_grants
+                    WHERE player_id = ?
+                      AND (
+                          permission_pattern ILIKE ? ESCAPE '\'
+                          OR effect ILIKE ? ESCAPE '\'
+                          OR scope_kind ILIKE ? ESCAPE '\'
+                          OR COALESCE(scope_value, '') ILIKE ? ESCAPE '\'
+                      )
+                    ORDER BY $orderBy
+                    OFFSET ? LIMIT ?
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setObject(1, playerId)
+                    (2..5).forEach { statement.setString(it, pattern) }
+                    statement.setLong(6, pageOffset(page, perPage))
+                    statement.setInt(7, perPage)
+                    statement.executeQuery().use { rows ->
+                        buildList {
+                            while (rows.next()) {
+                                add(rows.toPlayerGrantRecord())
+                            }
+                        }
+                    }
+                }
+        PagedRecords(items, total)
+    }
+
     fun updatePlayerGrant(
         playerId: UUID,
         grantId: UUID,
@@ -619,6 +783,74 @@ constructor(
                     }
                 }
             }
+    }
+
+    fun searchKeycloakGroupMappings(
+        query: String,
+        page: Int,
+        perPage: Int,
+        sortBy: String,
+        sortDirection: String,
+    ): PagedRecords<KeycloakGroupMappingRecord> = consistentRead { connection ->
+        val pattern = searchPattern(query)
+        val total =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT COUNT(*)
+                    FROM permission_keycloak_group_mappings
+                    WHERE keycloak_group ILIKE ? ESCAPE '\'
+                       OR role_key ILIKE ? ESCAPE '\'
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setString(1, pattern)
+                    statement.setString(2, pattern)
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        rows.getLong(1)
+                    }
+                }
+        val orderBy =
+            searchOrderBy(
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                allowedSorts =
+                    mapOf(
+                        "group" to listOf("LOWER(keycloak_group)"),
+                        "role" to listOf("LOWER(role_key)"),
+                        "expiration" to listOf("expires_at"),
+                    ),
+                tieBreaker = "id",
+            )
+        val items =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT id, keycloak_group, role_key, expires_at
+                    FROM permission_keycloak_group_mappings
+                    WHERE keycloak_group ILIKE ? ESCAPE '\'
+                       OR role_key ILIKE ? ESCAPE '\'
+                    ORDER BY $orderBy
+                    OFFSET ? LIMIT ?
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setString(1, pattern)
+                    statement.setString(2, pattern)
+                    statement.setLong(3, pageOffset(page, perPage))
+                    statement.setInt(4, perPage)
+                    statement.executeQuery().use { rows ->
+                        buildList {
+                            while (rows.next()) {
+                                add(rows.toKeycloakGroupMapping())
+                            }
+                        }
+                    }
+                }
+        PagedRecords(items, total)
     }
 
     fun updateKeycloakGroupMapping(
@@ -724,6 +956,80 @@ constructor(
                     }
                 }
             }
+    }
+
+    fun searchCatalogEntries(
+        query: String,
+        page: Int,
+        perPage: Int,
+        sortBy: String,
+        sortDirection: String,
+    ): PagedRecords<CatalogEntryRecord> = consistentRead { connection ->
+        val pattern = searchPattern(query)
+        val total =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT COUNT(*)
+                    FROM permission_catalog_entries
+                    WHERE permission_key ILIKE ? ESCAPE '\'
+                       OR label ILIKE ? ESCAPE '\'
+                       OR description ILIKE ? ESCAPE '\'
+                       OR source ILIKE ? ESCAPE '\'
+                       OR source_version ILIKE ? ESCAPE '\'
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    (1..5).forEach { statement.setString(it, pattern) }
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        rows.getLong(1)
+                    }
+                }
+        val orderBy =
+            searchOrderBy(
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                allowedSorts =
+                    mapOf(
+                        "permission" to listOf("LOWER(permission_key)"),
+                        "label" to listOf("LOWER(label)"),
+                        "source" to listOf("LOWER(source)"),
+                        "lastseen" to listOf("last_seen_at"),
+                    ),
+                tieBreaker = "permission_key",
+            )
+        val items =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT permission_key, label, description, source, source_version,
+                           supported_scopes, custom, last_seen_at
+                    FROM permission_catalog_entries
+                    WHERE permission_key ILIKE ? ESCAPE '\'
+                       OR label ILIKE ? ESCAPE '\'
+                       OR description ILIKE ? ESCAPE '\'
+                       OR source ILIKE ? ESCAPE '\'
+                       OR source_version ILIKE ? ESCAPE '\'
+                    ORDER BY $orderBy
+                    OFFSET ? LIMIT ?
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    (1..5).forEach { statement.setString(it, pattern) }
+                    statement.setLong(6, pageOffset(page, perPage))
+                    statement.setInt(7, perPage)
+                    statement.executeQuery().use { rows ->
+                        buildList {
+                            while (rows.next()) {
+                                add(rows.toCatalogEntry())
+                            }
+                        }
+                    }
+                }
+        PagedRecords(items, total)
     }
 
     fun permissionProjectSnapshot(): PermissionProjectSnapshot =
@@ -959,7 +1265,7 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT role_key, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value, expires_at
                 FROM permission_role_grants
                 ORDER BY created_at ASC, id ASC
                 """
@@ -1092,6 +1398,20 @@ constructor(
 
     private fun <T> read(block: (Connection) -> T): T =
         dataSource.connection.use { connection -> block(connection) }
+
+    private fun <T> consistentRead(block: (Connection) -> T): T =
+        dataSource.connection.use { connection ->
+            connection.transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ
+            connection.autoCommit = false
+            try {
+                val result = block(connection)
+                connection.commit()
+                result
+            } catch (error: Throwable) {
+                connection.rollback()
+                throw error
+            }
+        }
 
     private fun <T> write(action: String, target: String, block: (Connection) -> T): T =
         dataSource.connection.use { connection ->
@@ -1442,6 +1762,7 @@ constructor(
                     value = getString("scope_value"),
                 ),
             expiresAt = instantOrNull("expires_at"),
+            permissionGrantId = getObject("id", UUID::class.java),
         )
 
     private fun ResultSet.instantOrNull(column: String): Instant? =
@@ -1456,11 +1777,40 @@ constructor(
     private fun metadataMap(json: String): Map<String, String> =
         objectMapper.readValue(json, STRING_MAP_TYPE)
 
+    private fun searchPattern(query: String): String =
+        "%${query.trim().replace(SEARCH_WHITESPACE, " ").escapeLikePattern()}%"
+
+    private fun String.escapeLikePattern(): String =
+        replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    private fun pageOffset(page: Int, perPage: Int): Long = (page - 1L) * perPage
+
+    private fun searchOrderBy(
+        sortBy: String,
+        sortDirection: String,
+        allowedSorts: Map<String, List<String>>,
+        tieBreaker: String,
+    ): String {
+        val expressions =
+            requireNotNull(allowedSorts[sortBy]) { "Unsupported sort key (sortBy=$sortBy)" }
+        val direction =
+            when (sortDirection) {
+                "asc" -> "ASC"
+                "desc" -> "DESC"
+                else ->
+                    throw IllegalArgumentException(
+                        "Unsupported sort direction (sortDirection=$sortDirection)"
+                    )
+            }
+        return expressions.joinToString { "$it $direction NULLS LAST" } + ", $tieBreaker ASC"
+    }
+
     companion object {
         private const val POSTGRES_UNIQUE_VIOLATION = "23505"
         private const val PERMISSION_ROLES_PRIMARY_KEY = "permission_roles_pkey"
         private val REFRESH_AFTER_OFFSET = Duration.ofMinutes(5)
         private val EXPIRES_AFTER_OFFSET = Duration.ofMinutes(10)
         private val STRING_MAP_TYPE = object : TypeReference<Map<String, String>>() {}
+        private val SEARCH_WHITESPACE = Regex("\\s+")
     }
 }

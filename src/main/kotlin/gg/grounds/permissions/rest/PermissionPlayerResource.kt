@@ -17,6 +17,7 @@ import io.quarkus.security.identity.SecurityIdentity
 import jakarta.inject.Inject
 import jakarta.ws.rs.Consumes
 import jakarta.ws.rs.DELETE
+import jakarta.ws.rs.DefaultValue
 import jakarta.ws.rs.GET
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.PUT
@@ -59,6 +60,34 @@ constructor(
         requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         return repository.listPlayerRoleGrantRecords(id).map { it.toResponse() }
+    }
+
+    @GET
+    @Path("/roles/search")
+    fun searchPlayerRoles(
+        @PathParam("playerId") playerId: String,
+        @QueryParam("query") query: String?,
+        @QueryParam("page") @DefaultValue("1") page: Int,
+        @QueryParam("perPage") @DefaultValue("20") perPage: Int,
+        @QueryParam("sortBy") sortBy: String?,
+        @QueryParam("sortDirection") sortDirection: String?,
+        @Context headers: HttpHeaders,
+    ): PagedResponse<PlayerEffectiveRoleResponse> {
+        requireAdmin(headers)
+        val id = PermissionValidation.uuid(playerId, "playerId")
+        val search =
+            PermissionSearchPaging.validate(
+                query = query,
+                page = page,
+                perPage = perPage,
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                defaultSortBy = "role",
+                allowedSortKeys = listOf("role", "source", "expiration"),
+            )
+        val rows =
+            playerRoleRows(id).filter { it.matches(search.query) }.sortedWith(search.comparator())
+        return rows.toPagedResponse(search)
     }
 
     @POST
@@ -127,6 +156,45 @@ constructor(
         requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         return repository.listPlayerGrantRecords(id).map { it.toResponse() }
+    }
+
+    @GET
+    @Path("/grants/search")
+    fun searchPlayerGrants(
+        @PathParam("playerId") playerId: String,
+        @QueryParam("query") query: String?,
+        @QueryParam("page") @DefaultValue("1") page: Int,
+        @QueryParam("perPage") @DefaultValue("20") perPage: Int,
+        @QueryParam("sortBy") sortBy: String?,
+        @QueryParam("sortDirection") sortDirection: String?,
+        @Context headers: HttpHeaders,
+    ): PagedResponse<PlayerGrantResponse> {
+        requireAdmin(headers)
+        val search =
+            PermissionSearchPaging.validate(
+                query = query,
+                page = page,
+                perPage = perPage,
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                defaultSortBy = "permission",
+                allowedSortKeys = listOf("permission", "effect", "scope", "expiration"),
+            )
+        val result =
+            repository.searchPlayerGrantRecords(
+                playerId = PermissionValidation.uuid(playerId, "playerId"),
+                query = search.query,
+                page = search.page,
+                perPage = search.perPage,
+                sortBy = search.sortBy,
+                sortDirection = search.sortDirection,
+            )
+        return PagedResponse(
+            result.items.map { it.toResponse() },
+            search.page,
+            search.perPage,
+            result.total,
+        )
     }
 
     @POST
@@ -207,6 +275,51 @@ constructor(
                 },
             refreshAfter = snapshot.refreshAfter,
             expiresAt = snapshot.expiresAt,
+        )
+    }
+
+    @GET
+    @Path("/effective/search")
+    fun searchEffectivePermissions(
+        @PathParam("playerId") playerId: String,
+        @QueryParam("query") query: String?,
+        @QueryParam("effect") effect: String?,
+        @QueryParam("page") @DefaultValue("1") page: Int,
+        @QueryParam("perPage") @DefaultValue("20") perPage: Int,
+        @QueryParam("sortBy") sortBy: String?,
+        @QueryParam("sortDirection") sortDirection: String?,
+        @QueryParam("serverType") serverType: String?,
+        @QueryParam("serverId") serverId: String?,
+        @Context headers: HttpHeaders,
+    ): PagedResponse<EffectiveGrantResponse> {
+        requireAdmin(headers)
+        val id = PermissionValidation.uuid(playerId, "playerId")
+        val search =
+            PermissionSearchPaging.validate(
+                query = query,
+                page = page,
+                perPage = perPage,
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                defaultSortBy = "permission",
+                allowedSortKeys = listOf("permission", "effect", "scope", "source", "expiration"),
+            )
+        val requestedEffect = effect?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "ALL"
+        require(requestedEffect in setOf("ALL", "ALLOW", "DENY")) {
+            "effect must be one of: ALL, ALLOW, DENY"
+        }
+        val snapshot = snapshotFor(id, serverType, serverId)
+        val rows =
+            (snapshot.allowPatterns + snapshot.denyPatterns)
+                .filter { requestedEffect == "ALL" || it.effect.name == requestedEffect }
+                .filter { it.matches(search.query) }
+                .sortedWith(search.effectiveComparator())
+        val result = rows.toPagedResponse(search)
+        return PagedResponse(
+            items = result.items.map { it.toResponse() },
+            page = result.page,
+            perPage = result.perPage,
+            total = result.total,
         )
     }
 
@@ -292,6 +405,179 @@ constructor(
 
     private fun PermissionGrant.toResponse(): EffectiveGrantResponse =
         scope.toGrantResponse(effect, pattern, expiresAt, origin)
+
+    private fun playerRoleRows(playerId: UUID): List<PlayerEffectiveRoleResponse> {
+        val directGrants = repository.listPlayerRoleGrantRecords(playerId)
+        val directGrantsById = directGrants.associateBy { it.id }
+        val mappingExpirations =
+            repository.listKeycloakGroupMappings().associateBy({ it.id }, { it.expiresAt })
+        val roles = repository.listRoles().associateBy { it.key }
+        val snapshot = snapshotFor(playerId, null, null)
+        val directRows =
+            directGrants.map { grant ->
+                PlayerEffectiveRoleResponse(
+                    id = grant.id.toString(),
+                    roleKey = grant.roleKey,
+                    roleName = roles[grant.roleKey]?.name ?: grant.roleKey,
+                    source = PermissionGrantOriginKind.DIRECT_ROLE,
+                    expiresAt = grant.expiresAt,
+                    editable = true,
+                    directGrant = grant.toResponse(),
+                    inherited = false,
+                    assignments =
+                        snapshot.roleAssignments
+                            .filter {
+                                it.roleKey == grant.roleKey &&
+                                    it.origin.kind == PermissionGrantOriginKind.DIRECT_ROLE &&
+                                    it.origin.grantId == grant.id &&
+                                    it.origin.inheritedPath.isEmpty()
+                            }
+                            .map { it.toResponse() },
+                )
+            }
+        val derivedRows =
+            snapshot.roleAssignments
+                .filterNot { assignment ->
+                    assignment.origin.kind == PermissionGrantOriginKind.DIRECT_ROLE &&
+                        assignment.origin.inheritedPath.isEmpty() &&
+                        assignment.origin.grantId?.let { grantId ->
+                            directGrantsById[grantId]?.roleKey == assignment.roleKey
+                        } == true
+                }
+                .groupBy {
+                    listOf(
+                        it.roleKey,
+                        it.origin.kind.name,
+                        it.origin.grantId?.toString().orEmpty(),
+                        it.origin.mappingId?.toString().orEmpty(),
+                    )
+                }
+                .map { (_, assignments) ->
+                    val first = assignments.first()
+                    PlayerEffectiveRoleResponse(
+                        id =
+                            listOf(
+                                    first.roleKey,
+                                    first.origin.kind.name,
+                                    first.origin.grantId?.toString().orEmpty(),
+                                    first.origin.mappingId?.toString().orEmpty(),
+                                )
+                                .joinToString(":"),
+                        roleKey = first.roleKey,
+                        roleName = roles[first.roleKey]?.name ?: first.roleKey,
+                        source = first.origin.kind,
+                        expiresAt =
+                            first.origin.grantId?.let { directGrantsById[it]?.expiresAt }
+                                ?: first.origin.mappingId?.let { mappingExpirations[it] },
+                        editable = false,
+                        directGrant = null,
+                        inherited = assignments.any { it.origin.inheritedPath.isNotEmpty() },
+                        assignments = assignments.map { it.toResponse() },
+                    )
+                }
+        return directRows + derivedRows
+    }
+
+    private fun gg.grounds.permissions.domain.EffectiveRoleAssignment.toResponse() =
+        EffectiveRoleAssignmentResponse(
+            roleKey = roleKey,
+            source = origin.kind,
+            grantId = origin.grantId,
+            mappingId = origin.mappingId,
+            inheritedPath = origin.inheritedPath,
+            editable =
+                origin.kind == PermissionGrantOriginKind.DIRECT_ROLE &&
+                    origin.inheritedPath.isEmpty(),
+        )
+
+    private fun PlayerEffectiveRoleResponse.matches(query: String): Boolean =
+        query.isEmpty() ||
+            listOf(roleName, roleKey, source.name).any { it.contains(query, ignoreCase = true) }
+
+    private fun PermissionGrant.matches(query: String): Boolean =
+        query.isEmpty() ||
+            listOf(
+                    pattern,
+                    origin.kind.name,
+                    origin.roleKey.orEmpty(),
+                    scope.kind.name,
+                    scope.value.orEmpty(),
+                )
+                .any { it.contains(query, ignoreCase = true) }
+
+    private fun PermissionSearchParameters.comparator(): Comparator<PlayerEffectiveRoleResponse> =
+        Comparator { left, right ->
+            val direction = if (sortDirection == "asc") 1 else -1
+            val result =
+                when (sortBy) {
+                    "role" -> left.roleName.compareTo(right.roleName, ignoreCase = true) * direction
+                    "source" -> left.source.name.compareTo(right.source.name) * direction
+                    "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
+                    else -> error("Unsupported sort key (sortBy=$sortBy)")
+                }
+            if (result != 0) result else left.id.compareTo(right.id)
+        }
+
+    private fun PermissionSearchParameters.effectiveComparator(): Comparator<PermissionGrant> =
+        Comparator { left, right ->
+            val direction = if (sortDirection == "asc") 1 else -1
+            val result =
+                when (sortBy) {
+                    "permission" -> left.pattern.compareTo(right.pattern, true) * direction
+                    "effect" -> left.effect.name.compareTo(right.effect.name) * direction
+                    "scope" -> {
+                        val kindResult = left.scope.kind.name.compareTo(right.scope.kind.name)
+                        if (kindResult != 0) {
+                            kindResult * direction
+                        } else {
+                            compareNullable(left.scope.value, right.scope.value, direction)
+                        }
+                    }
+                    "source" -> left.origin.kind.name.compareTo(right.origin.kind.name) * direction
+                    "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
+                    else -> error("Unsupported sort key (sortBy=$sortBy)")
+                }
+            if (result != 0) result else left.identity().compareTo(right.identity())
+        }
+
+    private fun <T : Comparable<T>> compareNullable(left: T?, right: T?, direction: Int): Int =
+        when {
+            left == null && right == null -> 0
+            left == null -> 1
+            right == null -> -1
+            else -> left.compareTo(right) * direction
+        }
+
+    private fun PermissionGrant.identity(): String =
+        listOf(
+                origin.kind.name,
+                origin.grantId?.toString().orEmpty(),
+                origin.roleKey.orEmpty(),
+                origin.mappingId?.toString().orEmpty(),
+                origin.inheritedPath.joinToString("/"),
+                pattern,
+                effect.name,
+                scope.kind.name,
+                scope.value.orEmpty(),
+                expiresAt?.toString().orEmpty(),
+                origin.permissionGrantId?.toString().orEmpty(),
+            )
+            .joinToString(":")
+
+    private fun <T> List<T>.toPagedResponse(search: PermissionSearchParameters): PagedResponse<T> {
+        val offset = (search.page - 1L) * search.perPage
+        return PagedResponse(
+            items =
+                if (offset >= size.toLong()) {
+                    emptyList()
+                } else {
+                    drop(offset.toInt()).take(search.perPage)
+                },
+            page = search.page,
+            perPage = search.perPage,
+            total = size.toLong(),
+        )
+    }
 
     private fun requireAdmin(headers: HttpHeaders): String =
         authorization.requireMinecraftPermissionsAdmin(identity, headers)

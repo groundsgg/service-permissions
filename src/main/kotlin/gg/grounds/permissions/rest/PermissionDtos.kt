@@ -8,6 +8,55 @@ import java.util.UUID
 
 data class ErrorResponse(val error: String)
 
+data class PagedResponse<T>(val items: List<T>, val page: Int, val perPage: Int, val total: Long)
+
+data class PermissionSearchParameters(
+    val query: String,
+    val page: Int,
+    val perPage: Int,
+    val sortBy: String,
+    val sortDirection: String,
+)
+
+object PermissionSearchPaging {
+    fun validate(
+        query: String?,
+        page: Int,
+        perPage: Int,
+        sortBy: String?,
+        sortDirection: String?,
+        defaultSortBy: String,
+        allowedSortKeys: List<String>,
+    ): PermissionSearchParameters {
+        require(page >= 1) { "page must be at least 1" }
+        require(perPage in 1..MAXIMUM_PAGE_SIZE) { "perPage must be between 1 and 100" }
+
+        val resolvedSortBy =
+            sortBy?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: defaultSortBy
+        require(resolvedSortBy in allowedSortKeys) {
+            "sortBy must be one of: ${allowedSortKeys.joinToString()}"
+        }
+        val resolvedDirection =
+            sortDirection?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: DEFAULT_SORT_DIRECTION
+        require(resolvedDirection in SORT_DIRECTIONS) {
+            "sortDirection must be one of: ${SORT_DIRECTIONS.joinToString()}"
+        }
+
+        return PermissionSearchParameters(
+            query = query?.trim()?.replace(WHITESPACE, " ").orEmpty(),
+            page = page,
+            perPage = perPage,
+            sortBy = resolvedSortBy,
+            sortDirection = resolvedDirection,
+        )
+    }
+
+    private const val MAXIMUM_PAGE_SIZE = 100
+    private const val DEFAULT_SORT_DIRECTION = "asc"
+    private val SORT_DIRECTIONS = listOf("asc", "desc")
+    private val WHITESPACE = Regex("\\s+")
+}
+
 data class RoleRequest(
     var key: String? = null,
     var name: String? = null,
@@ -69,6 +118,18 @@ data class PlayerRoleGrantResponse(
     val playerId: UUID,
     val roleKey: String,
     val expiresAt: Instant?,
+)
+
+data class PlayerEffectiveRoleResponse(
+    val id: String,
+    val roleKey: String,
+    val roleName: String,
+    val source: PermissionGrantOriginKind,
+    val expiresAt: Instant?,
+    val editable: Boolean,
+    val directGrant: PlayerRoleGrantResponse?,
+    val inherited: Boolean,
+    val assignments: List<EffectiveRoleAssignmentResponse>,
 )
 
 data class PlayerGrantResponse(

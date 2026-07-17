@@ -8,12 +8,14 @@ import io.quarkus.security.identity.SecurityIdentity
 import jakarta.inject.Inject
 import jakarta.ws.rs.Consumes
 import jakarta.ws.rs.DELETE
+import jakarta.ws.rs.DefaultValue
 import jakarta.ws.rs.GET
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.PUT
 import jakarta.ws.rs.Path
 import jakarta.ws.rs.PathParam
 import jakarta.ws.rs.Produces
+import jakarta.ws.rs.QueryParam
 import jakarta.ws.rs.core.Context
 import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
@@ -36,6 +38,43 @@ constructor(
     fun listMappings(@Context headers: HttpHeaders): List<KeycloakGroupMappingResponse> {
         requireAdmin(headers)
         return repository.listKeycloakGroupMappings().map { it.toResponse() }
+    }
+
+    @GET
+    @Path("/search")
+    fun searchMappings(
+        @QueryParam("query") query: String?,
+        @QueryParam("page") @DefaultValue("1") page: Int,
+        @QueryParam("perPage") @DefaultValue("20") perPage: Int,
+        @QueryParam("sortBy") sortBy: String?,
+        @QueryParam("sortDirection") sortDirection: String?,
+        @Context headers: HttpHeaders,
+    ): PagedResponse<KeycloakGroupMappingResponse> {
+        requireAdmin(headers)
+        val search =
+            PermissionSearchPaging.validate(
+                query = query,
+                page = page,
+                perPage = perPage,
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                defaultSortBy = "group",
+                allowedSortKeys = listOf("group", "role", "expiration"),
+            )
+        val result =
+            repository.searchKeycloakGroupMappings(
+                query = search.query,
+                page = search.page,
+                perPage = search.perPage,
+                sortBy = search.sortBy,
+                sortDirection = search.sortDirection,
+            )
+        return PagedResponse(
+            items = result.items.map { it.toResponse() },
+            page = search.page,
+            perPage = search.perPage,
+            total = result.total,
+        )
     }
 
     @POST
