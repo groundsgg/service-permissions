@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/groundsgg/service-permissions/compare/v0.9.0...v0.10.0) (2026-07-17)
+
+
+### Features
+
+* **permissions:** add explicit external player lookup ([#44](https://github.com/groundsgg/service-permissions/issues/44)) ([ec1cf72](https://github.com/groundsgg/service-permissions/commit/ec1cf72d6189e38eb21c48956e7fa12ad40efbb6))
+
 ## [0.9.0](https://github.com/groundsgg/service-permissions/compare/v0.8.0...v0.9.0) (2026-07-17)
 
 
