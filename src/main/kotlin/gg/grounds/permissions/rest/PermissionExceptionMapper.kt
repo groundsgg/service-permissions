@@ -3,6 +3,7 @@ package gg.grounds.permissions.rest
 import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.persistence.DuplicateRoleKeyException
 import jakarta.ws.rs.NotFoundException
+import jakarta.ws.rs.ServiceUnavailableException
 import jakarta.ws.rs.core.Response
 import jakarta.ws.rs.ext.ExceptionMapper
 import jakarta.ws.rs.ext.Provider
@@ -43,5 +44,13 @@ class PermissionNotFoundExceptionMapper : ExceptionMapper<NotFoundException> {
     override fun toResponse(exception: NotFoundException): Response =
         Response.status(Response.Status.NOT_FOUND)
             .entity(ErrorResponse(exception.message ?: "not found"))
+            .build()
+}
+
+@Provider
+class PermissionServiceUnavailableExceptionMapper : ExceptionMapper<ServiceUnavailableException> {
+    override fun toResponse(exception: ServiceUnavailableException): Response =
+        Response.status(Response.Status.SERVICE_UNAVAILABLE)
+            .entity(ErrorResponse(exception.message ?: "service unavailable"))
             .build()
 }

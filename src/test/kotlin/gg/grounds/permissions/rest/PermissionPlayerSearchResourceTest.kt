@@ -149,7 +149,7 @@ class PermissionPlayerSearchResourceTest {
     }
 
     @Test
-    fun returnsUnlinkedMojangProfileForAnExactMissingUsernameWithoutPersistingIt() {
+    fun keepsLocalSearchIndependentFromMojangForMissingUsernames() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000405")
         whenever(mojangProfileClient.lookupExactUsername("MissingPlayer"))
             .thenReturn(MojangLookupResult.Found(MojangProfile(playerId, "MissingPlayer")))
@@ -159,74 +159,75 @@ class PermissionPlayerSearchResourceTest {
             .get("/v1/permissions/players/search")
             .then()
             .statusCode(200)
-            .body("total", equalTo(1))
-            .body("items[0].playerId", equalTo(playerId.toString()))
-            .body("items[0].name", equalTo("MissingPlayer"))
-            .body("items[0].linked", equalTo(false))
-            .body("items[0].directRoleGrantCount", equalTo(0))
-            .body("items[0].directPermissionGrantCount", equalTo(0))
+            .body("total", equalTo(0))
+            .body("items", hasSize<Any>(0))
+
+        verifyNoInteractions(mojangProfileClient)
+    }
+
+    @Test
+    fun returnsAnUnlinkedMojangProfileFromTheExplicitExternalLookupWithoutPersistingIt() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000405")
+        whenever(mojangProfileClient.lookupExactUsername("MissingPlayer"))
+            .thenReturn(MojangLookupResult.Found(MojangProfile(playerId, "MissingPlayer")))
 
         given()
             .queryParam("query", "MissingPlayer")
-            .get("/v1/permissions/players/search")
+            .get("/v1/permissions/players/external-search")
             .then()
-            .body("items[0].linked", equalTo(false))
+            .statusCode(200)
+            .body("playerId", equalTo(playerId.toString()))
+            .body("name", equalTo("MissingPlayer"))
+            .body("linked", equalTo(false))
+            .body("directRoleGrantCount", equalTo(0))
+            .body("directPermissionGrantCount", equalTo(0))
 
         org.junit.jupiter.api.Assertions.assertNull(identityRepository.findByPlayerId(playerId))
     }
 
     @Test
-    fun paginatesAnExactMojangResultBeforePartialLocalMatchesWithAStableTotal() {
-        val externalPlayerId = UUID.fromString("00000000-0000-0000-0000-000000000411")
-        val localPlayerId = UUID.fromString("00000000-0000-0000-0000-000000000412")
-        identityRepository.replacePlayer(identity(localPlayerId, "Alexandra"))
-        whenever(mojangProfileClient.lookupExactUsername("Alex"))
-            .thenReturn(MojangLookupResult.Found(MojangProfile(externalPlayerId, "Alex")))
+    fun doesNotCallMojangForExternalLookupWhenAnExactLocalUsernameExists() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000406")
+        identityRepository.replacePlayer(identity(playerId, "ExactPlayer"))
 
         given()
-            .queryParam("query", "Alex")
-            .queryParam("page", 1)
-            .queryParam("perPage", 1)
-            .get("/v1/permissions/players/search")
+            .queryParam("query", "exactplayer")
+            .get("/v1/permissions/players/external-search")
             .then()
-            .statusCode(200)
-            .body("total", equalTo(2))
-            .body("items", hasSize<Any>(1))
-            .body("items[0].playerId", equalTo(externalPlayerId.toString()))
-            .body("items[0].linked", equalTo(false))
+            .statusCode(404)
+            .body("error", equalTo("player_already_known"))
 
-        given()
-            .queryParam("query", "Alex")
-            .queryParam("page", 2)
-            .queryParam("perPage", 1)
-            .get("/v1/permissions/players/search")
-            .then()
-            .statusCode(200)
-            .body("total", equalTo(2))
-            .body("items", hasSize<Any>(1))
-            .body("items[0].playerId", equalTo(localPlayerId.toString()))
-            .body("items[0].linked", equalTo(true))
+        verifyNoInteractions(mojangProfileClient)
     }
 
     @Test
-    fun keepsTheMojangOnlyTotalStableBeyondTheFirstPage() {
-        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000413")
-        whenever(mojangProfileClient.lookupExactUsername("OnlyExternal"))
-            .thenReturn(MojangLookupResult.Found(MojangProfile(playerId, "OnlyExternal")))
+    fun returnsNotFoundWhenTheExternalPlayerDoesNotExist() {
+        whenever(mojangProfileClient.lookupExactUsername("MissingPlayer"))
+            .thenReturn(MojangLookupResult.NotFound)
 
         given()
-            .queryParam("query", "OnlyExternal")
-            .queryParam("page", 2)
-            .queryParam("perPage", 20)
-            .get("/v1/permissions/players/search")
+            .queryParam("query", "MissingPlayer")
+            .get("/v1/permissions/players/external-search")
             .then()
-            .statusCode(200)
-            .body("total", equalTo(1))
-            .body("items", hasSize<Any>(0))
+            .statusCode(404)
+            .body("error", equalTo("player_not_found"))
     }
 
     @Test
-    fun isolatesUnavailableMojangResponsesFromSearchResults() {
+    fun returnsServiceUnavailableWhenTheExternalLookupIsUnavailable() {
+        whenever(mojangProfileClient.lookupExactUsername("UnavailableUser"))
+            .thenReturn(MojangLookupResult.Unavailable)
+
+        given()
+            .queryParam("query", "UnavailableUser")
+            .get("/v1/permissions/players/external-search")
+            .then()
+            .statusCode(503)
+            .body("error", equalTo("external_player_lookup_unavailable"))
+    }
+
+    @Test
+    fun keepsUnavailableMojangResponsesOutOfTheLocalSearch() {
         whenever(mojangProfileClient.lookupExactUsername("UnavailablePlayer"))
             .thenReturn(MojangLookupResult.Unavailable)
 
@@ -237,6 +238,8 @@ class PermissionPlayerSearchResourceTest {
             .statusCode(200)
             .body("total", equalTo(0))
             .body("items", hasSize<Any>(0))
+
+        verifyNoInteractions(mojangProfileClient)
     }
 
     private fun identity(playerId: UUID, username: String) =
