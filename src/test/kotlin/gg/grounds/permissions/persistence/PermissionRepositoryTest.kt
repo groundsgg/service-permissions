@@ -165,6 +165,69 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun searchesPlayerGrantsAcrossColumnsWithCountingSortingAndPaging() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000126")
+        listOf(
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000381"),
+                    playerId,
+                    PermissionEffect.ALLOW,
+                    "grounds.command.fly",
+                    PermissionScope(PermissionScopeKind.GLOBAL),
+                ),
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000382"),
+                    playerId,
+                    PermissionEffect.DENY,
+                    "grounds.command.kick",
+                    PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper"),
+                    Instant.parse("2030-01-01T00:00:00Z"),
+                ),
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000383"),
+                    UUID.fromString("00000000-0000-0000-0000-000000000127"),
+                    PermissionEffect.DENY,
+                    "grounds.command.kick",
+                    PermissionScope(PermissionScopeKind.SERVER, "lobby"),
+                ),
+            )
+            .forEach(repository::createPlayerGrant)
+
+        val page =
+            repository.searchPlayerGrantRecords(
+                playerId = playerId,
+                query = "PAPER",
+                page = 1,
+                perPage = 1,
+                sortBy = "expiration",
+                sortDirection = "desc",
+            )
+
+        assertEquals(1, page.total)
+        assertEquals(listOf("grounds.command.kick"), page.items.map { it.pattern })
+        assertEquals(
+            listOf("grounds.command.kick"),
+            repository
+                .searchPlayerGrantRecords(playerId, "deny", 1, 20, "effect", "asc")
+                .items
+                .map { it.pattern },
+        )
+        assertEquals(
+            listOf("grounds.command.fly", "grounds.command.kick"),
+            repository
+                .searchPlayerGrantRecords(playerId, "", 1, 20, "permission", "asc")
+                .items
+                .map { it.pattern },
+        )
+        assertEquals(
+            listOf("grounds.command.fly", "grounds.command.kick"),
+            repository.searchPlayerGrantRecords(playerId, "", 1, 20, "scope", "asc").items.map {
+                it.pattern
+            },
+        )
+    }
+
+    @Test
     fun searchesGroupMappingsAcrossColumnsWithDeterministicSorting() {
         repository.createRole(RoleRecord(key = "builder", name = "Builder"))
         repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))

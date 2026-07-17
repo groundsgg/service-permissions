@@ -120,6 +120,18 @@ data class PlayerRoleGrantResponse(
     val expiresAt: Instant?,
 )
 
+data class PlayerEffectiveRoleResponse(
+    val id: String,
+    val roleKey: String,
+    val roleName: String,
+    val source: PermissionGrantOriginKind,
+    val expiresAt: Instant?,
+    val editable: Boolean,
+    val directGrant: PlayerRoleGrantResponse?,
+    val inherited: Boolean,
+    val assignments: List<EffectiveRoleAssignmentResponse>,
+)
+
 data class PlayerGrantResponse(
     val id: UUID,
     val playerId: UUID,

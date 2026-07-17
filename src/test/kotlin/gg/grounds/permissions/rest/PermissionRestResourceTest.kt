@@ -8,7 +8,9 @@ import gg.grounds.permissions.persistence.CatalogEntryRecord
 import gg.grounds.permissions.persistence.KeycloakGroupMappingRecord
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
+import gg.grounds.permissions.persistence.PlayerGrantRecord
 import gg.grounds.permissions.persistence.PlayerIdentityRepository
+import gg.grounds.permissions.persistence.PlayerRoleGrantRecord
 import gg.grounds.permissions.persistence.RoleGrantRecord
 import gg.grounds.permissions.persistence.RoleRecord
 import io.quarkus.test.common.QuarkusTestResource
@@ -308,6 +310,156 @@ class PermissionRestResourceTest {
             .then()
             .statusCode(400)
             .body("error", equalTo("sortDirection must be one of: asc, desc"))
+    }
+
+    @Test
+    fun playerAccessSearchesReturnDirectAndDerivedRowsWithFilteringAndPagination() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000127")
+        val directRoleGrantId = UUID.fromString("00000000-0000-0000-0000-000000000401")
+        val directPermissionGrantId = UUID.fromString("00000000-0000-0000-0000-000000000402")
+        val mappingId = UUID.fromString("00000000-0000-0000-0000-000000000403")
+        createRole("default", "Default", default = true)
+        createRole("moderator", "Moderator")
+        createRole("builder", "Builder")
+        repository.addRoleInheritance(childRoleKey = "moderator", parentRoleKey = "default")
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(
+                directRoleGrantId,
+                playerId,
+                "moderator",
+                Instant.parse("2030-01-02T00:00:00Z"),
+            )
+        )
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(mappingId, "/builders", "builder")
+        )
+        repository.createPlayerGrant(
+            PlayerGrantRecord(
+                directPermissionGrantId,
+                playerId,
+                PermissionEffect.DENY,
+                "grounds.command.op",
+                PermissionScope(PermissionScopeKind.SERVER, "lobby-1"),
+                Instant.parse("2030-01-03T00:00:00Z"),
+            )
+        )
+        repository.createRoleGrant(
+            RoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000404"),
+                "moderator",
+                PermissionEffect.ALLOW,
+                "grounds.command.kick",
+                PermissionScope(PermissionScopeKind.GLOBAL),
+            )
+        )
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(
+            listOf(
+                ProjectedPlayerIdentity(
+                    playerId,
+                    "keycloak-player-127",
+                    "SearchPlayer",
+                    "searchplayer",
+                    setOf("/builders"),
+                    syncedAt,
+                    null,
+                )
+            ),
+            syncedAt,
+        )
+
+        given()
+            .queryParam("query", "DIRECT_ROLE")
+            .queryParam("sortBy", "source")
+            .get("/v1/permissions/players/$playerId/roles/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(2))
+            .body("items", hasSize<Any>(2))
+            .body(
+                "items.find { it.roleKey == 'moderator' }.id",
+                equalTo(directRoleGrantId.toString()),
+            )
+            .body("items.find { it.roleKey == 'moderator' }.roleName", equalTo("Moderator"))
+            .body("items.find { it.roleKey == 'moderator' }.source", equalTo("DIRECT_ROLE"))
+            .body("items.find { it.roleKey == 'moderator' }.editable", equalTo(true))
+            .body(
+                "items.find { it.roleKey == 'moderator' }.directGrant.id",
+                equalTo(directRoleGrantId.toString()),
+            )
+            .body("items.find { it.roleKey == 'default' }.inherited", equalTo(true))
+            .body("items.find { it.roleKey == 'default' }.directGrant", nullValue())
+
+        given()
+            .queryParam("query", "GROUP_MAPPING")
+            .queryParam("sortBy", "role")
+            .get("/v1/permissions/players/$playerId/roles/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(1))
+            .body("items[0].roleKey", equalTo("builder"))
+            .body("items[0].source", equalTo("GROUP_MAPPING"))
+
+        given()
+            .queryParam("sortBy", "expiration")
+            .get("/v1/permissions/players/$playerId/roles/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(4))
+
+        given()
+            .queryParam("query", "lobby")
+            .queryParam("sortBy", "expiration")
+            .get("/v1/permissions/players/$playerId/grants/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(1))
+            .body("items[0].id", equalTo(directPermissionGrantId.toString()))
+            .body("items[0].effect", equalTo("DENY"))
+
+        given()
+            .queryParam("effect", "ALLOW")
+            .queryParam("query", "moderator")
+            .queryParam("perPage", 1)
+            .queryParam("sortBy", "source")
+            .get("/v1/permissions/players/$playerId/effective/search")
+            .then()
+            .statusCode(200)
+            .body("page", equalTo(1))
+            .body("perPage", equalTo(1))
+            .body("total", equalTo(1))
+            .body("items[0].permissionPattern", equalTo("grounds.command.kick"))
+            .body("items[0].source", equalTo("DIRECT_ROLE"))
+
+        listOf("permission", "effect", "scope", "expiration").forEach { sortBy ->
+            given()
+                .queryParam("sortBy", sortBy)
+                .get("/v1/permissions/players/$playerId/grants/search")
+                .then()
+                .statusCode(200)
+        }
+        listOf("permission", "effect", "scope", "source", "expiration").forEach { sortBy ->
+            given()
+                .queryParam("sortBy", sortBy)
+                .get("/v1/permissions/players/$playerId/effective/search")
+                .then()
+                .statusCode(200)
+        }
+
+        given()
+            .queryParam("sortBy", "unknown")
+            .get("/v1/permissions/players/$playerId/roles/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("sortBy must be one of: role, source, expiration"))
+
+        given()
+            .queryParam("effect", "MAYBE")
+            .get("/v1/permissions/players/$playerId/effective/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("effect must be one of: ALL, ALLOW, DENY"))
     }
 
     @Test

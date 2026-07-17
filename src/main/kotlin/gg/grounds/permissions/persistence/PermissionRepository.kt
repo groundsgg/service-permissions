@@ -614,6 +614,87 @@ constructor(
             }
     }
 
+    fun searchPlayerGrantRecords(
+        playerId: UUID,
+        query: String,
+        page: Int,
+        perPage: Int,
+        sortBy: String,
+        sortDirection: String,
+    ): PagedRecords<PlayerGrantRecord> = consistentRead { connection ->
+        val pattern = searchPattern(query)
+        val total =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT COUNT(*)
+                    FROM permission_player_grants
+                    WHERE player_id = ?
+                      AND (
+                          permission_pattern ILIKE ? ESCAPE '\'
+                          OR effect ILIKE ? ESCAPE '\'
+                          OR scope_kind ILIKE ? ESCAPE '\'
+                          OR COALESCE(scope_value, '') ILIKE ? ESCAPE '\'
+                      )
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setObject(1, playerId)
+                    (2..5).forEach { statement.setString(it, pattern) }
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        rows.getLong(1)
+                    }
+                }
+        val orderBy =
+            searchOrderBy(
+                sortBy = sortBy,
+                sortDirection = sortDirection,
+                allowedSorts =
+                    mapOf(
+                        "permission" to listOf("LOWER(permission_pattern)"),
+                        "effect" to listOf("effect"),
+                        "scope" to listOf("scope_kind", "LOWER(COALESCE(scope_value, ''))"),
+                        "expiration" to listOf("expires_at"),
+                    ),
+                tieBreaker = "id",
+            )
+        val items =
+            connection
+                .prepareStatement(
+                    """
+                    SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value,
+                           expires_at
+                    FROM permission_player_grants
+                    WHERE player_id = ?
+                      AND (
+                          permission_pattern ILIKE ? ESCAPE '\'
+                          OR effect ILIKE ? ESCAPE '\'
+                          OR scope_kind ILIKE ? ESCAPE '\'
+                          OR COALESCE(scope_value, '') ILIKE ? ESCAPE '\'
+                      )
+                    ORDER BY $orderBy
+                    OFFSET ? LIMIT ?
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setObject(1, playerId)
+                    (2..5).forEach { statement.setString(it, pattern) }
+                    statement.setLong(6, pageOffset(page, perPage))
+                    statement.setInt(7, perPage)
+                    statement.executeQuery().use { rows ->
+                        buildList {
+                            while (rows.next()) {
+                                add(rows.toPlayerGrantRecord())
+                            }
+                        }
+                    }
+                }
+        PagedRecords(items, total)
+    }
+
     fun updatePlayerGrant(
         playerId: UUID,
         grantId: UUID,
