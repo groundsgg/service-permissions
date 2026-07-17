@@ -432,28 +432,6 @@ class PermissionRestResourceTest {
             .body("items[0].permissionPattern", equalTo("grounds.command.kick"))
             .body("items[0].source", equalTo("DIRECT_ROLE"))
 
-        listOf("permission", "effect", "scope", "expiration").forEach { sortBy ->
-            given()
-                .queryParam("sortBy", sortBy)
-                .get("/v1/permissions/players/$playerId/grants/search")
-                .then()
-                .statusCode(200)
-        }
-        listOf("permission", "effect", "scope", "source", "expiration").forEach { sortBy ->
-            given()
-                .queryParam("sortBy", sortBy)
-                .get("/v1/permissions/players/$playerId/effective/search")
-                .then()
-                .statusCode(200)
-        }
-
-        given()
-            .queryParam("sortBy", "unknown")
-            .get("/v1/permissions/players/$playerId/roles/search")
-            .then()
-            .statusCode(400)
-            .body("error", equalTo("sortBy must be one of: role, source, expiration"))
-
         given()
             .queryParam("effect", "MAYBE")
             .get("/v1/permissions/players/$playerId/effective/search")
@@ -566,29 +544,310 @@ class PermissionRestResourceTest {
     }
 
     @Test
-    fun playerAccessSearchesRejectInvalidPagingAndSortDirection() {
+    fun playerRoleSearchReturnsOrderedRowsForEverySortAndDirection() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000131")
+        repository.createRole(RoleRecord(key = "default", name = "Zulu", isDefault = true))
+        repository.createRole(RoleRecord(key = "direct", name = "Mike"))
+        repository.createRole(RoleRecord(key = "mapped", name = "Alpha"))
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000431"),
+                playerId,
+                "direct",
+                Instant.parse("2031-01-01T00:00:00Z"),
+            )
+        )
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000432"),
+                "/mapped",
+                "mapped",
+                Instant.parse("2030-01-01T00:00:00Z"),
+            )
+        )
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(
+            listOf(
+                ProjectedPlayerIdentity(
+                    playerId,
+                    "keycloak-player-131",
+                    "OrderedRoles",
+                    "orderedroles",
+                    setOf("/mapped"),
+                    syncedAt,
+                    null,
+                )
+            ),
+            syncedAt,
+        )
 
-        given()
-            .queryParam("page", 0)
-            .get("/v1/permissions/players/$playerId/roles/search")
-            .then()
-            .statusCode(400)
-            .body("error", equalTo("page must be at least 1"))
+        val endpoint = "/v1/permissions/players/$playerId/roles/search"
+        assertSearchOrder(
+            endpoint,
+            "role",
+            "asc",
+            "items.roleKey",
+            listOf("mapped", "direct", "default"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "role",
+            "desc",
+            "items.roleKey",
+            listOf("default", "direct", "mapped"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "source",
+            "asc",
+            "items.roleKey",
+            listOf("default", "direct", "mapped"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "source",
+            "desc",
+            "items.roleKey",
+            listOf("mapped", "direct", "default"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "expiration",
+            "asc",
+            "items.roleKey",
+            listOf("mapped", "direct", "default"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "expiration",
+            "desc",
+            "items.roleKey",
+            listOf("direct", "mapped", "default"),
+        )
+    }
 
-        given()
-            .queryParam("perPage", 101)
-            .get("/v1/permissions/players/$playerId/grants/search")
-            .then()
-            .statusCode(400)
-            .body("error", equalTo("perPage must be between 1 and 100"))
+    @Test
+    fun playerGrantSearchReturnsOrderedRowsForEverySortAndDirection() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000132")
+        listOf(
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000441"),
+                    playerId,
+                    PermissionEffect.ALLOW,
+                    "grounds.command.zeta",
+                    PermissionScope(PermissionScopeKind.GLOBAL),
+                    Instant.parse("2031-01-01T00:00:00Z"),
+                ),
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000442"),
+                    playerId,
+                    PermissionEffect.DENY,
+                    "grounds.command.alpha",
+                    PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper"),
+                ),
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000443"),
+                    playerId,
+                    PermissionEffect.ALLOW,
+                    "grounds.command.middle",
+                    PermissionScope(PermissionScopeKind.SERVER, "lobby"),
+                    Instant.parse("2030-01-01T00:00:00Z"),
+                ),
+            )
+            .forEach(repository::createPlayerGrant)
 
-        given()
-            .queryParam("sortDirection", "sideways")
-            .get("/v1/permissions/players/$playerId/effective/search")
-            .then()
-            .statusCode(400)
-            .body("error", equalTo("sortDirection must be one of: asc, desc"))
+        val endpoint = "/v1/permissions/players/$playerId/grants/search"
+        val itemPath = "items.permissionPattern"
+        assertSearchOrder(
+            endpoint,
+            "permission",
+            "asc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "permission",
+            "desc",
+            itemPath,
+            listOf("grounds.command.zeta", "grounds.command.middle", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "effect",
+            "asc",
+            itemPath,
+            listOf("grounds.command.zeta", "grounds.command.middle", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "effect",
+            "desc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.zeta", "grounds.command.middle"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "scope",
+            "asc",
+            itemPath,
+            listOf("grounds.command.zeta", "grounds.command.middle", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "scope",
+            "desc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "expiration",
+            "asc",
+            itemPath,
+            listOf("grounds.command.middle", "grounds.command.zeta", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "expiration",
+            "desc",
+            itemPath,
+            listOf("grounds.command.zeta", "grounds.command.middle", "grounds.command.alpha"),
+        )
+    }
+
+    @Test
+    fun effectiveSearchReturnsOrderedRowsForEverySortAndDirection() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000133")
+        repository.createRole(RoleRecord(key = "default", name = "Default", isDefault = true))
+        repository.createRole(RoleRecord(key = "operator", name = "Operator"))
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000451"),
+                playerId,
+                "operator",
+            )
+        )
+        repository.createRoleGrant(
+            RoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000452"),
+                "operator",
+                PermissionEffect.ALLOW,
+                "grounds.command.alpha",
+                PermissionScope(PermissionScopeKind.GLOBAL),
+            )
+        )
+        repository.createRoleGrant(
+            RoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000453"),
+                "default",
+                PermissionEffect.DENY,
+                "grounds.command.middle",
+                PermissionScope(PermissionScopeKind.SERVER, "lobby"),
+                Instant.parse("2030-01-01T00:00:00Z"),
+            )
+        )
+        repository.createPlayerGrant(
+            PlayerGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000454"),
+                playerId,
+                PermissionEffect.DENY,
+                "grounds.command.zeta",
+                PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper"),
+                Instant.parse("2032-01-01T00:00:00Z"),
+            )
+        )
+
+        val endpoint = "/v1/permissions/players/$playerId/effective/search"
+        val itemPath = "items.permissionPattern"
+        assertSearchOrder(
+            endpoint,
+            "permission",
+            "asc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "permission",
+            "desc",
+            itemPath,
+            listOf("grounds.command.zeta", "grounds.command.middle", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "effect",
+            "asc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "effect",
+            "desc",
+            itemPath,
+            listOf("grounds.command.middle", "grounds.command.zeta", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "scope",
+            "asc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "scope",
+            "desc",
+            itemPath,
+            listOf("grounds.command.zeta", "grounds.command.middle", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "source",
+            "asc",
+            itemPath,
+            listOf("grounds.command.middle", "grounds.command.zeta", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "source",
+            "desc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.zeta", "grounds.command.middle"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "expiration",
+            "asc",
+            itemPath,
+            listOf("grounds.command.middle", "grounds.command.zeta", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "expiration",
+            "desc",
+            itemPath,
+            listOf("grounds.command.zeta", "grounds.command.middle", "grounds.command.alpha"),
+        )
+    }
+
+    @Test
+    fun playerAccessSearchesRejectEveryInvalidParameterForEveryEndpoint() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000134")
+        assertSearchValidation(
+            "/v1/permissions/players/$playerId/roles/search",
+            "sortBy must be one of: role, source, expiration",
+        )
+        assertSearchValidation(
+            "/v1/permissions/players/$playerId/grants/search",
+            "sortBy must be one of: permission, effect, scope, expiration",
+        )
+        assertSearchValidation(
+            "/v1/permissions/players/$playerId/effective/search",
+            "sortBy must be one of: permission, effect, scope, source, expiration",
+        )
     }
 
     @Test
@@ -843,6 +1102,53 @@ class PermissionRestResourceTest {
             .body("evaluationSafe", equalTo(true))
 
         given().get("/v1/permissions/players/$playerId/effective").then().statusCode(200)
+    }
+
+    private fun assertSearchOrder(
+        endpoint: String,
+        sortBy: String,
+        sortDirection: String,
+        itemPath: String,
+        expected: List<String>,
+    ) {
+        given()
+            .queryParam("sortBy", sortBy)
+            .queryParam("sortDirection", sortDirection)
+            .get(endpoint)
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(expected.size))
+            .body(itemPath, equalTo(expected))
+    }
+
+    private fun assertSearchValidation(endpoint: String, sortByError: String) {
+        given()
+            .queryParam("page", 0)
+            .get(endpoint)
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("page must be at least 1"))
+
+        given()
+            .queryParam("perPage", 101)
+            .get(endpoint)
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("perPage must be between 1 and 100"))
+
+        given()
+            .queryParam("sortBy", "unknown")
+            .get(endpoint)
+            .then()
+            .statusCode(400)
+            .body("error", equalTo(sortByError))
+
+        given()
+            .queryParam("sortDirection", "sideways")
+            .get(endpoint)
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("sortDirection must be one of: asc, desc"))
     }
 
     private fun createRole(key: String, name: String, default: Boolean = false) {
