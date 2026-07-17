@@ -1,9 +1,16 @@
 package gg.grounds.permissions.rest
 
+import gg.grounds.permissions.domain.PermissionEffect
+import gg.grounds.permissions.domain.PermissionScope
+import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
+import gg.grounds.permissions.persistence.CatalogEntryRecord
+import gg.grounds.permissions.persistence.KeycloakGroupMappingRecord
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
 import gg.grounds.permissions.persistence.PlayerIdentityRepository
+import gg.grounds.permissions.persistence.RoleGrantRecord
+import gg.grounds.permissions.persistence.RoleRecord
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
@@ -170,6 +177,137 @@ class PermissionRestResourceTest {
             .statusCode(200)
             .body("grantCount", nullValue())
             .body("inheritanceCount", nullValue())
+    }
+
+    @Test
+    fun roleGrantSearchUsesDefaultsAndNormalizesQueryWhitespace() {
+        repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        repository.createRoleGrant(
+            RoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000321"),
+                "moderator",
+                PermissionEffect.ALLOW,
+                "grounds.command.fly",
+                PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper network"),
+            )
+        )
+
+        given()
+            .queryParam("query", "  PAPER   network  ")
+            .get("/v1/permissions/roles/moderator/grants/search")
+            .then()
+            .statusCode(200)
+            .body("page", equalTo(1))
+            .body("perPage", equalTo(20))
+            .body("total", equalTo(1))
+            .body("items[0].permissionPattern", equalTo("grounds.command.fly"))
+    }
+
+    @Test
+    fun groupMappingSearchSupportsDescendingSecondPages() {
+        repository.createRole(RoleRecord(key = "builder", name = "Builder"))
+        repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000331"),
+                "/staff/builders",
+                "builder",
+            )
+        )
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000332"),
+                "/staff/moderators",
+                "moderator",
+            )
+        )
+
+        given()
+            .queryParam("page", 2)
+            .queryParam("perPage", 1)
+            .queryParam("sortBy", "group")
+            .queryParam("sortDirection", "desc")
+            .get("/v1/permissions/keycloak-groups/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(2))
+            .body("items", hasSize<Any>(1))
+            .body("items[0].keycloakGroup", equalTo("/staff/builders"))
+    }
+
+    @Test
+    fun catalogSearchUsesDefaultPagingAndSorting() {
+        repository.upsertCatalogEntry(
+            CatalogEntryRecord(
+                key = "grounds.command.warn",
+                label = "Warn",
+                source = "plugin-runtime",
+                sourceVersion = "1.0.0",
+                supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                custom = false,
+            )
+        )
+        repository.upsertCatalogEntry(
+            CatalogEntryRecord(
+                key = "grounds.command.fly",
+                label = "Fly",
+                source = "portal",
+                sourceVersion = "custom",
+                supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                custom = true,
+            )
+        )
+
+        given()
+            .get("/v1/permissions/catalog/search")
+            .then()
+            .statusCode(200)
+            .body("page", equalTo(1))
+            .body("perPage", equalTo(20))
+            .body("total", equalTo(2))
+            .body(
+                "items.key",
+                org.hamcrest.Matchers.contains("grounds.command.fly", "grounds.command.warn"),
+            )
+
+        given()
+            .queryParam("sortBy", "lastSeen")
+            .queryParam("sortDirection", "desc")
+            .get("/v1/permissions/catalog/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(2))
+    }
+
+    @Test
+    fun searchesRejectInvalidPagingAndSortingParameters() {
+        given()
+            .queryParam("page", 0)
+            .get("/v1/permissions/catalog/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("page must be at least 1"))
+
+        given()
+            .queryParam("perPage", 101)
+            .get("/v1/permissions/catalog/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("perPage must be between 1 and 100"))
+
+        given()
+            .queryParam("sortBy", "createdAt")
+            .get("/v1/permissions/catalog/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("sortBy must be one of: permission, label, source, lastseen"))
+
+        given()
+            .queryParam("sortDirection", "sideways")
+            .get("/v1/permissions/catalog/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("sortDirection must be one of: asc, desc"))
     }
 
     @Test

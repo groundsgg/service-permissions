@@ -109,6 +109,169 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun searchesRoleGrantsAcrossColumnsAndPaginatesAfterCounting() {
+        repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        listOf(
+                RoleGrantRecord(
+                    id = UUID.fromString("00000000-0000-0000-0000-000000000301"),
+                    roleKey = "moderator",
+                    effect = PermissionEffect.ALLOW,
+                    pattern = "grounds.command.fly",
+                    scope = PermissionScope(PermissionScopeKind.GLOBAL),
+                ),
+                RoleGrantRecord(
+                    id = UUID.fromString("00000000-0000-0000-0000-000000000302"),
+                    roleKey = "moderator",
+                    effect = PermissionEffect.DENY,
+                    pattern = "grounds.command.kick",
+                    scope = PermissionScope(PermissionScopeKind.SERVER_TYPE, "Paper"),
+                ),
+                RoleGrantRecord(
+                    id = UUID.fromString("00000000-0000-0000-0000-000000000303"),
+                    roleKey = "moderator",
+                    effect = PermissionEffect.ALLOW,
+                    pattern = "grounds.command.warn",
+                    scope = PermissionScope(PermissionScopeKind.SERVER, "Lobby-1"),
+                ),
+            )
+            .forEach(repository::createRoleGrant)
+
+        val page =
+            repository.searchRoleGrantRecords(
+                roleKey = "moderator",
+                query = "GrOuNdS.CoMmAnD",
+                page = 2,
+                perPage = 1,
+                sortBy = "permission",
+                sortDirection = "desc",
+            )
+
+        assertEquals(3, page.total)
+        assertEquals(listOf("grounds.command.kick"), page.items.map { it.pattern })
+        assertEquals(
+            listOf("grounds.command.kick"),
+            repository
+                .searchRoleGrantRecords("moderator", "paper", 1, 20, "permission", "asc")
+                .items
+                .map { it.pattern },
+        )
+        assertEquals(
+            listOf("grounds.command.kick"),
+            repository
+                .searchRoleGrantRecords("moderator", "deny", 1, 20, "permission", "asc")
+                .items
+                .map { it.pattern },
+        )
+    }
+
+    @Test
+    fun searchesGroupMappingsAcrossColumnsWithDeterministicSorting() {
+        repository.createRole(RoleRecord(key = "builder", name = "Builder"))
+        repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        listOf(
+                KeycloakGroupMappingRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000311"),
+                    "/Staff/Builders",
+                    "builder",
+                ),
+                KeycloakGroupMappingRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000312"),
+                    "/staff/moderators",
+                    "moderator",
+                ),
+                KeycloakGroupMappingRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000313"),
+                    "/events/builders",
+                    "builder",
+                ),
+            )
+            .forEach(repository::createKeycloakGroupMapping)
+
+        val descending =
+            repository.searchKeycloakGroupMappings(
+                query = "STAFF",
+                page = 1,
+                perPage = 20,
+                sortBy = "group",
+                sortDirection = "desc",
+            )
+        val roleMatch =
+            repository.searchKeycloakGroupMappings(
+                query = "builder",
+                page = 2,
+                perPage = 1,
+                sortBy = "role",
+                sortDirection = "asc",
+            )
+
+        assertEquals(
+            listOf("/staff/moderators", "/Staff/Builders"),
+            descending.items.map { it.keycloakGroup },
+        )
+        assertEquals(2, roleMatch.total)
+        assertEquals(listOf("/events/builders"), roleMatch.items.map { it.keycloakGroup })
+    }
+
+    @Test
+    fun searchesCatalogAcrossColumnsWithDeterministicSorting() {
+        listOf(
+                CatalogEntryRecord(
+                    key = "grounds.command.fly",
+                    label = "Flight",
+                    description = "Allows creative movement",
+                    source = "portal",
+                    sourceVersion = "custom",
+                    supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                    custom = true,
+                ),
+                CatalogEntryRecord(
+                    key = "grounds.command.kick",
+                    label = "Moderation",
+                    description = "Removes a player",
+                    source = "plugin-runtime",
+                    sourceVersion = "2.0.0",
+                    supportedScopes = listOf(PermissionScopeKind.SERVER_TYPE),
+                    custom = false,
+                    lastSeenAt = Instant.parse("2026-07-16T00:00:00Z"),
+                ),
+                CatalogEntryRecord(
+                    key = "grounds.command.warn",
+                    label = "Moderation",
+                    description = "Warns a player",
+                    source = "plugin-runtime",
+                    sourceVersion = "2.0.0",
+                    supportedScopes = listOf(PermissionScopeKind.SERVER),
+                    custom = false,
+                    lastSeenAt = Instant.parse("2026-07-17T00:00:00Z"),
+                ),
+            )
+            .forEach(repository::upsertCatalogEntry)
+
+        val page =
+            repository.searchCatalogEntries(
+                query = "PLAYER",
+                page = 2,
+                perPage = 1,
+                sortBy = "label",
+                sortDirection = "asc",
+            )
+
+        assertEquals(2, page.total)
+        assertEquals(listOf("grounds.command.warn"), page.items.map { it.key })
+        assertEquals(
+            listOf("grounds.command.kick", "grounds.command.warn"),
+            repository
+                .searchCatalogEntries("PLUGIN-RUNTIME", 1, 20, "permission", "asc")
+                .items
+                .map { it.key },
+        )
+        assertEquals(
+            listOf("grounds.command.warn", "grounds.command.kick", "grounds.command.fly"),
+            repository.searchCatalogEntries("", 1, 20, "lastseen", "desc").items.map { it.key },
+        )
+    }
+
+    @Test
     fun writesPermissionPolicyAndLoadsEffectiveInput() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000123")
         val directPlayerGrantId = UUID.fromString("00000000-0000-0000-0000-000000000201")
