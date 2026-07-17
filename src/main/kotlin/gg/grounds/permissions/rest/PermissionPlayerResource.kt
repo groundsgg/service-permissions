@@ -311,11 +311,16 @@ constructor(
         val snapshot = snapshotFor(id, serverType, serverId)
         val rows =
             (snapshot.allowPatterns + snapshot.denyPatterns)
-                .map { it.toResponse() }
                 .filter { requestedEffect == "ALL" || it.effect.name == requestedEffect }
                 .filter { it.matches(search.query) }
                 .sortedWith(search.effectiveComparator())
-        return rows.toPagedResponse(search)
+        val result = rows.toPagedResponse(search)
+        return PagedResponse(
+            items = result.items.map { it.toResponse() },
+            page = result.page,
+            perPage = result.perPage,
+            total = result.total,
+        )
     }
 
     @GET
@@ -489,14 +494,14 @@ constructor(
         query.isEmpty() ||
             listOf(roleName, roleKey, source.name).any { it.contains(query, ignoreCase = true) }
 
-    private fun EffectiveGrantResponse.matches(query: String): Boolean =
+    private fun PermissionGrant.matches(query: String): Boolean =
         query.isEmpty() ||
             listOf(
-                    permissionPattern,
-                    source.name,
-                    roleKey.orEmpty(),
-                    scopeKind.name,
-                    scopeValue.orEmpty(),
+                    pattern,
+                    origin.kind.name,
+                    origin.roleKey.orEmpty(),
+                    scope.kind.name,
+                    scope.value.orEmpty(),
                 )
                 .any { it.contains(query, ignoreCase = true) }
 
@@ -513,28 +518,27 @@ constructor(
             if (result != 0) result else left.id.compareTo(right.id)
         }
 
-    private fun PermissionSearchParameters.effectiveComparator():
-        Comparator<EffectiveGrantResponse> = Comparator { left, right ->
-        val direction = if (sortDirection == "asc") 1 else -1
-        val result =
-            when (sortBy) {
-                "permission" ->
-                    left.permissionPattern.compareTo(right.permissionPattern, true) * direction
-                "effect" -> left.effect.name.compareTo(right.effect.name) * direction
-                "scope" -> {
-                    val kindResult = left.scopeKind.name.compareTo(right.scopeKind.name)
-                    if (kindResult != 0) {
-                        kindResult * direction
-                    } else {
-                        compareNullable(left.scopeValue, right.scopeValue, direction)
+    private fun PermissionSearchParameters.effectiveComparator(): Comparator<PermissionGrant> =
+        Comparator { left, right ->
+            val direction = if (sortDirection == "asc") 1 else -1
+            val result =
+                when (sortBy) {
+                    "permission" -> left.pattern.compareTo(right.pattern, true) * direction
+                    "effect" -> left.effect.name.compareTo(right.effect.name) * direction
+                    "scope" -> {
+                        val kindResult = left.scope.kind.name.compareTo(right.scope.kind.name)
+                        if (kindResult != 0) {
+                            kindResult * direction
+                        } else {
+                            compareNullable(left.scope.value, right.scope.value, direction)
+                        }
                     }
+                    "source" -> left.origin.kind.name.compareTo(right.origin.kind.name) * direction
+                    "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
+                    else -> error("Unsupported sort key (sortBy=$sortBy)")
                 }
-                "source" -> left.source.name.compareTo(right.source.name) * direction
-                "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
-                else -> error("Unsupported sort key (sortBy=$sortBy)")
-            }
-        if (result != 0) result else left.identity().compareTo(right.identity())
-    }
+            if (result != 0) result else left.identity().compareTo(right.identity())
+        }
 
     private fun <T : Comparable<T>> compareNullable(left: T?, right: T?, direction: Int): Int =
         when {
@@ -544,18 +548,19 @@ constructor(
             else -> left.compareTo(right) * direction
         }
 
-    private fun EffectiveGrantResponse.identity(): String =
+    private fun PermissionGrant.identity(): String =
         listOf(
-                source.name,
-                grantId?.toString().orEmpty(),
-                roleKey.orEmpty(),
-                mappingId?.toString().orEmpty(),
-                inheritedPath.joinToString("/"),
-                permissionPattern,
+                origin.kind.name,
+                origin.grantId?.toString().orEmpty(),
+                origin.roleKey.orEmpty(),
+                origin.mappingId?.toString().orEmpty(),
+                origin.inheritedPath.joinToString("/"),
+                pattern,
                 effect.name,
-                scopeKind.name,
-                scopeValue.orEmpty(),
+                scope.kind.name,
+                scope.value.orEmpty(),
                 expiresAt?.toString().orEmpty(),
+                origin.permissionGrantId?.toString().orEmpty(),
             )
             .joinToString(":")
 

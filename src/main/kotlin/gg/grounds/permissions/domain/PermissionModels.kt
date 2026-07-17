@@ -42,6 +42,7 @@ data class PermissionGrantSpec(
     val pattern: String,
     val scope: PermissionScope,
     val expiresAt: Instant? = null,
+    val permissionGrantId: UUID? = null,
 )
 
 enum class PermissionGrantSource {
@@ -62,6 +63,7 @@ data class PermissionGrantOrigin(
     val roleKey: String? = null,
     val mappingId: UUID? = null,
     val inheritedPath: List<String> = emptyList(),
+    val permissionGrantId: UUID? = null,
 )
 
 data class EffectivePermissionSnapshot(

@@ -8,6 +8,7 @@ import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.identity.IdentitySyncStatus
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
+import gg.grounds.permissions.policy.PolicyEngine
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionSyncAction
 import gg.grounds.permissions.sync.SyncAction
@@ -331,6 +332,39 @@ class PermissionRepositoryTest {
         assertEquals(
             listOf("grounds.command.warn", "grounds.command.kick", "grounds.command.fly"),
             repository.searchCatalogEntries("", 1, 20, "lastseen", "desc").items.map { it.key },
+        )
+    }
+
+    @Test
+    fun preservesUniqueRolePermissionGrantIdsInPolicySnapshots() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000135")
+        val playerRoleGrantId = UUID.fromString("00000000-0000-0000-0000-000000000461")
+        val firstRoleGrantId = UUID.fromString("00000000-0000-0000-0000-000000000462")
+        val secondRoleGrantId = UUID.fromString("00000000-0000-0000-0000-000000000463")
+        repository.createRole(RoleRecord(key = "operator", name = "Operator"))
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(playerRoleGrantId, playerId, "operator")
+        )
+        listOf(firstRoleGrantId, secondRoleGrantId).forEach { roleGrantId ->
+            repository.createRoleGrant(
+                RoleGrantRecord(
+                    roleGrantId,
+                    "operator",
+                    PermissionEffect.ALLOW,
+                    "grounds.command.teleport",
+                    PermissionScope(PermissionScopeKind.GLOBAL),
+                )
+            )
+        }
+
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId,
+                repository.policyFor(PermissionPolicyRequest(playerId, "", "")),
+            )
+        assertEquals(
+            setOf(firstRoleGrantId, secondRoleGrantId),
+            snapshot.allowPatterns.mapTo(linkedSetOf()) { it.origin.permissionGrantId },
         )
     }
 

@@ -583,6 +583,10 @@ class PermissionRestResourceTest {
         )
 
         val endpoint = "/v1/permissions/players/$playerId/roles/search"
+        assertSearchDefaults(endpoint, "items.roleKey", listOf("mapped", "direct", "default"))
+        assertSearchQuery(endpoint, "Alpha", "items.roleKey", listOf("mapped"))
+        assertSearchQuery(endpoint, "direct", "items.roleKey", listOf("direct"))
+        assertSearchQuery(endpoint, "GROUP_MAPPING", "items.roleKey", listOf("mapped"))
         assertSearchOrder(
             endpoint,
             "role",
@@ -659,6 +663,15 @@ class PermissionRestResourceTest {
 
         val endpoint = "/v1/permissions/players/$playerId/grants/search"
         val itemPath = "items.permissionPattern"
+        assertSearchDefaults(
+            endpoint,
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
+        )
+        assertSearchQuery(endpoint, "alpha", itemPath, listOf("grounds.command.alpha"))
+        assertSearchQuery(endpoint, "deny", itemPath, listOf("grounds.command.alpha"))
+        assertSearchQuery(endpoint, "server_type", itemPath, listOf("grounds.command.alpha"))
+        assertSearchQuery(endpoint, "lobby", itemPath, listOf("grounds.command.middle"))
         assertSearchOrder(
             endpoint,
             "permission",
@@ -761,6 +774,16 @@ class PermissionRestResourceTest {
 
         val endpoint = "/v1/permissions/players/$playerId/effective/search"
         val itemPath = "items.permissionPattern"
+        assertSearchDefaults(
+            endpoint,
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
+        )
+        assertSearchQuery(endpoint, "alpha", itemPath, listOf("grounds.command.alpha"))
+        assertSearchQuery(endpoint, "DEFAULT_ROLE", itemPath, listOf("grounds.command.middle"))
+        assertSearchQuery(endpoint, "operator", itemPath, listOf("grounds.command.alpha"))
+        assertSearchQuery(endpoint, "server_type", itemPath, listOf("grounds.command.zeta"))
+        assertSearchQuery(endpoint, "lobby", itemPath, listOf("grounds.command.middle"))
         assertSearchOrder(
             endpoint,
             "permission",
@@ -848,6 +871,51 @@ class PermissionRestResourceTest {
             "/v1/permissions/players/$playerId/effective/search",
             "sortBy must be one of: permission, effect, scope, source, expiration",
         )
+    }
+
+    @Test
+    fun effectiveSearchPagesCollidingRoleGrantsConsistentlyAcrossRepeatedCalls() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000136")
+        repository.createRole(RoleRecord(key = "operator", name = "Operator"))
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000471"),
+                playerId,
+                "operator",
+            )
+        )
+        listOf(
+                UUID.fromString("00000000-0000-0000-0000-000000000472"),
+                UUID.fromString("00000000-0000-0000-0000-000000000473"),
+            )
+            .forEach { roleGrantId ->
+                repository.createRoleGrant(
+                    RoleGrantRecord(
+                        roleGrantId,
+                        "operator",
+                        PermissionEffect.ALLOW,
+                        "grounds.command.teleport",
+                        PermissionScope(PermissionScopeKind.GLOBAL),
+                        Instant.parse("2030-01-01T00:00:00Z"),
+                    )
+                )
+            }
+
+        repeat(3) {
+            listOf(1, 2).forEach { page ->
+                given()
+                    .queryParam("page", page)
+                    .queryParam("perPage", 1)
+                    .get("/v1/permissions/players/$playerId/effective/search")
+                    .then()
+                    .statusCode(200)
+                    .body("page", equalTo(page))
+                    .body("total", equalTo(2))
+                    .body("items", hasSize<Any>(1))
+                    .body("items[0].permissionPattern", equalTo("grounds.command.teleport"))
+                    .body("items[0].expiresAt", equalTo("2030-01-01T00:00:00Z"))
+            }
+        }
     }
 
     @Test
@@ -1121,6 +1189,32 @@ class PermissionRestResourceTest {
             .body(itemPath, equalTo(expected))
     }
 
+    private fun assertSearchDefaults(endpoint: String, itemPath: String, expected: List<String>) {
+        given()
+            .get(endpoint)
+            .then()
+            .statusCode(200)
+            .body("page", equalTo(1))
+            .body("perPage", equalTo(20))
+            .body("total", equalTo(expected.size))
+            .body(itemPath, equalTo(expected))
+    }
+
+    private fun assertSearchQuery(
+        endpoint: String,
+        query: String,
+        itemPath: String,
+        expected: List<String>,
+    ) {
+        given()
+            .queryParam("query", query)
+            .get(endpoint)
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(expected.size))
+            .body(itemPath, equalTo(expected))
+    }
+
     private fun assertSearchValidation(endpoint: String, sortByError: String) {
         given()
             .queryParam("page", 0)
@@ -1131,6 +1225,13 @@ class PermissionRestResourceTest {
 
         given()
             .queryParam("perPage", 101)
+            .get(endpoint)
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("perPage must be between 1 and 100"))
+
+        given()
+            .queryParam("perPage", 0)
             .get(endpoint)
             .then()
             .statusCode(400)

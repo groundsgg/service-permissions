@@ -1265,7 +1265,7 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT role_key, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value, expires_at
                 FROM permission_role_grants
                 ORDER BY created_at ASC, id ASC
                 """
@@ -1762,6 +1762,7 @@ constructor(
                     value = getString("scope_value"),
                 ),
             expiresAt = instantOrNull("expires_at"),
+            permissionGrantId = getObject("id", UUID::class.java),
         )
 
     private fun ResultSet.instantOrNull(column: String): Instant? =
