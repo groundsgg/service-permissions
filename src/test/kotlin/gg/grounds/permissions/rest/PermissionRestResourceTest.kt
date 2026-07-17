@@ -463,6 +463,135 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun playerRoleSearchReturnsAnEmptyPageWhenTheOffsetExceedsTheResultSize() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000128")
+
+        given()
+            .queryParam("page", Int.MAX_VALUE)
+            .queryParam("perPage", 100)
+            .get("/v1/permissions/players/$playerId/roles/search")
+            .then()
+            .statusCode(200)
+            .body("page", equalTo(Int.MAX_VALUE))
+            .body("perPage", equalTo(100))
+            .body("total", equalTo(0))
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
+    fun effectiveSearchUsesExpirationToOrderOtherwiseEqualGrantsAcrossPages() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000129")
+        repository.createRole(RoleRecord(key = "operator", name = "Operator"))
+        repository.createPlayerRoleGrant(
+            PlayerRoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000411"),
+                playerId,
+                "operator",
+            )
+        )
+        repository.createRoleGrant(
+            RoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000412"),
+                "operator",
+                PermissionEffect.ALLOW,
+                "grounds.command.teleport",
+                PermissionScope(PermissionScopeKind.GLOBAL),
+                Instant.parse("2031-01-01T00:00:00Z"),
+            )
+        )
+        repository.createRoleGrant(
+            RoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000413"),
+                "operator",
+                PermissionEffect.ALLOW,
+                "grounds.command.teleport",
+                PermissionScope(PermissionScopeKind.GLOBAL),
+                Instant.parse("2030-01-01T00:00:00Z"),
+            )
+        )
+
+        given()
+            .queryParam("sortBy", "permission")
+            .queryParam("page", 1)
+            .queryParam("perPage", 1)
+            .get("/v1/permissions/players/$playerId/effective/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(2))
+            .body("items[0].expiresAt", equalTo("2030-01-01T00:00:00Z"))
+
+        given()
+            .queryParam("sortBy", "permission")
+            .queryParam("page", 2)
+            .queryParam("perPage", 1)
+            .get("/v1/permissions/players/$playerId/effective/search")
+            .then()
+            .statusCode(200)
+            .body("total", equalTo(2))
+            .body("items[0].expiresAt", equalTo("2031-01-01T00:00:00Z"))
+    }
+
+    @Test
+    fun playerGrantSearchReturnsTheSecondPageInPermissionOrder() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000130")
+        listOf(
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000421"),
+                    playerId,
+                    PermissionEffect.ALLOW,
+                    "grounds.command.warn",
+                    PermissionScope(PermissionScopeKind.GLOBAL),
+                ),
+                PlayerGrantRecord(
+                    UUID.fromString("00000000-0000-0000-0000-000000000422"),
+                    playerId,
+                    PermissionEffect.ALLOW,
+                    "grounds.command.kick",
+                    PermissionScope(PermissionScopeKind.GLOBAL),
+                ),
+            )
+            .forEach(repository::createPlayerGrant)
+
+        given()
+            .queryParam("sortBy", "permission")
+            .queryParam("sortDirection", "asc")
+            .queryParam("page", 2)
+            .queryParam("perPage", 1)
+            .get("/v1/permissions/players/$playerId/grants/search")
+            .then()
+            .statusCode(200)
+            .body("page", equalTo(2))
+            .body("total", equalTo(2))
+            .body("items[0].permissionPattern", equalTo("grounds.command.warn"))
+    }
+
+    @Test
+    fun playerAccessSearchesRejectInvalidPagingAndSortDirection() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000131")
+
+        given()
+            .queryParam("page", 0)
+            .get("/v1/permissions/players/$playerId/roles/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("page must be at least 1"))
+
+        given()
+            .queryParam("perPage", 101)
+            .get("/v1/permissions/players/$playerId/grants/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("perPage must be between 1 and 100"))
+
+        given()
+            .queryParam("sortDirection", "sideways")
+            .get("/v1/permissions/players/$playerId/effective/search")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("sortDirection must be one of: asc, desc"))
+    }
+
+    @Test
     fun catalogCustomPermissionCrud() {
         given()
             .contentType("application/json")

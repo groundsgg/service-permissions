@@ -555,13 +555,19 @@ constructor(
                 effect.name,
                 scopeKind.name,
                 scopeValue.orEmpty(),
+                expiresAt?.toString().orEmpty(),
             )
             .joinToString(":")
 
     private fun <T> List<T>.toPagedResponse(search: PermissionSearchParameters): PagedResponse<T> {
-        val offset = (search.page - 1) * search.perPage
+        val offset = (search.page - 1L) * search.perPage
         return PagedResponse(
-            items = drop(offset).take(search.perPage),
+            items =
+                if (offset >= size.toLong()) {
+                    emptyList()
+                } else {
+                    drop(offset.toInt()).take(search.perPage)
+                },
             page = search.page,
             perPage = search.perPage,
             total = size.toLong(),
