@@ -276,8 +276,8 @@ constructor(
 
     fun getRole(roleKey: String): RoleRecord? = listRoles().firstOrNull { it.key == roleKey }
 
-    fun updateRole(actorUserId: String, roleKey: String, role: RoleRecord): RoleRecord =
-        write(
+    fun updateRole(actorUserId: String, roleKey: String, role: RoleRecord): RoleRecord {
+        writeIfChanged(
             actorUserId,
             "role.updated",
             "role:$roleKey",
@@ -290,6 +290,12 @@ constructor(
                     SET name = ?, description = ?, prefix = ?, color = ?, sort_order = ?,
                         metadata = ?, is_default = ?, updated_at = now()
                     WHERE key = ?
+                      AND (
+                          name IS DISTINCT FROM ? OR description IS DISTINCT FROM ? OR
+                          prefix IS DISTINCT FROM ? OR color IS DISTINCT FROM ? OR
+                          sort_order IS DISTINCT FROM ? OR metadata IS DISTINCT FROM ? OR
+                          is_default IS DISTINCT FROM ?
+                      )
                     """
                         .trimIndent()
                 )
@@ -302,10 +308,27 @@ constructor(
                     statement.setObject(6, jsonb(role.metadata))
                     statement.setBoolean(7, role.isDefault)
                     statement.setString(8, roleKey)
-                    require(statement.executeUpdate() == 1) { "Role not found (roleKey=$roleKey)" }
+                    statement.setString(9, role.name)
+                    statement.setString(10, role.description)
+                    statement.setString(11, role.prefix)
+                    statement.setString(12, role.color)
+                    statement.setInt(13, role.sortOrder)
+                    statement.setObject(14, jsonb(role.metadata))
+                    statement.setBoolean(15, role.isDefault)
+                    val changed = statement.executeUpdate() > 0
+                    require(
+                        changed ||
+                            entityExists(connection, "permission_roles", "key = ?") {
+                                it.setString(1, roleKey)
+                            }
+                    ) {
+                        "Role not found (roleKey=$roleKey)"
+                    }
+                    changed
                 }
-            role.copy(key = roleKey)
         }
+        return role.copy(key = roleKey)
+    }
 
     fun deleteRole(actorUserId: String, roleKey: String) {
         write(
@@ -323,7 +346,7 @@ constructor(
     }
 
     fun addRoleInheritance(actorUserId: String, childRoleKey: String, parentRoleKey: String) {
-        write(
+        writeIfChanged(
             actorUserId,
             "role.inheritance.created",
             "role:$childRoleKey",
@@ -356,13 +379,13 @@ constructor(
                 .use { statement ->
                     statement.setString(1, parentRoleKey)
                     statement.setString(2, childRoleKey)
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
         }
     }
 
     fun removeRoleInheritance(actorUserId: String, childRoleKey: String, parentRoleKey: String) {
-        write(
+        writeIfChanged(
             actorUserId,
             "role.inheritance.deleted",
             "role:$childRoleKey",
@@ -382,7 +405,7 @@ constructor(
                 .use { statement ->
                     statement.setString(1, childRoleKey)
                     statement.setString(2, parentRoleKey)
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
         }
     }
@@ -547,8 +570,8 @@ constructor(
         roleKey: String,
         grantId: UUID,
         grant: RoleGrantRecord,
-    ): RoleGrantRecord =
-        write(
+    ): RoleGrantRecord {
+        writeIfChanged(
             actorUserId,
             "role.grant.updated",
             "role:$roleKey",
@@ -560,6 +583,11 @@ constructor(
                     UPDATE permission_role_grants
                     SET effect = ?, permission_pattern = ?, scope_kind = ?, scope_value = ?, expires_at = ?
                     WHERE id = ? AND role_key = ?
+                      AND (
+                          effect IS DISTINCT FROM ? OR permission_pattern IS DISTINCT FROM ? OR
+                          scope_kind IS DISTINCT FROM ? OR scope_value IS DISTINCT FROM ? OR
+                          expires_at IS DISTINCT FROM ?
+                      )
                     """
                         .trimIndent()
                 )
@@ -571,15 +599,33 @@ constructor(
                     statement.setTimestamp(5, grant.expiresAt?.let(Timestamp::from))
                     statement.setObject(6, grantId)
                     statement.setString(7, roleKey)
-                    require(statement.executeUpdate() == 1) {
+                    statement.setString(8, grant.effect.name)
+                    statement.setString(9, grant.pattern)
+                    statement.setString(10, grant.scope.kind.name)
+                    statement.setString(11, grant.scope.value)
+                    statement.setTimestamp(12, grant.expiresAt?.let(Timestamp::from))
+                    val changed = statement.executeUpdate() > 0
+                    require(
+                        changed ||
+                            entityExists(
+                                connection,
+                                "permission_role_grants",
+                                "id = ? AND role_key = ?",
+                            ) {
+                                it.setObject(1, grantId)
+                                it.setString(2, roleKey)
+                            }
+                    ) {
                         "Role grant not found (grantId=$grantId)"
                     }
+                    changed
                 }
-            grant.copy(id = grantId, roleKey = roleKey)
         }
+        return grant.copy(id = grantId, roleKey = roleKey)
+    }
 
     fun deleteRoleGrant(actorUserId: String, roleKey: String, grantId: UUID) {
-        write(
+        writeIfChanged(
             actorUserId,
             "role.grant.deleted",
             "role:$roleKey",
@@ -595,7 +641,7 @@ constructor(
                 .use { statement ->
                     statement.setObject(1, grantId)
                     statement.setString(2, roleKey)
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
         }
     }
@@ -664,8 +710,8 @@ constructor(
         playerId: UUID,
         grantId: UUID,
         grant: PlayerRoleGrantRecord,
-    ): PlayerRoleGrantRecord =
-        write(
+    ): PlayerRoleGrantRecord {
+        writeIfChanged(
             actorUserId,
             "player.role_grant.updated",
             "player:$playerId",
@@ -679,6 +725,7 @@ constructor(
                     UPDATE permission_player_role_grants
                     SET role_key = ?, expires_at = ?
                     WHERE id = ? AND player_id = ?
+                      AND (role_key IS DISTINCT FROM ? OR expires_at IS DISTINCT FROM ?)
                     """
                         .trimIndent()
                 )
@@ -687,15 +734,30 @@ constructor(
                     statement.setTimestamp(2, grant.expiresAt?.let(Timestamp::from))
                     statement.setObject(3, grantId)
                     statement.setObject(4, playerId)
-                    require(statement.executeUpdate() == 1) {
+                    statement.setString(5, grant.roleKey)
+                    statement.setTimestamp(6, grant.expiresAt?.let(Timestamp::from))
+                    val changed = statement.executeUpdate() > 0
+                    require(
+                        changed ||
+                            entityExists(
+                                connection,
+                                "permission_player_role_grants",
+                                "id = ? AND player_id = ?",
+                            ) {
+                                it.setObject(1, grantId)
+                                it.setObject(2, playerId)
+                            }
+                    ) {
                         "Player role grant not found (grantId=$grantId)"
                     }
+                    changed
                 }
-            grant.copy(id = grantId, playerId = playerId)
         }
+        return grant.copy(id = grantId, playerId = playerId)
+    }
 
     fun deletePlayerRoleGrant(actorUserId: String, playerId: UUID, grantId: UUID) {
-        write(
+        writeIfChanged(
             actorUserId,
             "player.role_grant.deleted",
             "player:$playerId",
@@ -711,7 +773,7 @@ constructor(
                 .use { statement ->
                     statement.setObject(1, grantId)
                     statement.setObject(2, playerId)
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
         }
     }
@@ -855,8 +917,8 @@ constructor(
         playerId: UUID,
         grantId: UUID,
         grant: PlayerGrantRecord,
-    ): PlayerGrantRecord =
-        write(
+    ): PlayerGrantRecord {
+        writeIfChanged(
             actorUserId,
             "player.grant.updated",
             "player:$playerId",
@@ -868,6 +930,11 @@ constructor(
                     UPDATE permission_player_grants
                     SET effect = ?, permission_pattern = ?, scope_kind = ?, scope_value = ?, expires_at = ?
                     WHERE id = ? AND player_id = ?
+                      AND (
+                          effect IS DISTINCT FROM ? OR permission_pattern IS DISTINCT FROM ? OR
+                          scope_kind IS DISTINCT FROM ? OR scope_value IS DISTINCT FROM ? OR
+                          expires_at IS DISTINCT FROM ?
+                      )
                     """
                         .trimIndent()
                 )
@@ -879,15 +946,33 @@ constructor(
                     statement.setTimestamp(5, grant.expiresAt?.let(Timestamp::from))
                     statement.setObject(6, grantId)
                     statement.setObject(7, playerId)
-                    require(statement.executeUpdate() == 1) {
+                    statement.setString(8, grant.effect.name)
+                    statement.setString(9, grant.pattern)
+                    statement.setString(10, grant.scope.kind.name)
+                    statement.setString(11, grant.scope.value)
+                    statement.setTimestamp(12, grant.expiresAt?.let(Timestamp::from))
+                    val changed = statement.executeUpdate() > 0
+                    require(
+                        changed ||
+                            entityExists(
+                                connection,
+                                "permission_player_grants",
+                                "id = ? AND player_id = ?",
+                            ) {
+                                it.setObject(1, grantId)
+                                it.setObject(2, playerId)
+                            }
+                    ) {
                         "Player grant not found (grantId=$grantId)"
                     }
+                    changed
                 }
-            grant.copy(id = grantId, playerId = playerId)
         }
+        return grant.copy(id = grantId, playerId = playerId)
+    }
 
     fun deletePlayerGrant(actorUserId: String, playerId: UUID, grantId: UUID) {
-        write(
+        writeIfChanged(
             actorUserId,
             "player.grant.deleted",
             "player:$playerId",
@@ -903,7 +988,7 @@ constructor(
                 .use { statement ->
                     statement.setObject(1, grantId)
                     statement.setObject(2, playerId)
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
         }
     }
@@ -1031,8 +1116,8 @@ constructor(
         actorUserId: String,
         mappingId: UUID,
         mapping: KeycloakGroupMappingRecord,
-    ): KeycloakGroupMappingRecord =
-        write(
+    ): KeycloakGroupMappingRecord {
+        writeIfChanged(
             actorUserId,
             "keycloak_group.mapping.updated",
             "keycloakGroup:${mapping.keycloakGroup}",
@@ -1044,6 +1129,10 @@ constructor(
                     UPDATE permission_keycloak_group_mappings
                     SET keycloak_group = ?, role_key = ?, expires_at = ?
                     WHERE id = ?
+                      AND (
+                          keycloak_group IS DISTINCT FROM ? OR role_key IS DISTINCT FROM ? OR
+                          expires_at IS DISTINCT FROM ?
+                      )
                     """
                         .trimIndent()
                 )
@@ -1052,15 +1141,30 @@ constructor(
                     statement.setString(2, mapping.roleKey)
                     statement.setTimestamp(3, mapping.expiresAt?.let(Timestamp::from))
                     statement.setObject(4, mappingId)
-                    require(statement.executeUpdate() == 1) {
+                    statement.setString(5, mapping.keycloakGroup)
+                    statement.setString(6, mapping.roleKey)
+                    statement.setTimestamp(7, mapping.expiresAt?.let(Timestamp::from))
+                    val changed = statement.executeUpdate() > 0
+                    require(
+                        changed ||
+                            entityExists(
+                                connection,
+                                "permission_keycloak_group_mappings",
+                                "id = ?",
+                            ) {
+                                it.setObject(1, mappingId)
+                            }
+                    ) {
                         "Keycloak group mapping not found (mappingId=$mappingId)"
                     }
+                    changed
                 }
-            mapping.copy(id = mappingId)
         }
+        return mapping.copy(id = mappingId)
+    }
 
     fun deleteKeycloakGroupMapping(actorUserId: String, mappingId: UUID) {
-        write(
+        writeIfChanged(
             actorUserId,
             "keycloak_group.mapping.deleted",
             "keycloakGroupMapping:$mappingId",
@@ -1070,13 +1174,13 @@ constructor(
                 .prepareStatement("DELETE FROM permission_keycloak_group_mappings WHERE id = ?")
                 .use { statement ->
                     statement.setObject(1, mappingId)
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
         }
     }
 
-    fun upsertCatalogEntry(actorUserId: String, entry: CatalogEntryRecord): CatalogEntryRecord =
-        write(
+    fun upsertCatalogEntry(actorUserId: String, entry: CatalogEntryRecord): CatalogEntryRecord {
+        writeIfChanged(
             actorUserId,
             "catalog.entry.upserted",
             "permission:${entry.key}",
@@ -1102,6 +1206,13 @@ constructor(
                         custom = EXCLUDED.custom,
                         last_seen_at = EXCLUDED.last_seen_at,
                         updated_at = now()
+                    WHERE permission_catalog_entries.label IS DISTINCT FROM EXCLUDED.label
+                       OR permission_catalog_entries.description IS DISTINCT FROM EXCLUDED.description
+                       OR permission_catalog_entries.source IS DISTINCT FROM EXCLUDED.source
+                       OR permission_catalog_entries.source_version IS DISTINCT FROM EXCLUDED.source_version
+                       OR permission_catalog_entries.supported_scopes IS DISTINCT FROM EXCLUDED.supported_scopes
+                       OR permission_catalog_entries.custom IS DISTINCT FROM EXCLUDED.custom
+                       OR permission_catalog_entries.last_seen_at IS DISTINCT FROM EXCLUDED.last_seen_at
                     """
                         .trimIndent()
                 )
@@ -1120,10 +1231,11 @@ constructor(
                     )
                     statement.setBoolean(7, entry.custom)
                     statement.setTimestamp(8, entry.lastSeenAt?.let(Timestamp::from))
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
-            entry
         }
+        return entry
+    }
 
     fun listCatalogEntries(): List<CatalogEntryRecord> = read { connection ->
         connection
@@ -1310,7 +1422,7 @@ constructor(
         }
 
     fun deleteCustomCatalogEntry(actorUserId: String, permissionKey: String) {
-        write(
+        writeIfChanged(
             actorUserId,
             "catalog.entry.deleted",
             "permission:$permissionKey",
@@ -1322,7 +1434,7 @@ constructor(
                 )
                 .use { statement ->
                     statement.setString(1, permissionKey)
-                    statement.executeUpdate()
+                    statement.executeUpdate() > 0
                 }
         }
     }
@@ -1666,6 +1778,39 @@ constructor(
                 connection.rollback()
                 throw error
             }
+        }
+
+    private fun writeIfChanged(
+        actorUserId: String,
+        action: String,
+        target: String,
+        metadata: JsonNode,
+        block: (Connection) -> Boolean,
+    ) {
+        dataSource.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                if (block(connection)) {
+                    incrementPolicyVersion(connection)
+                    insertAuditEvent(connection, actorUserId, action, target, metadata)
+                }
+                connection.commit()
+            } catch (error: Throwable) {
+                connection.rollback()
+                throw error
+            }
+        }
+    }
+
+    private fun entityExists(
+        connection: Connection,
+        table: String,
+        predicate: String,
+        bind: (java.sql.PreparedStatement) -> Unit,
+    ): Boolean =
+        connection.prepareStatement("SELECT 1 FROM $table WHERE $predicate").use { statement ->
+            bind(statement)
+            statement.executeQuery().use(ResultSet::next)
         }
 
     private fun incrementPolicyVersion(connection: Connection) {
