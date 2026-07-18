@@ -1,5 +1,6 @@
 package gg.grounds.permissions.persistence
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
@@ -20,14 +21,20 @@ import gg.grounds.permissions.sync.SyncRoleGrant
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Proxy
+import java.sql.Connection
+import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
+import javax.sql.DataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
 
 @QuarkusTest
 @QuarkusTestResource(
@@ -41,6 +48,10 @@ class PermissionRepositoryTest {
     @Inject lateinit var repository: PermissionRepository
 
     @Inject lateinit var identityRepository: PlayerIdentityRepository
+
+    @Inject lateinit var dataSource: DataSource
+
+    @Inject lateinit var objectMapper: ObjectMapper
 
     @BeforeEach
     fun resetDatabase() {
@@ -675,6 +686,25 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun readsAuditTotalsAndItemsFromOneSnapshot() {
+        insertAuditEvent(
+            id = UUID.fromString("00000000-0000-0000-0000-000000000101"),
+            actorUserId = "first-user",
+        )
+        val snapshotRepository =
+            PermissionRepository(
+                InterleavingAuditDataSource(dataSource),
+                objectMapper,
+                identityRepository,
+                mock(),
+            )
+
+        val page = snapshotRepository.listAuditEvents(PermissionAuditEventQuery(perPage = 25))
+
+        assertEquals(page.total, page.items.size.toLong())
+    }
+
+    @Test
     fun removesNaturalKeyConflictsBeforeImportingReplacementMappings() {
         repository.createRole(testActor, RoleRecord(key = "moderator", name = "Moderator"))
         val projectMappingId = UUID.randomUUID()
@@ -731,5 +761,85 @@ class PermissionRepositoryTest {
             repository.importPermissionSnapshot(snapshot, emptyList(), "test-user")
         }
         assertTrue(repository.listRoleInheritances().isEmpty())
+    }
+
+    private fun insertAuditEvent(id: UUID, actorUserId: String) {
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    INSERT INTO permission_audit_events (
+                        id, actor_user_id, action, target, metadata, created_at
+                    )
+                    VALUES (?, ?, 'role.created', 'role:moderator', '{}'::jsonb, ?)
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setObject(1, id)
+                    statement.setString(2, actorUserId)
+                    statement.setTimestamp(3, Timestamp.from(Instant.parse("2030-01-01T00:00:00Z")))
+                    statement.executeUpdate()
+                }
+        }
+    }
+
+    private class InterleavingAuditDataSource(private val delegate: DataSource) :
+        DataSource by delegate {
+        private var countRead = false
+
+        override fun getConnection(): Connection {
+            val connection = delegate.connection
+            return Proxy.newProxyInstance(
+                Connection::class.java.classLoader,
+                arrayOf(Connection::class.java),
+            ) { _, method, arguments ->
+                val sql = arguments?.firstOrNull() as? String
+                if (method.name == "prepareStatement" && sql != null) {
+                    when {
+                        sql.startsWith("SELECT COUNT(*) FROM permission_audit_events") ->
+                            countRead = true
+                        countRead &&
+                            sql.contains(
+                                "SELECT id, actor_user_id, action, target, metadata, created_at"
+                            ) -> {
+                            insertConcurrentAuditEvent()
+                            countRead = false
+                        }
+                    }
+                }
+                try {
+                    method.invoke(connection, *(arguments ?: emptyArray()))
+                } catch (error: InvocationTargetException) {
+                    throw error.targetException
+                }
+            } as Connection
+        }
+
+        private fun insertConcurrentAuditEvent() {
+            delegate.connection.use { connection ->
+                connection
+                    .prepareStatement(
+                        """
+                        INSERT INTO permission_audit_events (
+                            id, actor_user_id, action, target, metadata, created_at
+                        )
+                        VALUES (?, 'second-user', 'role.created', 'role:builder', '{}'::jsonb, ?)
+                        """
+                            .trimIndent()
+                    )
+                    .use { statement ->
+                        statement.setObject(
+                            1,
+                            UUID.fromString("00000000-0000-0000-0000-000000000102"),
+                        )
+                        statement.setTimestamp(
+                            2,
+                            Timestamp.from(Instant.parse("2030-01-01T00:00:01Z")),
+                        )
+                        statement.executeUpdate()
+                    }
+            }
+        }
     }
 }

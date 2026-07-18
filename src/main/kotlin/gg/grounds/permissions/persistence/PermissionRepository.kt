@@ -200,7 +200,7 @@ constructor(
     fun listAuditEvents(query: PermissionAuditEventQuery): PermissionAuditEventPage {
         validateAuditEventQuery(query)
         val predicates = auditEventPredicates(query)
-        return read { connection ->
+        return consistentRead { connection ->
             val whereClause = predicates.whereClause()
             val total =
                 connection
