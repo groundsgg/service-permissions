@@ -1177,7 +1177,7 @@ constructor(
                     }
                 insertAuditEvent(
                     connection,
-                    actorUserId,
+                    null,
                     "permission.sync.imported",
                     "snapshot:${snapshot.snapshotId}",
                     objectMapper.createObjectNode(),

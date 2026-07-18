@@ -617,6 +617,32 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun recordsSyncImportsWithoutAnAuditActorUntilActorPropagationIsImplemented() {
+        repository.importPermissionSnapshot(
+            GlobalPermissionSnapshot(
+                snapshotId = "audit-actor-boundary",
+                roles = emptyList(),
+                roleGrants = emptyList(),
+                inheritance = emptyList(),
+                catalogEntries = emptyList(),
+                keycloakMappings = emptyList(),
+            ),
+            actions = emptyList(),
+            actorUserId = "sync-user",
+        )
+
+        val event =
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .single()
+
+        assertNull(event.actorUserId)
+    }
+
+    @Test
     fun removesNaturalKeyConflictsBeforeImportingReplacementMappings() {
         repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
         val projectMappingId = UUID.randomUUID()
