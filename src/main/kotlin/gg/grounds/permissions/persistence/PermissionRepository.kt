@@ -1439,6 +1439,81 @@ constructor(
         }
     }
 
+    // Compatibility overloads keep internal callers and test fixtures independent of audit actor
+    // wiring.
+    // Production entry points must pass their authenticated or runtime actor explicitly.
+    fun createRole(role: RoleRecord): RoleRecord = createRole(REPOSITORY_SYSTEM_ACTOR, role)
+
+    fun updateRole(roleKey: String, role: RoleRecord): RoleRecord =
+        updateRole(REPOSITORY_SYSTEM_ACTOR, roleKey, role)
+
+    fun deleteRole(roleKey: String) = deleteRole(REPOSITORY_SYSTEM_ACTOR, roleKey)
+
+    fun addRoleInheritance(childRoleKey: String, parentRoleKey: String) =
+        addRoleInheritance(REPOSITORY_SYSTEM_ACTOR, childRoleKey, parentRoleKey)
+
+    fun removeRoleInheritance(childRoleKey: String, parentRoleKey: String) =
+        removeRoleInheritance(REPOSITORY_SYSTEM_ACTOR, childRoleKey, parentRoleKey)
+
+    fun createRoleGrant(grant: RoleGrantRecord): RoleGrantRecord =
+        createRoleGrant(REPOSITORY_SYSTEM_ACTOR, grant)
+
+    fun updateRoleGrant(roleKey: String, grantId: UUID, grant: RoleGrantRecord): RoleGrantRecord =
+        updateRoleGrant(REPOSITORY_SYSTEM_ACTOR, roleKey, grantId, grant)
+
+    fun deleteRoleGrant(roleKey: String, grantId: UUID) =
+        deleteRoleGrant(REPOSITORY_SYSTEM_ACTOR, roleKey, grantId)
+
+    fun createPlayerRoleGrant(grant: PlayerRoleGrantRecord): PlayerRoleGrantRecord =
+        createPlayerRoleGrant(REPOSITORY_SYSTEM_ACTOR, grant)
+
+    fun updatePlayerRoleGrant(
+        playerId: UUID,
+        grantId: UUID,
+        grant: PlayerRoleGrantRecord,
+    ): PlayerRoleGrantRecord =
+        updatePlayerRoleGrant(REPOSITORY_SYSTEM_ACTOR, playerId, grantId, grant)
+
+    fun deletePlayerRoleGrant(playerId: UUID, grantId: UUID) =
+        deletePlayerRoleGrant(REPOSITORY_SYSTEM_ACTOR, playerId, grantId)
+
+    fun createPlayerGrant(grant: PlayerGrantRecord): PlayerGrantRecord =
+        createPlayerGrant(REPOSITORY_SYSTEM_ACTOR, grant)
+
+    fun updatePlayerGrant(
+        playerId: UUID,
+        grantId: UUID,
+        grant: PlayerGrantRecord,
+    ): PlayerGrantRecord = updatePlayerGrant(REPOSITORY_SYSTEM_ACTOR, playerId, grantId, grant)
+
+    fun deletePlayerGrant(playerId: UUID, grantId: UUID) =
+        deletePlayerGrant(REPOSITORY_SYSTEM_ACTOR, playerId, grantId)
+
+    fun createKeycloakGroupMapping(
+        mapping: KeycloakGroupMappingRecord
+    ): KeycloakGroupMappingRecord = createKeycloakGroupMapping(REPOSITORY_SYSTEM_ACTOR, mapping)
+
+    fun updateKeycloakGroupMapping(
+        mappingId: UUID,
+        mapping: KeycloakGroupMappingRecord,
+    ): KeycloakGroupMappingRecord =
+        updateKeycloakGroupMapping(REPOSITORY_SYSTEM_ACTOR, mappingId, mapping)
+
+    fun deleteKeycloakGroupMapping(mappingId: UUID) =
+        deleteKeycloakGroupMapping(REPOSITORY_SYSTEM_ACTOR, mappingId)
+
+    fun upsertCatalogEntry(entry: CatalogEntryRecord): CatalogEntryRecord =
+        upsertCatalogEntry(REPOSITORY_SYSTEM_ACTOR, entry)
+
+    fun importPermissionSnapshot(
+        snapshot: GlobalPermissionSnapshot,
+        actions: List<PermissionSyncAction>,
+    ): PermissionSyncMetadataRecord =
+        importPermissionSnapshot(snapshot, actions, REPOSITORY_SYSTEM_ACTOR)
+
+    fun deleteCustomCatalogEntry(permissionKey: String) =
+        deleteCustomCatalogEntry(REPOSITORY_SYSTEM_ACTOR, permissionKey)
+
     fun currentPolicyVersion(): Long = read { connection ->
         connection
             .prepareStatement("SELECT version FROM permission_policy_versions WHERE id = 1")
@@ -2277,6 +2352,7 @@ constructor(
     }
 
     companion object {
+        private const val REPOSITORY_SYSTEM_ACTOR = "system:repository"
         private const val POSTGRES_UNIQUE_VIOLATION = "23505"
         private const val PERMISSION_ROLES_PRIMARY_KEY = "permission_roles_pkey"
         private val REFRESH_AFTER_OFFSET = Duration.ofMinutes(5)
