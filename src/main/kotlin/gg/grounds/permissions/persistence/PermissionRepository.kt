@@ -3,6 +3,7 @@ package gg.grounds.permissions.persistence
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.ObjectNode
 import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantSpec
@@ -142,9 +143,14 @@ constructor(
     @param:Readiness private val identityReadinessCheck: IdentitySyncReadinessCheck,
 ) {
 
-    fun createRole(role: RoleRecord): RoleRecord =
+    fun createRole(actorUserId: String, role: RoleRecord): RoleRecord =
         try {
-            write("role.created", "role:${role.key}") { connection ->
+            write(
+                actorUserId,
+                "role.created",
+                "role:${role.key}",
+                auditMetadata { put("roleKey", role.key) },
+            ) { connection ->
                 connection
                     .prepareStatement(
                         """
@@ -270,8 +276,13 @@ constructor(
 
     fun getRole(roleKey: String): RoleRecord? = listRoles().firstOrNull { it.key == roleKey }
 
-    fun updateRole(roleKey: String, role: RoleRecord): RoleRecord =
-        write("role.updated", "role:$roleKey") { connection ->
+    fun updateRole(actorUserId: String, roleKey: String, role: RoleRecord): RoleRecord =
+        write(
+            actorUserId,
+            "role.updated",
+            "role:$roleKey",
+            auditMetadata { put("roleKey", roleKey) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -296,8 +307,13 @@ constructor(
             role.copy(key = roleKey)
         }
 
-    fun deleteRole(roleKey: String) {
-        write("role.deleted", "role:$roleKey") { connection ->
+    fun deleteRole(actorUserId: String, roleKey: String) {
+        write(
+            actorUserId,
+            "role.deleted",
+            "role:$roleKey",
+            auditMetadata { put("roleKey", roleKey) },
+        ) { connection ->
             connection.prepareStatement("DELETE FROM permission_roles WHERE key = ?").use {
                 statement ->
                 statement.setString(1, roleKey)
@@ -306,8 +322,16 @@ constructor(
         }
     }
 
-    fun addRoleInheritance(childRoleKey: String, parentRoleKey: String) {
-        write("role.inheritance.created", "role:$childRoleKey") { connection ->
+    fun addRoleInheritance(actorUserId: String, childRoleKey: String, parentRoleKey: String) {
+        write(
+            actorUserId,
+            "role.inheritance.created",
+            "role:$childRoleKey",
+            auditMetadata {
+                put("roleKey", childRoleKey)
+                put("parentRoleKey", parentRoleKey)
+            },
+        ) { connection ->
             require(childRoleKey != parentRoleKey) {
                 "Role inheritance would create a cycle (childRoleKey=$childRoleKey, parentRoleKey=$parentRoleKey)"
             }
@@ -337,8 +361,16 @@ constructor(
         }
     }
 
-    fun removeRoleInheritance(childRoleKey: String, parentRoleKey: String) {
-        write("role.inheritance.deleted", "role:$childRoleKey") { connection ->
+    fun removeRoleInheritance(actorUserId: String, childRoleKey: String, parentRoleKey: String) {
+        write(
+            actorUserId,
+            "role.inheritance.deleted",
+            "role:$childRoleKey",
+            auditMetadata {
+                put("roleKey", childRoleKey)
+                put("parentRoleKey", parentRoleKey)
+            },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -355,8 +387,13 @@ constructor(
         }
     }
 
-    fun createRoleGrant(grant: RoleGrantRecord): RoleGrantRecord =
-        write("role.grant.created", "role:${grant.roleKey}") { connection ->
+    fun createRoleGrant(actorUserId: String, grant: RoleGrantRecord): RoleGrantRecord =
+        write(
+            actorUserId,
+            "role.grant.created",
+            "role:${grant.roleKey}",
+            auditMetadata { putGrantMetadata(grant) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -505,8 +542,18 @@ constructor(
             }
     }
 
-    fun updateRoleGrant(roleKey: String, grantId: UUID, grant: RoleGrantRecord): RoleGrantRecord =
-        write("role.grant.updated", "role:$roleKey") { connection ->
+    fun updateRoleGrant(
+        actorUserId: String,
+        roleKey: String,
+        grantId: UUID,
+        grant: RoleGrantRecord,
+    ): RoleGrantRecord =
+        write(
+            actorUserId,
+            "role.grant.updated",
+            "role:$roleKey",
+            auditMetadata { putGrantMetadata(grant.copy(id = grantId, roleKey = roleKey)) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -531,8 +578,16 @@ constructor(
             grant.copy(id = grantId, roleKey = roleKey)
         }
 
-    fun deleteRoleGrant(roleKey: String, grantId: UUID) {
-        write("role.grant.deleted", "role:$roleKey") { connection ->
+    fun deleteRoleGrant(actorUserId: String, roleKey: String, grantId: UUID) {
+        write(
+            actorUserId,
+            "role.grant.deleted",
+            "role:$roleKey",
+            auditMetadata {
+                put("roleKey", roleKey)
+                put("grantId", grantId.toString())
+            },
+        ) { connection ->
             connection
                 .prepareStatement(
                     "DELETE FROM permission_role_grants WHERE id = ? AND role_key = ?"
@@ -545,8 +600,16 @@ constructor(
         }
     }
 
-    fun createPlayerRoleGrant(grant: PlayerRoleGrantRecord): PlayerRoleGrantRecord =
-        write("player.role_grant.created", "player:${grant.playerId}") { connection ->
+    fun createPlayerRoleGrant(
+        actorUserId: String,
+        grant: PlayerRoleGrantRecord,
+    ): PlayerRoleGrantRecord =
+        write(
+            actorUserId,
+            "player.role_grant.created",
+            "player:${grant.playerId}",
+            auditMetadata { putPlayerRoleGrantMetadata(grant) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -597,11 +660,19 @@ constructor(
         }
 
     fun updatePlayerRoleGrant(
+        actorUserId: String,
         playerId: UUID,
         grantId: UUID,
         grant: PlayerRoleGrantRecord,
     ): PlayerRoleGrantRecord =
-        write("player.role_grant.updated", "player:$playerId") { connection ->
+        write(
+            actorUserId,
+            "player.role_grant.updated",
+            "player:$playerId",
+            auditMetadata {
+                putPlayerRoleGrantMetadata(grant.copy(id = grantId, playerId = playerId))
+            },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -623,8 +694,16 @@ constructor(
             grant.copy(id = grantId, playerId = playerId)
         }
 
-    fun deletePlayerRoleGrant(playerId: UUID, grantId: UUID) {
-        write("player.role_grant.deleted", "player:$playerId") { connection ->
+    fun deletePlayerRoleGrant(actorUserId: String, playerId: UUID, grantId: UUID) {
+        write(
+            actorUserId,
+            "player.role_grant.deleted",
+            "player:$playerId",
+            auditMetadata {
+                put("playerId", playerId.toString())
+                put("grantId", grantId.toString())
+            },
+        ) { connection ->
             connection
                 .prepareStatement(
                     "DELETE FROM permission_player_role_grants WHERE id = ? AND player_id = ?"
@@ -637,8 +716,13 @@ constructor(
         }
     }
 
-    fun createPlayerGrant(grant: PlayerGrantRecord): PlayerGrantRecord =
-        write("player.grant.created", "player:${grant.playerId}") { connection ->
+    fun createPlayerGrant(actorUserId: String, grant: PlayerGrantRecord): PlayerGrantRecord =
+        write(
+            actorUserId,
+            "player.grant.created",
+            "player:${grant.playerId}",
+            auditMetadata { putPlayerGrantMetadata(grant) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -767,11 +851,17 @@ constructor(
     }
 
     fun updatePlayerGrant(
+        actorUserId: String,
         playerId: UUID,
         grantId: UUID,
         grant: PlayerGrantRecord,
     ): PlayerGrantRecord =
-        write("player.grant.updated", "player:$playerId") { connection ->
+        write(
+            actorUserId,
+            "player.grant.updated",
+            "player:$playerId",
+            auditMetadata { putPlayerGrantMetadata(grant.copy(id = grantId, playerId = playerId)) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -796,8 +886,16 @@ constructor(
             grant.copy(id = grantId, playerId = playerId)
         }
 
-    fun deletePlayerGrant(playerId: UUID, grantId: UUID) {
-        write("player.grant.deleted", "player:$playerId") { connection ->
+    fun deletePlayerGrant(actorUserId: String, playerId: UUID, grantId: UUID) {
+        write(
+            actorUserId,
+            "player.grant.deleted",
+            "player:$playerId",
+            auditMetadata {
+                put("playerId", playerId.toString())
+                put("grantId", grantId.toString())
+            },
+        ) { connection ->
             connection
                 .prepareStatement(
                     "DELETE FROM permission_player_grants WHERE id = ? AND player_id = ?"
@@ -811,10 +909,15 @@ constructor(
     }
 
     fun createKeycloakGroupMapping(
-        mapping: KeycloakGroupMappingRecord
+        actorUserId: String,
+        mapping: KeycloakGroupMappingRecord,
     ): KeycloakGroupMappingRecord =
-        write("keycloak_group.mapping.created", "keycloakGroup:${mapping.keycloakGroup}") {
-            connection ->
+        write(
+            actorUserId,
+            "keycloak_group.mapping.created",
+            "keycloakGroup:${mapping.keycloakGroup}",
+            auditMetadata { putKeycloakMappingMetadata(mapping) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -925,11 +1028,16 @@ constructor(
     }
 
     fun updateKeycloakGroupMapping(
+        actorUserId: String,
         mappingId: UUID,
         mapping: KeycloakGroupMappingRecord,
     ): KeycloakGroupMappingRecord =
-        write("keycloak_group.mapping.updated", "keycloakGroup:${mapping.keycloakGroup}") {
-            connection ->
+        write(
+            actorUserId,
+            "keycloak_group.mapping.updated",
+            "keycloakGroup:${mapping.keycloakGroup}",
+            auditMetadata { putKeycloakMappingMetadata(mapping.copy(id = mappingId)) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     """
@@ -951,8 +1059,13 @@ constructor(
             mapping.copy(id = mappingId)
         }
 
-    fun deleteKeycloakGroupMapping(mappingId: UUID) {
-        write("keycloak_group.mapping.deleted", "keycloakGroupMapping:$mappingId") { connection ->
+    fun deleteKeycloakGroupMapping(actorUserId: String, mappingId: UUID) {
+        write(
+            actorUserId,
+            "keycloak_group.mapping.deleted",
+            "keycloakGroupMapping:$mappingId",
+            auditMetadata { put("mappingId", mappingId.toString()) },
+        ) { connection ->
             connection
                 .prepareStatement("DELETE FROM permission_keycloak_group_mappings WHERE id = ?")
                 .use { statement ->
@@ -962,8 +1075,13 @@ constructor(
         }
     }
 
-    fun upsertCatalogEntry(entry: CatalogEntryRecord): CatalogEntryRecord =
-        write("catalog.entry.upserted", "permission:${entry.key}") { connection ->
+    fun upsertCatalogEntry(actorUserId: String, entry: CatalogEntryRecord): CatalogEntryRecord =
+        write(
+            actorUserId,
+            "catalog.entry.upserted",
+            "permission:${entry.key}",
+            auditMetadata { put("catalogKey", entry.key) },
+        ) { connection ->
             require(!entry.custom || !catalogEntryOwnedByRuntime(connection, entry.key)) {
                 "Catalog entry is owned by runtime registration (permissionKey=${entry.key})"
             }
@@ -1176,11 +1294,12 @@ constructor(
                         statement.executeUpdate()
                     }
                 insertAuditEvent(
-                    connection,
-                    null,
-                    "permission.sync.imported",
-                    "snapshot:${snapshot.snapshotId}",
-                    objectMapper.createObjectNode(),
+                    connection = connection,
+                    actorUserId = actorUserId,
+                    action = "permission.sync.imported",
+                    target = "snapshot:${snapshot.snapshotId}",
+                    metadata =
+                        objectMapper.createObjectNode().put("snapshotId", snapshot.snapshotId),
                 )
                 connection.commit()
                 PermissionSyncMetadataRecord(snapshot.snapshotId, actorUserId, importedAt)
@@ -1190,8 +1309,13 @@ constructor(
             }
         }
 
-    fun deleteCustomCatalogEntry(permissionKey: String) {
-        write("catalog.entry.deleted", "permission:$permissionKey") { connection ->
+    fun deleteCustomCatalogEntry(actorUserId: String, permissionKey: String) {
+        write(
+            actorUserId,
+            "catalog.entry.deleted",
+            "permission:$permissionKey",
+            auditMetadata { put("catalogKey", permissionKey) },
+        ) { connection ->
             connection
                 .prepareStatement(
                     "DELETE FROM permission_catalog_entries WHERE permission_key = ? AND custom = TRUE"
@@ -1486,13 +1610,56 @@ constructor(
             }
         }
 
-    private fun <T> write(action: String, target: String, block: (Connection) -> T): T =
+    private fun auditMetadata(block: ObjectNode.() -> Unit): ObjectNode =
+        objectMapper.createObjectNode().apply(block)
+
+    private fun ObjectNode.putGrantMetadata(grant: RoleGrantRecord) {
+        put("roleKey", grant.roleKey)
+        put("grantId", grant.id.toString())
+        put("permissionPattern", grant.pattern)
+        put("effect", grant.effect.name)
+        put("scopeKind", grant.scope.kind.name)
+        put("scopeValue", grant.scope.value)
+        put("expiresAt", grant.expiresAt?.toString())
+    }
+
+    private fun ObjectNode.putPlayerRoleGrantMetadata(grant: PlayerRoleGrantRecord) {
+        put("playerId", grant.playerId.toString())
+        put("grantId", grant.id.toString())
+        put("roleKey", grant.roleKey)
+        put("expiresAt", grant.expiresAt?.toString())
+    }
+
+    private fun ObjectNode.putPlayerGrantMetadata(grant: PlayerGrantRecord) {
+        put("playerId", grant.playerId.toString())
+        put("grantId", grant.id.toString())
+        put("permissionPattern", grant.pattern)
+        put("effect", grant.effect.name)
+        put("scopeKind", grant.scope.kind.name)
+        put("scopeValue", grant.scope.value)
+        put("expiresAt", grant.expiresAt?.toString())
+    }
+
+    private fun ObjectNode.putKeycloakMappingMetadata(mapping: KeycloakGroupMappingRecord) {
+        put("mappingId", mapping.id.toString())
+        put("keycloakGroup", mapping.keycloakGroup)
+        put("roleKey", mapping.roleKey)
+        put("expiresAt", mapping.expiresAt?.toString())
+    }
+
+    private fun <T> write(
+        actorUserId: String,
+        action: String,
+        target: String,
+        metadata: JsonNode,
+        block: (Connection) -> T,
+    ): T =
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
                 val result = block(connection)
                 incrementPolicyVersion(connection)
-                insertAuditEvent(connection, null, action, target, objectMapper.createObjectNode())
+                insertAuditEvent(connection, actorUserId, action, target, metadata)
                 connection.commit()
                 result
             } catch (error: Throwable) {

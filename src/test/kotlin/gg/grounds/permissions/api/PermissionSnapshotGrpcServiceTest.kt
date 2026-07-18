@@ -21,6 +21,7 @@ import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.domain.PlayerPermissionGrant
 import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
+import gg.grounds.permissions.persistence.PermissionAuditEventQuery
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
 import io.grpc.Status
@@ -311,6 +312,15 @@ class PermissionSnapshotGrpcServiceTest {
         assertEquals(listOf(PermissionScopeKind.GLOBAL), catalogEntry.supportedScopes)
         assertFalse(catalogEntry.custom)
         assertNotNull(catalogEntry.lastSeenAt)
+        val auditEvent =
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("catalog.entry.upserted"))
+                )
+                .items
+                .single()
+        assertEquals("runtime:catalog", auditEvent.actorUserId)
+        assertEquals("grounds.command.fly", auditEvent.metadata.get("catalogKey").asText())
     }
 
     @Test

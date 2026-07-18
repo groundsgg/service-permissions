@@ -97,7 +97,7 @@ constructor(
         request: PlayerRoleGrantRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val grant =
             PlayerRoleGrantRecord(
@@ -107,7 +107,7 @@ constructor(
                 expiresAt = request.expiresAt,
             )
         return Response.status(Response.Status.CREATED)
-            .entity(repository.createPlayerRoleGrant(grant).toResponse())
+            .entity(repository.createPlayerRoleGrant(actor, grant).toResponse())
             .build()
     }
 
@@ -119,7 +119,7 @@ constructor(
         request: PlayerRoleGrantRequest,
         @Context headers: HttpHeaders,
     ): PlayerRoleGrantResponse {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
         val grant =
@@ -129,7 +129,7 @@ constructor(
                 roleKey = PermissionValidation.roleKey(request.roleKey),
                 expiresAt = request.expiresAt,
             )
-        return repository.updatePlayerRoleGrant(id, parsedGrantId, grant).toResponse()
+        return repository.updatePlayerRoleGrant(actor, id, parsedGrantId, grant).toResponse()
     }
 
     @DELETE
@@ -139,8 +139,9 @@ constructor(
         @PathParam("grantId") grantId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         repository.deletePlayerRoleGrant(
+            actorUserId = actor,
             playerId = PermissionValidation.uuid(playerId, "playerId"),
             grantId = PermissionValidation.uuid(grantId, "grantId"),
         )
@@ -204,11 +205,11 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val grant = request.toPlayerGrantRecord(playerId = id, grantId = UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
-            .entity(repository.createPlayerGrant(grant).toResponse())
+            .entity(repository.createPlayerGrant(actor, grant).toResponse())
             .build()
     }
 
@@ -220,11 +221,16 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): PlayerGrantResponse {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
         return repository
-            .updatePlayerGrant(id, parsedGrantId, request.toPlayerGrantRecord(id, parsedGrantId))
+            .updatePlayerGrant(
+                actor,
+                id,
+                parsedGrantId,
+                request.toPlayerGrantRecord(id, parsedGrantId),
+            )
             .toResponse()
     }
 
@@ -235,8 +241,9 @@ constructor(
         @PathParam("grantId") grantId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         repository.deletePlayerGrant(
+            actorUserId = actor,
             playerId = PermissionValidation.uuid(playerId, "playerId"),
             grantId = PermissionValidation.uuid(grantId, "grantId"),
         )

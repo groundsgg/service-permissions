@@ -36,6 +36,8 @@ import org.junit.jupiter.api.Test
 )
 class PermissionRepositoryTest {
 
+    private val testActor = "test-user"
+
     @Inject lateinit var repository: PermissionRepository
 
     @Inject lateinit var identityRepository: PlayerIdentityRepository
@@ -378,6 +380,7 @@ class PermissionRepositoryTest {
         val expiresAt = Instant.parse("2030-01-01T00:00:00Z")
 
         repository.createRole(
+            testActor,
             RoleRecord(
                 key = "default",
                 name = "Default",
@@ -387,11 +390,19 @@ class PermissionRepositoryTest {
                 sortOrder = 100,
                 metadata = mapOf("source" to "test"),
                 isDefault = true,
-            )
+            ),
         )
-        repository.createRole(RoleRecord(key = "moderator", name = "Moderator", sortOrder = 50))
-        repository.addRoleInheritance(childRoleKey = "moderator", parentRoleKey = "default")
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "moderator", name = "Moderator", sortOrder = 50),
+        )
+        repository.addRoleInheritance(
+            actorUserId = testActor,
+            childRoleKey = "moderator",
+            parentRoleKey = "default",
+        )
         repository.createRoleGrant(
+            testActor,
             RoleGrantRecord(
                 id = roleGrantId,
                 roleKey = "moderator",
@@ -399,17 +410,19 @@ class PermissionRepositoryTest {
                 pattern = "grounds.command.moderate",
                 scope = PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper"),
                 expiresAt = expiresAt,
-            )
+            ),
         )
         repository.createPlayerRoleGrant(
+            testActor,
             PlayerRoleGrantRecord(
                 id = playerRoleGrantId,
                 playerId = playerId,
                 roleKey = "moderator",
                 expiresAt = expiresAt,
-            )
+            ),
         )
         repository.createPlayerGrant(
+            testActor,
             PlayerGrantRecord(
                 id = directPlayerGrantId,
                 playerId = playerId,
@@ -417,15 +430,16 @@ class PermissionRepositoryTest {
                 pattern = "grounds.command.op",
                 scope = PermissionScope(PermissionScopeKind.GLOBAL),
                 expiresAt = expiresAt,
-            )
+            ),
         )
         repository.createKeycloakGroupMapping(
+            testActor,
             KeycloakGroupMappingRecord(
                 id = groupMappingId,
                 keycloakGroup = "/staff",
                 roleKey = "moderator",
                 expiresAt = expiresAt,
-            )
+            ),
         )
         val syncedAt = Instant.now()
         identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
@@ -444,6 +458,7 @@ class PermissionRepositoryTest {
             syncedAt,
         )
         repository.upsertCatalogEntry(
+            testActor,
             CatalogEntryRecord(
                 key = "grounds.command.moderate",
                 label = "Moderate",
@@ -454,7 +469,7 @@ class PermissionRepositoryTest {
                     listOf(PermissionScopeKind.GLOBAL, PermissionScopeKind.SERVER_TYPE),
                 custom = false,
                 lastSeenAt = expiresAt,
-            )
+            ),
         )
 
         val versionAfterWrites = repository.currentPolicyVersion()
@@ -493,13 +508,18 @@ class PermissionRepositoryTest {
     @Test
     fun freshProjectionWithoutAPlayerStillAllowsDefaultAndDirectRoles() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000124")
-        repository.createRole(RoleRecord(key = "default", name = "Default", isDefault = true))
-        repository.createRole(RoleRecord(key = "builder", name = "Builder"))
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "default", name = "Default", isDefault = true),
+        )
+        repository.createRole(testActor, RoleRecord(key = "builder", name = "Builder"))
         repository.createPlayerRoleGrant(
-            PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "builder")
+            testActor,
+            PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "builder"),
         )
         repository.createKeycloakGroupMapping(
-            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "builder")
+            testActor,
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "builder"),
         )
         val syncedAt = Instant.now()
         identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
@@ -517,9 +537,10 @@ class PermissionRepositoryTest {
     @Test
     fun staleProjectionRejectsPolicyEvaluationWhenGroupMappingsExist() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000125")
-        repository.createRole(RoleRecord(key = "member", name = "Member"))
+        repository.createRole(testActor, RoleRecord(key = "member", name = "Member"))
         repository.createKeycloakGroupMapping(
-            KeycloakGroupMappingRecord(UUID.randomUUID(), "/players", "member")
+            testActor,
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/players", "member"),
         )
 
         assertThrows(IdentityProjectionUnavailableException::class.java) {
@@ -531,14 +552,22 @@ class PermissionRepositoryTest {
 
     @Test
     fun rejectsRoleInheritanceCycles() {
-        repository.createRole(RoleRecord(key = "alpha", name = "Alpha"))
-        repository.createRole(RoleRecord(key = "beta", name = "Beta"))
+        repository.createRole(testActor, RoleRecord(key = "alpha", name = "Alpha"))
+        repository.createRole(testActor, RoleRecord(key = "beta", name = "Beta"))
 
-        repository.addRoleInheritance(childRoleKey = "beta", parentRoleKey = "alpha")
+        repository.addRoleInheritance(
+            actorUserId = testActor,
+            childRoleKey = "beta",
+            parentRoleKey = "alpha",
+        )
 
         val error =
             assertThrows(IllegalArgumentException::class.java) {
-                repository.addRoleInheritance(childRoleKey = "alpha", parentRoleKey = "beta")
+                repository.addRoleInheritance(
+                    actorUserId = testActor,
+                    childRoleKey = "alpha",
+                    parentRoleKey = "beta",
+                )
             }
 
         assertEquals(
@@ -550,6 +579,7 @@ class PermissionRepositoryTest {
     @Test
     fun rejectsCustomCatalogUpsertOverRuntimeOwnedEntry() {
         repository.upsertCatalogEntry(
+            testActor,
             CatalogEntryRecord(
                 key = "grounds.command.fly",
                 label = "Fly",
@@ -557,12 +587,13 @@ class PermissionRepositoryTest {
                 sourceVersion = "1.0.0",
                 supportedScopes = listOf(PermissionScopeKind.GLOBAL),
                 custom = false,
-            )
+            ),
         )
 
         val error =
             assertThrows(IllegalArgumentException::class.java) {
                 repository.upsertCatalogEntry(
+                    testActor,
                     CatalogEntryRecord(
                         key = "grounds.command.fly",
                         label = "Custom fly",
@@ -570,7 +601,7 @@ class PermissionRepositoryTest {
                         sourceVersion = "admin",
                         supportedScopes = listOf(PermissionScopeKind.GLOBAL),
                         custom = true,
-                    )
+                    ),
                 )
             }
 
@@ -617,7 +648,7 @@ class PermissionRepositoryTest {
     }
 
     @Test
-    fun recordsSyncImportsWithoutAnAuditActorUntilActorPropagationIsImplemented() {
+    fun recordsSyncImportsWithTheProvidedAuditActor() {
         repository.importPermissionSnapshot(
             GlobalPermissionSnapshot(
                 snapshotId = "audit-actor-boundary",
@@ -639,15 +670,17 @@ class PermissionRepositoryTest {
                 .items
                 .single()
 
-        assertNull(event.actorUserId)
+        assertEquals("sync-user", event.actorUserId)
+        assertEquals("audit-actor-boundary", event.metadata.get("snapshotId").asText())
     }
 
     @Test
     fun removesNaturalKeyConflictsBeforeImportingReplacementMappings() {
-        repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        repository.createRole(testActor, RoleRecord(key = "moderator", name = "Moderator"))
         val projectMappingId = UUID.randomUUID()
         repository.createKeycloakGroupMapping(
-            KeycloakGroupMappingRecord(projectMappingId, "/staff", "moderator")
+            testActor,
+            KeycloakGroupMappingRecord(projectMappingId, "/staff", "moderator"),
         )
         val globalMappingId = UUID.randomUUID()
         val snapshot =
@@ -679,8 +712,8 @@ class PermissionRepositoryTest {
 
     @Test
     fun rejectsCyclicInheritanceInImportedSnapshot() {
-        repository.createRole(RoleRecord(key = "alpha", name = "Alpha"))
-        repository.createRole(RoleRecord(key = "beta", name = "Beta"))
+        repository.createRole(testActor, RoleRecord(key = "alpha", name = "Alpha"))
+        repository.createRole(testActor, RoleRecord(key = "beta", name = "Beta"))
         val snapshot =
             GlobalPermissionSnapshot(
                 snapshotId = "cycle-test",

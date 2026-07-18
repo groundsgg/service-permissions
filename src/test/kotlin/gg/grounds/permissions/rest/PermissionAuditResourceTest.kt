@@ -182,6 +182,12 @@ class PermissionAuditResourceTest {
         given().auth().none().get("/v1/permissions/audit").then().statusCode(401)
     }
 
+    @Test
+    @TestSecurity(user = "reader-user", roles = ["MINECRAFT_PERMISSIONS_READ"])
+    fun auditRejectsAuthenticatedUsersWithoutPermissionManagementAccess() {
+        given().get("/v1/permissions/audit").then().statusCode(403)
+    }
+
     private fun insertAuditEvent(
         id: UUID,
         actorUserId: String?,

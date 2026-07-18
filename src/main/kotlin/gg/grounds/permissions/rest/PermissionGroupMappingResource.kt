@@ -82,10 +82,10 @@ constructor(
         request: KeycloakGroupMappingRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val mapping = request.toRecord(UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
-            .entity(repository.createKeycloakGroupMapping(mapping).toResponse())
+            .entity(repository.createKeycloakGroupMapping(actor, mapping).toResponse())
             .build()
     }
 
@@ -96,9 +96,9 @@ constructor(
         request: KeycloakGroupMappingRequest,
         @Context headers: HttpHeaders,
     ): KeycloakGroupMappingResponse {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val id = PermissionValidation.uuid(mappingId, "mappingId")
-        return repository.updateKeycloakGroupMapping(id, request.toRecord(id)).toResponse()
+        return repository.updateKeycloakGroupMapping(actor, id, request.toRecord(id)).toResponse()
     }
 
     @DELETE
@@ -107,8 +107,11 @@ constructor(
         @PathParam("mappingId") mappingId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
-        repository.deleteKeycloakGroupMapping(PermissionValidation.uuid(mappingId, "mappingId"))
+        val actor = requireAdmin(headers)
+        repository.deleteKeycloakGroupMapping(
+            actor,
+            PermissionValidation.uuid(mappingId, "mappingId"),
+        )
         return Response.noContent().build()
     }
 
