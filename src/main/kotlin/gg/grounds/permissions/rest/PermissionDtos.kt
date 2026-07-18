@@ -1,5 +1,6 @@
 package gg.grounds.permissions.rest
 
+import com.fasterxml.jackson.databind.JsonNode
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantOriginKind
 import gg.grounds.permissions.domain.PermissionScopeKind
@@ -250,4 +251,20 @@ data class IdentitySyncStatusResponse(
     val playerCount: Long,
     val failureReason: String?,
     val stale: Boolean,
+)
+
+data class PermissionAuditEventResponse(
+    val id: UUID,
+    val actorUserId: String?,
+    val action: String,
+    val target: String,
+    val metadata: JsonNode,
+    val createdAt: Instant,
+)
+
+data class PermissionAuditPageResponse(
+    val items: List<PermissionAuditEventResponse>,
+    val page: Int,
+    val perPage: Int,
+    val total: Long,
 )

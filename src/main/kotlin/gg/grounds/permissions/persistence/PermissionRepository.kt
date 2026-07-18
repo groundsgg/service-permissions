@@ -1,6 +1,7 @@
 package gg.grounds.permissions.persistence
 
 import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
@@ -106,6 +107,31 @@ data class PermissionSyncMetadataRecord(
 
 data class PagedRecords<T>(val items: List<T>, val total: Long)
 
+data class PermissionAuditEventRecord(
+    val id: UUID,
+    val actorUserId: String?,
+    val action: String,
+    val target: String,
+    val metadata: JsonNode,
+    val createdAt: Instant,
+)
+
+data class PermissionAuditEventQuery(
+    val query: String = "",
+    val actions: Set<String> = emptySet(),
+    val from: Instant? = null,
+    val to: Instant? = null,
+    val page: Int = 1,
+    val perPage: Int = 25,
+)
+
+data class PermissionAuditEventPage(
+    val items: List<PermissionAuditEventRecord>,
+    val page: Int,
+    val perPage: Int,
+    val total: Long,
+)
+
 @ApplicationScoped
 class PermissionRepository
 @Inject
@@ -163,6 +189,51 @@ constructor(
                     .trimIndent()
             )
             .use { statement -> statement.executeQuery().use { rows -> rows.toRoleRecords() } }
+    }
+
+    fun listAuditEvents(query: PermissionAuditEventQuery): PermissionAuditEventPage {
+        validateAuditEventQuery(query)
+        val predicates = auditEventPredicates(query)
+        return read { connection ->
+            val whereClause = predicates.whereClause()
+            val total =
+                connection
+                    .prepareStatement("SELECT COUNT(*) FROM permission_audit_events$whereClause")
+                    .use { statement ->
+                        predicates.bind(connection, statement)
+                        statement.executeQuery().use { rows ->
+                            check(rows.next())
+                            rows.getLong(1)
+                        }
+                    }
+            val items =
+                connection
+                    .prepareStatement(
+                        """
+                        SELECT id, actor_user_id, action, target, metadata, created_at
+                        FROM permission_audit_events$whereClause
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT ? OFFSET ?
+                        """
+                            .trimIndent()
+                    )
+                    .use { statement ->
+                        val nextParameter = predicates.bind(connection, statement)
+                        statement.setInt(nextParameter, query.perPage)
+                        statement.setLong(
+                            nextParameter + 1,
+                            (query.page - 1).toLong() * query.perPage,
+                        )
+                        statement.executeQuery().use { rows ->
+                            buildList {
+                                while (rows.next()) {
+                                    add(rows.toPermissionAuditEventRecord())
+                                }
+                            }
+                        }
+                    }
+            PermissionAuditEventPage(items, query.page, query.perPage, total)
+        }
     }
 
     fun listRolesWithAggregateCounts(): List<RoleAggregateCountsRecord> = read { connection ->
@@ -1106,8 +1177,10 @@ constructor(
                     }
                 insertAuditEvent(
                     connection,
+                    actorUserId,
                     "permission.sync.imported",
                     "snapshot:${snapshot.snapshotId}",
+                    objectMapper.createObjectNode(),
                 )
                 connection.commit()
                 PermissionSyncMetadataRecord(snapshot.snapshotId, actorUserId, importedAt)
@@ -1419,7 +1492,7 @@ constructor(
             try {
                 val result = block(connection)
                 incrementPolicyVersion(connection)
-                insertAuditEvent(connection, action, target)
+                insertAuditEvent(connection, null, action, target, objectMapper.createObjectNode())
                 connection.commit()
                 result
             } catch (error: Throwable) {
@@ -1436,19 +1509,27 @@ constructor(
             .use { it.executeUpdate() }
     }
 
-    private fun insertAuditEvent(connection: Connection, action: String, target: String) {
+    private fun insertAuditEvent(
+        connection: Connection,
+        actorUserId: String?,
+        action: String,
+        target: String,
+        metadata: JsonNode,
+    ) {
         connection
             .prepareStatement(
                 """
-                INSERT INTO permission_audit_events (id, action, target, metadata)
-                VALUES (?, ?, ?, '{}'::jsonb)
+                INSERT INTO permission_audit_events (id, actor_user_id, action, target, metadata)
+                VALUES (?, ?, ?, ?, ?)
                 """
                     .trimIndent()
             )
             .use { statement ->
                 statement.setObject(1, UUID.randomUUID())
-                statement.setString(2, action)
-                statement.setString(3, target)
+                statement.setString(2, actorUserId)
+                statement.setString(3, action)
+                statement.setString(4, target)
+                statement.setObject(5, jsonb(metadata))
                 statement.executeUpdate()
             }
     }
@@ -1765,14 +1846,92 @@ constructor(
             permissionGrantId = getObject("id", UUID::class.java),
         )
 
+    private fun ResultSet.toPermissionAuditEventRecord(): PermissionAuditEventRecord =
+        PermissionAuditEventRecord(
+            id = getObject("id", UUID::class.java),
+            actorUserId = getString("actor_user_id"),
+            action = getString("action"),
+            target = getString("target"),
+            metadata = objectMapper.readTree(getString("metadata")),
+            createdAt = getTimestamp("created_at").toInstant(),
+        )
+
     private fun ResultSet.instantOrNull(column: String): Instant? =
         getTimestamp(column)?.toInstant()
 
-    private fun jsonb(value: Map<String, String>): PGobject =
+    private fun jsonb(value: Any): PGobject =
         PGobject().apply {
             type = "jsonb"
             this.value = objectMapper.writeValueAsString(value)
         }
+
+    private fun validateAuditEventQuery(query: PermissionAuditEventQuery) {
+        require(query.page >= 1) { "page must be at least 1" }
+        require(query.perPage in 1..100) { "perPage must be between 1 and 100" }
+        require(query.from == null || query.to == null || query.from <= query.to) {
+            "from must be before or equal to to"
+        }
+    }
+
+    private fun auditEventPredicates(query: PermissionAuditEventQuery): AuditEventPredicates {
+        val predicates = mutableListOf<AuditEventPredicate>()
+        if (query.actions.isNotEmpty()) {
+            predicates +=
+                AuditEventPredicate("action = ANY (?)") { connection, statement, parameter ->
+                    statement.setArray(
+                        parameter,
+                        connection.createArrayOf("text", query.actions.sorted().toTypedArray()),
+                    )
+                    parameter + 1
+                }
+        }
+        query.from?.let { from ->
+            predicates +=
+                AuditEventPredicate("created_at >= ?") { _, statement, parameter ->
+                    statement.setTimestamp(parameter, Timestamp.from(from))
+                    parameter + 1
+                }
+        }
+        query.to?.let { to ->
+            predicates +=
+                AuditEventPredicate("created_at <= ?") { _, statement, parameter ->
+                    statement.setTimestamp(parameter, Timestamp.from(to))
+                    parameter + 1
+                }
+        }
+        query.query
+            .takeIf { it.isNotBlank() }
+            ?.let { search ->
+                predicates +=
+                    AuditEventPredicate(
+                        "(LOWER(action) LIKE ? OR LOWER(target) LIKE ? OR LOWER(COALESCE(actor_user_id, '')) LIKE ?)"
+                    ) { _, statement, parameter ->
+                        val pattern = "%${search.lowercase()}%"
+                        statement.setString(parameter, pattern)
+                        statement.setString(parameter + 1, pattern)
+                        statement.setString(parameter + 2, pattern)
+                        parameter + 3
+                    }
+            }
+        return AuditEventPredicates(predicates)
+    }
+
+    private data class AuditEventPredicate(
+        val clause: String,
+        val bind: (Connection, java.sql.PreparedStatement, Int) -> Int,
+    )
+
+    private class AuditEventPredicates(private val predicates: List<AuditEventPredicate>) {
+        fun whereClause(): String =
+            predicates
+                .takeIf { it.isNotEmpty() }
+                ?.joinToString(" AND ", prefix = " WHERE ") { it.clause } ?: ""
+
+        fun bind(connection: Connection, statement: java.sql.PreparedStatement): Int =
+            predicates.fold(1) { parameter, predicate ->
+                predicate.bind(connection, statement, parameter)
+            }
+    }
 
     private fun metadataMap(json: String): Map<String, String> =
         objectMapper.readValue(json, STRING_MAP_TYPE)
