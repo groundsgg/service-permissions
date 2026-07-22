@@ -6,6 +6,7 @@ import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.persistence.CatalogEntryRecord
 import gg.grounds.permissions.persistence.KeycloakGroupMappingRecord
+import gg.grounds.permissions.persistence.PermissionAuditEventQuery
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
 import gg.grounds.permissions.persistence.PlayerGrantRecord
@@ -24,6 +25,7 @@ import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.hasItem
 import org.hamcrest.Matchers.hasSize
 import org.hamcrest.Matchers.nullValue
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -947,6 +949,277 @@ class PermissionRestResourceTest {
             .body("[0].label", equalTo("Fly command"))
 
         given().delete("/v1/permissions/catalog/custom/grounds.command.fly").then().statusCode(204)
+    }
+
+    @Test
+    fun directPlayerGrantRecordsTheAuthenticatedActor() {
+        val playerId = "00000000-0000-0000-0000-000000000123"
+        given()
+            .contentType("application/json")
+            .body(
+                """{"effect":"ALLOW","permissionPattern":"grounds.command.fly","scopeKind":"GLOBAL"}"""
+            )
+            .post("/v1/permissions/players/$playerId/grants")
+            .then()
+            .statusCode(201)
+
+        given()
+            .queryParam("action", "player.grant.created")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items[0].actorUserId", equalTo("admin-user"))
+            .body("items[0].action", equalTo("player.grant.created"))
+            .body("items[0].metadata.playerId", equalTo(playerId))
+            .body("items[0].metadata.permissionPattern", equalTo("grounds.command.fly"))
+    }
+
+    @Test
+    fun roleInheritanceRecordsTheAuthenticatedActor() {
+        createRole("parent", "Parent")
+        createRole("child", "Child")
+
+        given().put("/v1/permissions/roles/child/inherits/parent").then().statusCode(204)
+
+        given()
+            .queryParam("action", "role.inheritance.created")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items[0].actorUserId", equalTo("admin-user"))
+            .body("items[0].metadata.roleKey", equalTo("child"))
+            .body("items[0].metadata.parentRoleKey", equalTo("parent"))
+    }
+
+    @Test
+    fun idempotentInheritanceMutationsDoNotAdvancePolicyVersionOrCreateAuditEvents() {
+        createRole("parent", "Parent")
+        createRole("child", "Child")
+
+        given().put("/v1/permissions/roles/child/inherits/parent").then().statusCode(204)
+        val versionAfterCreate = repository.currentPolicyVersion()
+        val createdAuditEvents =
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("role.inheritance.created"))
+                )
+                .total
+
+        given().put("/v1/permissions/roles/child/inherits/parent").then().statusCode(204)
+
+        assertEquals(versionAfterCreate, repository.currentPolicyVersion())
+        assertEquals(
+            createdAuditEvents,
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("role.inheritance.created"))
+                )
+                .total,
+        )
+
+        given().delete("/v1/permissions/roles/child/inherits/parent").then().statusCode(204)
+        val versionAfterDelete = repository.currentPolicyVersion()
+        val deletedAuditEvents =
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("role.inheritance.deleted"))
+                )
+                .total
+
+        given().delete("/v1/permissions/roles/child/inherits/parent").then().statusCode(204)
+
+        assertEquals(versionAfterDelete, repository.currentPolicyVersion())
+        assertEquals(
+            deletedAuditEvents,
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("role.inheritance.deleted"))
+                )
+                .total,
+        )
+    }
+
+    @Test
+    fun identicalRoleUpdateDoesNotAdvancePolicyVersionOrCreateAuditEvent() {
+        createRole("moderator", "Moderator")
+        val versionBeforeUpdate = repository.currentPolicyVersion()
+        val updatedAuditEvents =
+            repository
+                .listAuditEvents(PermissionAuditEventQuery(actions = setOf("role.updated")))
+                .total
+
+        given()
+            .contentType("application/json")
+            .body("""{"name":"Moderator"}""")
+            .put("/v1/permissions/roles/moderator")
+            .then()
+            .statusCode(200)
+            .body("key", equalTo("moderator"))
+
+        assertEquals(versionBeforeUpdate, repository.currentPolicyVersion())
+        assertEquals(
+            updatedAuditEvents,
+            repository
+                .listAuditEvents(PermissionAuditEventQuery(actions = setOf("role.updated")))
+                .total,
+        )
+    }
+
+    @Test
+    fun identicalCustomCatalogUpsertDoesNotAdvancePolicyVersionOrCreateAuditEvent() {
+        val request =
+            """
+            {
+              "key": "grounds.command.fly",
+              "label": "Fly command",
+              "description": "Allows flight",
+              "supportedScopes": ["GLOBAL", "SERVER_TYPE"]
+            }
+            """
+                .trimIndent()
+        given()
+            .contentType("application/json")
+            .body(request)
+            .post("/v1/permissions/catalog/custom")
+            .then()
+            .statusCode(201)
+        val versionBeforeUpsert = repository.currentPolicyVersion()
+        val upsertAuditEvents =
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("catalog.entry.upserted"))
+                )
+                .total
+
+        given()
+            .contentType("application/json")
+            .body(request)
+            .post("/v1/permissions/catalog/custom")
+            .then()
+            .statusCode(201)
+
+        assertEquals(versionBeforeUpsert, repository.currentPolicyVersion())
+        assertEquals(
+            upsertAuditEvents,
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("catalog.entry.upserted"))
+                )
+                .total,
+        )
+    }
+
+    @Test
+    fun keycloakMappingRecordsTheAuthenticatedActor() {
+        createRole("moderator", "Moderator")
+
+        given()
+            .contentType("application/json")
+            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .post("/v1/permissions/keycloak-groups")
+            .then()
+            .statusCode(201)
+
+        given()
+            .queryParam("action", "keycloak_group.mapping.created")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items[0].actorUserId", equalTo("admin-user"))
+            .body("items[0].metadata.keycloakGroup", equalTo("/staff"))
+            .body("items[0].metadata.roleKey", equalTo("moderator"))
+    }
+
+    @Test
+    fun customCatalogUpsertRecordsTheAuthenticatedActor() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "key": "grounds.command.fly",
+                  "label": "Fly command",
+                  "supportedScopes": ["GLOBAL"]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/catalog/custom")
+            .then()
+            .statusCode(201)
+
+        given()
+            .queryParam("action", "catalog.entry.upserted")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items[0].actorUserId", equalTo("admin-user"))
+            .body("items[0].metadata.catalogKey", equalTo("grounds.command.fly"))
+    }
+
+    @Test
+    fun deletionRecordsTheAuthenticatedActorAndTarget() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "key": "grounds.command.fly",
+                  "label": "Fly command",
+                  "supportedScopes": ["GLOBAL"]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/catalog/custom")
+            .then()
+            .statusCode(201)
+
+        given().delete("/v1/permissions/catalog/custom/grounds.command.fly").then().statusCode(204)
+
+        given()
+            .queryParam("action", "catalog.entry.deleted")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items[0].actorUserId", equalTo("admin-user"))
+            .body("items[0].action", equalTo("catalog.entry.deleted"))
+            .body("items[0].target", equalTo("permission:grounds.command.fly"))
+            .body("items[0].metadata.catalogKey", equalTo("grounds.command.fly"))
+    }
+
+    @Test
+    fun syncImportRecordsTheAuthenticatedActor() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": {
+                    "snapshotId": "actor-attributed-import",
+                    "roles": [],
+                    "roleGrants": [],
+                    "inheritance": [],
+                    "catalogEntries": [],
+                    "keycloakMappings": []
+                  },
+                  "actions": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(200)
+
+        given()
+            .queryParam("action", "permission.sync.imported")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items[0].actorUserId", equalTo("admin-user"))
+            .body("items[0].target", equalTo("snapshot:actor-attributed-import"))
+            .body("items[0].metadata.snapshotId", equalTo("actor-attributed-import"))
     }
 
     @Test

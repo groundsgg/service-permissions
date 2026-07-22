@@ -1,5 +1,6 @@
 package gg.grounds.permissions.persistence
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
@@ -20,14 +21,20 @@ import gg.grounds.permissions.sync.SyncRoleGrant
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Proxy
+import java.sql.Connection
+import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
+import javax.sql.DataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
 
 @QuarkusTest
 @QuarkusTestResource(
@@ -36,9 +43,15 @@ import org.junit.jupiter.api.Test
 )
 class PermissionRepositoryTest {
 
+    private val testActor = "test-user"
+
     @Inject lateinit var repository: PermissionRepository
 
     @Inject lateinit var identityRepository: PlayerIdentityRepository
+
+    @Inject lateinit var dataSource: DataSource
+
+    @Inject lateinit var objectMapper: ObjectMapper
 
     @BeforeEach
     fun resetDatabase() {
@@ -378,6 +391,7 @@ class PermissionRepositoryTest {
         val expiresAt = Instant.parse("2030-01-01T00:00:00Z")
 
         repository.createRole(
+            testActor,
             RoleRecord(
                 key = "default",
                 name = "Default",
@@ -387,11 +401,19 @@ class PermissionRepositoryTest {
                 sortOrder = 100,
                 metadata = mapOf("source" to "test"),
                 isDefault = true,
-            )
+            ),
         )
-        repository.createRole(RoleRecord(key = "moderator", name = "Moderator", sortOrder = 50))
-        repository.addRoleInheritance(childRoleKey = "moderator", parentRoleKey = "default")
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "moderator", name = "Moderator", sortOrder = 50),
+        )
+        repository.addRoleInheritance(
+            actorUserId = testActor,
+            childRoleKey = "moderator",
+            parentRoleKey = "default",
+        )
         repository.createRoleGrant(
+            testActor,
             RoleGrantRecord(
                 id = roleGrantId,
                 roleKey = "moderator",
@@ -399,17 +421,19 @@ class PermissionRepositoryTest {
                 pattern = "grounds.command.moderate",
                 scope = PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper"),
                 expiresAt = expiresAt,
-            )
+            ),
         )
         repository.createPlayerRoleGrant(
+            testActor,
             PlayerRoleGrantRecord(
                 id = playerRoleGrantId,
                 playerId = playerId,
                 roleKey = "moderator",
                 expiresAt = expiresAt,
-            )
+            ),
         )
         repository.createPlayerGrant(
+            testActor,
             PlayerGrantRecord(
                 id = directPlayerGrantId,
                 playerId = playerId,
@@ -417,15 +441,16 @@ class PermissionRepositoryTest {
                 pattern = "grounds.command.op",
                 scope = PermissionScope(PermissionScopeKind.GLOBAL),
                 expiresAt = expiresAt,
-            )
+            ),
         )
         repository.createKeycloakGroupMapping(
+            testActor,
             KeycloakGroupMappingRecord(
                 id = groupMappingId,
                 keycloakGroup = "/staff",
                 roleKey = "moderator",
                 expiresAt = expiresAt,
-            )
+            ),
         )
         val syncedAt = Instant.now()
         identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
@@ -444,6 +469,7 @@ class PermissionRepositoryTest {
             syncedAt,
         )
         repository.upsertCatalogEntry(
+            testActor,
             CatalogEntryRecord(
                 key = "grounds.command.moderate",
                 label = "Moderate",
@@ -454,7 +480,7 @@ class PermissionRepositoryTest {
                     listOf(PermissionScopeKind.GLOBAL, PermissionScopeKind.SERVER_TYPE),
                 custom = false,
                 lastSeenAt = expiresAt,
-            )
+            ),
         )
 
         val versionAfterWrites = repository.currentPolicyVersion()
@@ -493,13 +519,18 @@ class PermissionRepositoryTest {
     @Test
     fun freshProjectionWithoutAPlayerStillAllowsDefaultAndDirectRoles() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000124")
-        repository.createRole(RoleRecord(key = "default", name = "Default", isDefault = true))
-        repository.createRole(RoleRecord(key = "builder", name = "Builder"))
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "default", name = "Default", isDefault = true),
+        )
+        repository.createRole(testActor, RoleRecord(key = "builder", name = "Builder"))
         repository.createPlayerRoleGrant(
-            PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "builder")
+            testActor,
+            PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "builder"),
         )
         repository.createKeycloakGroupMapping(
-            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "builder")
+            testActor,
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "builder"),
         )
         val syncedAt = Instant.now()
         identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
@@ -517,9 +548,10 @@ class PermissionRepositoryTest {
     @Test
     fun staleProjectionRejectsPolicyEvaluationWhenGroupMappingsExist() {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000125")
-        repository.createRole(RoleRecord(key = "member", name = "Member"))
+        repository.createRole(testActor, RoleRecord(key = "member", name = "Member"))
         repository.createKeycloakGroupMapping(
-            KeycloakGroupMappingRecord(UUID.randomUUID(), "/players", "member")
+            testActor,
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/players", "member"),
         )
 
         assertThrows(IdentityProjectionUnavailableException::class.java) {
@@ -531,14 +563,22 @@ class PermissionRepositoryTest {
 
     @Test
     fun rejectsRoleInheritanceCycles() {
-        repository.createRole(RoleRecord(key = "alpha", name = "Alpha"))
-        repository.createRole(RoleRecord(key = "beta", name = "Beta"))
+        repository.createRole(testActor, RoleRecord(key = "alpha", name = "Alpha"))
+        repository.createRole(testActor, RoleRecord(key = "beta", name = "Beta"))
 
-        repository.addRoleInheritance(childRoleKey = "beta", parentRoleKey = "alpha")
+        repository.addRoleInheritance(
+            actorUserId = testActor,
+            childRoleKey = "beta",
+            parentRoleKey = "alpha",
+        )
 
         val error =
             assertThrows(IllegalArgumentException::class.java) {
-                repository.addRoleInheritance(childRoleKey = "alpha", parentRoleKey = "beta")
+                repository.addRoleInheritance(
+                    actorUserId = testActor,
+                    childRoleKey = "alpha",
+                    parentRoleKey = "beta",
+                )
             }
 
         assertEquals(
@@ -550,6 +590,7 @@ class PermissionRepositoryTest {
     @Test
     fun rejectsCustomCatalogUpsertOverRuntimeOwnedEntry() {
         repository.upsertCatalogEntry(
+            testActor,
             CatalogEntryRecord(
                 key = "grounds.command.fly",
                 label = "Fly",
@@ -557,12 +598,13 @@ class PermissionRepositoryTest {
                 sourceVersion = "1.0.0",
                 supportedScopes = listOf(PermissionScopeKind.GLOBAL),
                 custom = false,
-            )
+            ),
         )
 
         val error =
             assertThrows(IllegalArgumentException::class.java) {
                 repository.upsertCatalogEntry(
+                    testActor,
                     CatalogEntryRecord(
                         key = "grounds.command.fly",
                         label = "Custom fly",
@@ -570,7 +612,7 @@ class PermissionRepositoryTest {
                         sourceVersion = "admin",
                         supportedScopes = listOf(PermissionScopeKind.GLOBAL),
                         custom = true,
-                    )
+                    ),
                 )
             }
 
@@ -617,11 +659,58 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun recordsSyncImportsWithTheProvidedAuditActor() {
+        repository.importPermissionSnapshot(
+            GlobalPermissionSnapshot(
+                snapshotId = "audit-actor-boundary",
+                roles = emptyList(),
+                roleGrants = emptyList(),
+                inheritance = emptyList(),
+                catalogEntries = emptyList(),
+                keycloakMappings = emptyList(),
+            ),
+            actions = emptyList(),
+            actorUserId = "sync-user",
+        )
+
+        val event =
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .single()
+
+        assertEquals("sync-user", event.actorUserId)
+        assertEquals("audit-actor-boundary", event.metadata.get("snapshotId").asText())
+    }
+
+    @Test
+    fun readsAuditTotalsAndItemsFromOneSnapshot() {
+        insertAuditEvent(
+            id = UUID.fromString("00000000-0000-0000-0000-000000000101"),
+            actorUserId = "first-user",
+        )
+        val snapshotRepository =
+            PermissionRepository(
+                InterleavingAuditDataSource(dataSource),
+                objectMapper,
+                identityRepository,
+                mock(),
+            )
+
+        val page = snapshotRepository.listAuditEvents(PermissionAuditEventQuery(perPage = 25))
+
+        assertEquals(page.total, page.items.size.toLong())
+    }
+
+    @Test
     fun removesNaturalKeyConflictsBeforeImportingReplacementMappings() {
-        repository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        repository.createRole(testActor, RoleRecord(key = "moderator", name = "Moderator"))
         val projectMappingId = UUID.randomUUID()
         repository.createKeycloakGroupMapping(
-            KeycloakGroupMappingRecord(projectMappingId, "/staff", "moderator")
+            testActor,
+            KeycloakGroupMappingRecord(projectMappingId, "/staff", "moderator"),
         )
         val globalMappingId = UUID.randomUUID()
         val snapshot =
@@ -653,8 +742,8 @@ class PermissionRepositoryTest {
 
     @Test
     fun rejectsCyclicInheritanceInImportedSnapshot() {
-        repository.createRole(RoleRecord(key = "alpha", name = "Alpha"))
-        repository.createRole(RoleRecord(key = "beta", name = "Beta"))
+        repository.createRole(testActor, RoleRecord(key = "alpha", name = "Alpha"))
+        repository.createRole(testActor, RoleRecord(key = "beta", name = "Beta"))
         val snapshot =
             GlobalPermissionSnapshot(
                 snapshotId = "cycle-test",
@@ -672,5 +761,85 @@ class PermissionRepositoryTest {
             repository.importPermissionSnapshot(snapshot, emptyList(), "test-user")
         }
         assertTrue(repository.listRoleInheritances().isEmpty())
+    }
+
+    private fun insertAuditEvent(id: UUID, actorUserId: String) {
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    INSERT INTO permission_audit_events (
+                        id, actor_user_id, action, target, metadata, created_at
+                    )
+                    VALUES (?, ?, 'role.created', 'role:moderator', '{}'::jsonb, ?)
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setObject(1, id)
+                    statement.setString(2, actorUserId)
+                    statement.setTimestamp(3, Timestamp.from(Instant.parse("2030-01-01T00:00:00Z")))
+                    statement.executeUpdate()
+                }
+        }
+    }
+
+    private class InterleavingAuditDataSource(private val delegate: DataSource) :
+        DataSource by delegate {
+        private var countRead = false
+
+        override fun getConnection(): Connection {
+            val connection = delegate.connection
+            return Proxy.newProxyInstance(
+                Connection::class.java.classLoader,
+                arrayOf(Connection::class.java),
+            ) { _, method, arguments ->
+                val sql = arguments?.firstOrNull() as? String
+                if (method.name == "prepareStatement" && sql != null) {
+                    when {
+                        sql.startsWith("SELECT COUNT(*) FROM permission_audit_events") ->
+                            countRead = true
+                        countRead &&
+                            sql.contains(
+                                "SELECT id, actor_user_id, action, target, metadata, created_at"
+                            ) -> {
+                            insertConcurrentAuditEvent()
+                            countRead = false
+                        }
+                    }
+                }
+                try {
+                    method.invoke(connection, *(arguments ?: emptyArray()))
+                } catch (error: InvocationTargetException) {
+                    throw error.targetException
+                }
+            } as Connection
+        }
+
+        private fun insertConcurrentAuditEvent() {
+            delegate.connection.use { connection ->
+                connection
+                    .prepareStatement(
+                        """
+                        INSERT INTO permission_audit_events (
+                            id, actor_user_id, action, target, metadata, created_at
+                        )
+                        VALUES (?, 'second-user', 'role.created', 'role:builder', '{}'::jsonb, ?)
+                        """
+                            .trimIndent()
+                    )
+                    .use { statement ->
+                        statement.setObject(
+                            1,
+                            UUID.fromString("00000000-0000-0000-0000-000000000102"),
+                        )
+                        statement.setTimestamp(
+                            2,
+                            Timestamp.from(Instant.parse("2030-01-01T00:00:01Z")),
+                        )
+                        statement.executeUpdate()
+                    }
+            }
+        }
     }
 }

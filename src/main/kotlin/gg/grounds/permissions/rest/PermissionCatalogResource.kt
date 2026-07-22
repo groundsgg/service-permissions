@@ -79,10 +79,10 @@ constructor(
     @POST
     @Path("/custom")
     fun createCustomEntry(request: CatalogEntryRequest, @Context headers: HttpHeaders): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val entry = request.toRecord(custom = true)
         return Response.status(Response.Status.CREATED)
-            .entity(repository.upsertCatalogEntry(entry).toResponse())
+            .entity(repository.upsertCatalogEntry(actor, entry).toResponse())
             .build()
     }
 
@@ -93,9 +93,9 @@ constructor(
         request: CatalogEntryRequest,
         @Context headers: HttpHeaders,
     ): CatalogEntryResponse {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         return repository
-            .upsertCatalogEntry(request.copy(key = permissionKey).toRecord(custom = true))
+            .upsertCatalogEntry(actor, request.copy(key = permissionKey).toRecord(custom = true))
             .toResponse()
     }
 
@@ -105,8 +105,11 @@ constructor(
         @PathParam("permissionKey") permissionKey: String,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
-        repository.deleteCustomCatalogEntry(PermissionValidation.permissionKey(permissionKey))
+        val actor = requireAdmin(headers)
+        repository.deleteCustomCatalogEntry(
+            actor,
+            PermissionValidation.permissionKey(permissionKey),
+        )
         return Response.noContent().build()
     }
 

@@ -26,6 +26,8 @@ import org.junit.jupiter.api.Test
 )
 class PlayerIdentityRepositoryTest {
 
+    private val testActor = "test-user"
+
     @Inject lateinit var identityRepository: PlayerIdentityRepository
 
     @Inject lateinit var permissionRepository: PermissionRepository
@@ -44,11 +46,16 @@ class PlayerIdentityRepositoryTest {
         val alex = identity("00000000-0000-0000-0000-000000000102", "keycloak-alex", "Alex")
         identityRepository.replacePlayer(skywalker)
         identityRepository.replacePlayer(alex)
-        permissionRepository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        permissionRepository.createRole(
+            testActor,
+            RoleRecord(key = "moderator", name = "Moderator"),
+        )
         permissionRepository.createPlayerRoleGrant(
-            PlayerRoleGrantRecord(UUID.randomUUID(), skywalker.playerId, "moderator")
+            testActor,
+            PlayerRoleGrantRecord(UUID.randomUUID(), skywalker.playerId, "moderator"),
         )
         permissionRepository.createPlayerGrant(
+            testActor,
             PlayerGrantRecord(
                 UUID.randomUUID(),
                 skywalker.playerId,
@@ -57,9 +64,10 @@ class PlayerIdentityRepositoryTest {
                 gg.grounds.permissions.domain.PermissionScope(
                     gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL
                 ),
-            )
+            ),
         )
         permissionRepository.createPlayerGrant(
+            testActor,
             PlayerGrantRecord(
                 UUID.randomUUID(),
                 skywalker.playerId,
@@ -68,7 +76,7 @@ class PlayerIdentityRepositoryTest {
                 gg.grounds.permissions.domain.PermissionScope(
                     gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL
                 ),
-            )
+            ),
         )
 
         val prefix = identityRepository.search("sky", page = 1, perPage = 10)

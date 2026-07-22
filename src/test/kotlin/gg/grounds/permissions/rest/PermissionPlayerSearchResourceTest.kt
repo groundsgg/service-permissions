@@ -38,6 +38,8 @@ import org.mockito.kotlin.whenever
 @TestSecurity(user = "admin-user", roles = ["MINECRAFT_PERMISSIONS_MANAGE"])
 class PermissionPlayerSearchResourceTest {
 
+    private val testActor = "test-user"
+
     @Inject lateinit var permissionRepository: PermissionRepository
     @Inject lateinit var identityRepository: PlayerIdentityRepository
     @InjectMock lateinit var mojangProfileClient: MojangProfileClient
@@ -76,18 +78,23 @@ class PermissionPlayerSearchResourceTest {
         val beta = UUID.fromString("00000000-0000-0000-0000-000000000403")
         identityRepository.replacePlayer(identity(beta, "BetaPlayer"))
         identityRepository.replacePlayer(identity(alpha, "AlphaPlayer"))
-        permissionRepository.createRole(RoleRecord(key = "moderator", name = "Moderator"))
+        permissionRepository.createRole(
+            testActor,
+            RoleRecord(key = "moderator", name = "Moderator"),
+        )
         permissionRepository.createPlayerRoleGrant(
-            PlayerRoleGrantRecord(UUID.randomUUID(), alpha, "moderator")
+            testActor,
+            PlayerRoleGrantRecord(UUID.randomUUID(), alpha, "moderator"),
         )
         permissionRepository.createPlayerGrant(
+            testActor,
             PlayerGrantRecord(
                 UUID.randomUUID(),
                 alpha,
                 PermissionEffect.ALLOW,
                 "grounds.command.moderate",
                 PermissionScope(PermissionScopeKind.GLOBAL),
-            )
+            ),
         )
 
         given()

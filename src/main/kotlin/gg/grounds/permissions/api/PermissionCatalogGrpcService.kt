@@ -61,7 +61,9 @@ class PermissionCatalogGrpcService(private val repository: PermissionRepository)
                     )
                 }
 
-            catalogEntries.forEach(repository::upsertCatalogEntry)
+            catalogEntries.forEach { entry ->
+                repository.upsertCatalogEntry(RUNTIME_CATALOG_ACTOR, entry)
+            }
 
             LOG.infof(
                 "Permission manifest registration accepted (source=%s, sourceVersion=%s, serverType=%s, serverId=%s, permissionCount=%d)",
@@ -107,6 +109,7 @@ class PermissionCatalogGrpcService(private val repository: PermissionRepository)
         }
 
     companion object {
+        private const val RUNTIME_CATALOG_ACTOR = "runtime:catalog"
         private val LOG = Logger.getLogger(PermissionCatalogGrpcService::class.java)
         private val SUPPORTED_SCOPE_VALUES =
             setOf(

@@ -46,7 +46,7 @@ constructor(
 
     @POST
     fun createRole(request: RoleRequest, @Context headers: HttpHeaders): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val name = PermissionValidation.displayName(request.name)
         val role =
             RoleRecord(
@@ -60,7 +60,7 @@ constructor(
                 isDefault = request.default,
             )
         return Response.status(Response.Status.CREATED)
-            .entity(repository.createRole(role).toResponse())
+            .entity(repository.createRole(actor, role).toResponse())
             .build()
     }
 
@@ -82,12 +82,13 @@ constructor(
         request: RoleRequest,
         @Context headers: HttpHeaders,
     ): RoleResponse {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val existing =
             repository.getRole(key) ?: throw NotFoundException("Role not found (roleKey=$key)")
         return repository
             .updateRole(
+                actor,
                 key,
                 RoleRecord(
                     key = key,
@@ -106,8 +107,8 @@ constructor(
     @DELETE
     @Path("/{roleKey}")
     fun deleteRole(@PathParam("roleKey") roleKey: String, @Context headers: HttpHeaders): Response {
-        requireAdmin(headers)
-        repository.deleteRole(PermissionValidation.roleKey(roleKey))
+        val actor = requireAdmin(headers)
+        repository.deleteRole(actor, PermissionValidation.roleKey(roleKey))
         return Response.noContent().build()
     }
 
@@ -118,8 +119,9 @@ constructor(
         @PathParam("parentRoleKey") parentRoleKey: String,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         repository.addRoleInheritance(
+            actorUserId = actor,
             childRoleKey = PermissionValidation.roleKey(roleKey),
             parentRoleKey = PermissionValidation.roleKey(parentRoleKey),
         )
@@ -133,8 +135,9 @@ constructor(
         @PathParam("parentRoleKey") parentRoleKey: String,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         repository.removeRoleInheritance(
+            actorUserId = actor,
             childRoleKey = PermissionValidation.roleKey(roleKey),
             parentRoleKey = PermissionValidation.roleKey(parentRoleKey),
         )
@@ -199,11 +202,11 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val grant = request.toRoleGrantRecord(roleKey = key, id = UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
-            .entity(repository.createRoleGrant(grant).toResponse())
+            .entity(repository.createRoleGrant(actor, grant).toResponse())
             .build()
     }
 
@@ -215,10 +218,12 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): RoleGrantResponse {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val id = PermissionValidation.uuid(grantId, "grantId")
-        return repository.updateRoleGrant(key, id, request.toRoleGrantRecord(key, id)).toResponse()
+        return repository
+            .updateRoleGrant(actor, key, id, request.toRoleGrantRecord(key, id))
+            .toResponse()
     }
 
     @DELETE
@@ -228,8 +233,9 @@ constructor(
         @PathParam("grantId") grantId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        requireAdmin(headers)
+        val actor = requireAdmin(headers)
         repository.deleteRoleGrant(
+            actorUserId = actor,
             roleKey = PermissionValidation.roleKey(roleKey),
             grantId = PermissionValidation.uuid(grantId, "grantId"),
         )
