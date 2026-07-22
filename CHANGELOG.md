@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/groundsgg/service-permissions/compare/v0.10.0...v0.11.0) (2026-07-22)
+
+
+### Features
+
+* add Minecraft permission audit API ([#46](https://github.com/groundsgg/service-permissions/issues/46)) ([2f3a233](https://github.com/groundsgg/service-permissions/commit/2f3a233c55634b777640bf528805107beb5135e1))
+
 ## [0.10.0](https://github.com/groundsgg/service-permissions/compare/v0.9.0...v0.10.0) (2026-07-17)
 
 
