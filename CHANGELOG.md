@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/groundsgg/service-permissions/compare/v0.11.0...v0.11.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **players:** expose effective permission counts ([#52](https://github.com/groundsgg/service-permissions/issues/52)) ([f71defa](https://github.com/groundsgg/service-permissions/commit/f71defa0cb142adc312273d840a1f97cf2961c28))
+
 ## [0.11.0](https://github.com/groundsgg/service-permissions/compare/v0.10.0...v0.11.0) (2026-07-22)
 
 
