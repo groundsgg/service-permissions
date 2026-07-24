@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/groundsgg/service-permissions/compare/v0.11.1...v0.12.0) (2026-07-24)
+
+
+### Features
+
+* **scope:** add an ENVIRONMENT scope for per-deployment grants ([#54](https://github.com/groundsgg/service-permissions/issues/54)) ([e4e3cbb](https://github.com/groundsgg/service-permissions/commit/e4e3cbb08b1d6615f85d0aec316b424126c871f4))
+
 ## [0.11.1](https://github.com/groundsgg/service-permissions/compare/v0.11.0...v0.11.1) (2026-07-24)
 
 
