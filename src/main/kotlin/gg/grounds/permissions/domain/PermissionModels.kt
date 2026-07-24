@@ -10,6 +10,7 @@ enum class PermissionEffect {
 
 enum class PermissionScopeKind {
     GLOBAL,
+    ENVIRONMENT,
     SERVER_TYPE,
     SERVER,
 }

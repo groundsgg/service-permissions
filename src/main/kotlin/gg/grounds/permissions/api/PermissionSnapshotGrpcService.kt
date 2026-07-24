@@ -139,6 +139,8 @@ constructor(private val policyProvider: PermissionPolicyProvider) : PermissionSn
                         PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER_TYPE
                     gg.grounds.permissions.domain.PermissionScopeKind.SERVER ->
                         PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER
+                    gg.grounds.permissions.domain.PermissionScopeKind.ENVIRONMENT ->
+                        PermissionScopeKind.PERMISSION_SCOPE_KIND_ENVIRONMENT
                 }
             )
             .also { builder -> value?.let { builder.value = it } }

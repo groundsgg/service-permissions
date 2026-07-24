@@ -105,6 +105,8 @@ class PermissionCatalogGrpcService(private val repository: PermissionRepository)
             PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER_TYPE ->
                 DomainPermissionScopeKind.SERVER_TYPE
             PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER -> DomainPermissionScopeKind.SERVER
+            PermissionScopeKind.PERMISSION_SCOPE_KIND_ENVIRONMENT ->
+                DomainPermissionScopeKind.ENVIRONMENT
             else -> throw invalidArgument("supported scope must be recognized")
         }
 
@@ -116,6 +118,7 @@ class PermissionCatalogGrpcService(private val repository: PermissionRepository)
                 PermissionScopeKind.PERMISSION_SCOPE_KIND_GLOBAL.number,
                 PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER_TYPE.number,
                 PermissionScopeKind.PERMISSION_SCOPE_KIND_SERVER.number,
+                PermissionScopeKind.PERMISSION_SCOPE_KIND_ENVIRONMENT.number,
             )
 
         private fun invalidArgument(description: String): StatusRuntimeException =

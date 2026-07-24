@@ -360,6 +360,7 @@ constructor(
     fun checkPermission(
         @PathParam("playerId") playerId: String,
         @QueryParam("permission") permission: String?,
+        @QueryParam("environment") environment: String?,
         @QueryParam("serverType") serverType: String?,
         @QueryParam("serverId") serverId: String?,
         @Context headers: HttpHeaders,
@@ -372,7 +373,7 @@ constructor(
             PolicyEngine.checkPermission(
                 snapshot = snapshot,
                 permission = normalizedPermission,
-                scope = checkScope(serverType, serverId),
+                scope = checkScope(environment, serverType, serverId),
             )
         return PermissionCheckResponse(
             playerId = id,
@@ -398,17 +399,16 @@ constructor(
         return PolicyEngine.createSnapshot(playerId = playerId, input = input)
     }
 
-    private fun checkScope(serverType: String?, serverId: String?): PermissionCheckScope {
-        val normalizedServerType = serverType?.trim()?.takeIf(String::isNotEmpty)
-        val normalizedServerId = serverId?.trim()?.takeIf(String::isNotEmpty)
-        return when {
-            normalizedServerId != null && normalizedServerType != null ->
-                PermissionCheckScope.server(normalizedServerId, normalizedServerType)
-            normalizedServerId != null -> PermissionCheckScope.serverOnly(normalizedServerId)
-            normalizedServerType != null -> PermissionCheckScope.serverType(normalizedServerType)
-            else -> PermissionCheckScope.global()
-        }
-    }
+    private fun checkScope(
+        environment: String?,
+        serverType: String?,
+        serverId: String?,
+    ): PermissionCheckScope =
+        PermissionCheckScope.of(
+            environment = environment,
+            serverType = serverType,
+            server = serverId,
+        )
 
     private fun PermissionGrant.toResponse(): EffectiveGrantResponse =
         scope.toGrantResponse(effect, pattern, expiresAt, origin)
