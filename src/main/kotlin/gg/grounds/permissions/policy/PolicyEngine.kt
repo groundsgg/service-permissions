@@ -19,8 +19,19 @@ import gg.grounds.permissions.domain.RoleMetadata
 import java.time.Instant
 import java.util.UUID
 
+/**
+ * Where a permission is being checked.
+ *
+ * `environment` is orthogonal to the two server dimensions: it names the deployment a server
+ * belongs to (`stage`, `prod`), not what the server runs. A server therefore usually carries all
+ * three, and a grant may pin any one of them.
+ */
 data class PermissionCheckScope
-private constructor(val serverType: String? = null, val server: String? = null) {
+private constructor(
+    val serverType: String? = null,
+    val server: String? = null,
+    val environment: String? = null,
+) {
     companion object {
         fun global(): PermissionCheckScope = PermissionCheckScope()
 
@@ -31,6 +42,17 @@ private constructor(val serverType: String? = null, val server: String? = null) 
             PermissionCheckScope(serverType = serverType, server = server)
 
         fun serverOnly(server: String): PermissionCheckScope = PermissionCheckScope(server = server)
+
+        fun of(
+            environment: String? = null,
+            serverType: String? = null,
+            server: String? = null,
+        ): PermissionCheckScope =
+            PermissionCheckScope(
+                serverType = serverType?.trim()?.takeIf(String::isNotEmpty),
+                server = server?.trim()?.takeIf(String::isNotEmpty),
+                environment = environment?.trim()?.takeIf(String::isNotEmpty),
+            )
     }
 }
 
@@ -269,11 +291,18 @@ object PolicyEngine {
         )
     }
 
+    // Ordering, least to most specific: an environment names a whole
+    // deployment, a server type names a workload inside it, a server names one
+    // instance. So a `stage`-scoped grant overrides a global one, and a
+    // `lobby`-scoped grant overrides both — which is what makes
+    // "globally allowed, denied on stage" and "denied on stage except lobbies"
+    // both expressible.
     private fun PermissionScope.specificityFor(scope: PermissionCheckScope): Int? =
         when (kind) {
             PermissionScopeKind.GLOBAL -> 0
-            PermissionScopeKind.SERVER_TYPE -> if (value == scope.serverType) 1 else null
-            PermissionScopeKind.SERVER -> if (value == scope.server) 2 else null
+            PermissionScopeKind.ENVIRONMENT -> if (value == scope.environment) 1 else null
+            PermissionScopeKind.SERVER_TYPE -> if (value == scope.serverType) 2 else null
+            PermissionScopeKind.SERVER -> if (value == scope.server) 3 else null
         }
 
     private fun PermissionGrantSpec.isExpired(now: Instant): Boolean =

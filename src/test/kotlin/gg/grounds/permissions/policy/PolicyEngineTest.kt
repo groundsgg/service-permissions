@@ -9,6 +9,7 @@ import gg.grounds.permissions.domain.PermissionGrantSource.ROLE
 import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionPolicyInput
 import gg.grounds.permissions.domain.PermissionScope
+import gg.grounds.permissions.domain.PermissionScopeKind.ENVIRONMENT
 import gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL
 import gg.grounds.permissions.domain.PermissionScopeKind.SERVER
 import gg.grounds.permissions.domain.PermissionScopeKind.SERVER_TYPE
@@ -367,6 +368,72 @@ class PolicyEngineTest {
                 snapshot,
                 "region.edit",
                 PermissionCheckScope.server(server = "survival-2", serverType = "survival"),
+            )
+        )
+    }
+
+    @Test
+    fun environmentBeatsGlobalAndLosesToServerType() {
+        val snapshot =
+            snapshot(
+                grants =
+                    listOf(
+                        allow("region.edit", ROLE, PermissionScope(GLOBAL)),
+                        deny("region.edit", ROLE, PermissionScope(ENVIRONMENT, "stage")),
+                        allow("region.edit", ROLE, PermissionScope(SERVER_TYPE, "lobby")),
+                    )
+            )
+
+        assertFalse(
+            hasPermission(
+                snapshot,
+                "region.edit",
+                PermissionCheckScope.of(environment = "stage", serverType = "survival"),
+            )
+        )
+        assertTrue(
+            hasPermission(
+                snapshot,
+                "region.edit",
+                PermissionCheckScope.of(environment = "stage", serverType = "lobby"),
+            )
+        )
+    }
+
+    @Test
+    fun environmentGrantsDoNotLeakIntoOtherEnvironments() {
+        val snapshot =
+            snapshot(
+                grants =
+                    listOf(
+                        deny("region.edit", ROLE, PermissionScope(GLOBAL)),
+                        allow("region.edit", ROLE, PermissionScope(ENVIRONMENT, "stage")),
+                    )
+            )
+
+        assertTrue(
+            hasPermission(snapshot, "region.edit", PermissionCheckScope.of(environment = "stage"))
+        )
+        assertFalse(
+            hasPermission(snapshot, "region.edit", PermissionCheckScope.of(environment = "prod"))
+        )
+        assertFalse(hasPermission(snapshot, "region.edit", PermissionCheckScope.global()))
+    }
+
+    @Test
+    fun globalGrantsStillApplyInsideAnEnvironment() {
+        val snapshot =
+            snapshot(grants = listOf(allow("region.edit", ROLE, PermissionScope(GLOBAL))))
+
+        assertTrue(
+            hasPermission(
+                snapshot,
+                "region.edit",
+                PermissionCheckScope.of(
+                    environment = "stage",
+                    serverType = "lobby",
+                    server = "lobby-1",
+                ),
             )
         )
     }

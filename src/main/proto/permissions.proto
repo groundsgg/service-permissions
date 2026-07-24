@@ -106,6 +106,10 @@ enum PermissionScopeKind {
   PERMISSION_SCOPE_KIND_GLOBAL = 1;
   PERMISSION_SCOPE_KIND_SERVER_TYPE = 2;
   PERMISSION_SCOPE_KIND_SERVER = 3;
+  // Appended rather than inserted in specificity order: the numbers are the
+  // wire format, and renumbering would silently reinterpret every grant a
+  // running server already holds.
+  PERMISSION_SCOPE_KIND_ENVIRONMENT = 4;
 }
 
 enum PermissionGrantSource {
