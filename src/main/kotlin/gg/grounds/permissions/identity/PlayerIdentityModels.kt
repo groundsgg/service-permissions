@@ -26,6 +26,8 @@ data class PlayerSearchItem(
     val minecraftUsername: String,
     val directRoleGrantCount: Long,
     val directPermissionGrantCount: Long,
+    val effectiveRoleCount: Long = directRoleGrantCount,
+    val effectivePermissionGrantCount: Long = directPermissionGrantCount,
 )
 
 data class PlayerSearchPage(

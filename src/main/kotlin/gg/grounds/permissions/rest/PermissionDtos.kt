@@ -233,6 +233,8 @@ data class PlayerSearchItemResponse(
     val linked: Boolean,
     val directRoleGrantCount: Long,
     val directPermissionGrantCount: Long,
+    val effectiveRoleCount: Long,
+    val effectivePermissionGrantCount: Long,
 )
 
 data class PlayerSearchResponse(

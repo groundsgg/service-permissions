@@ -51,13 +51,22 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         }
 
     override fun search(query: String, page: Int, perPage: Int): PlayerSearchPage {
+        return search(query, page, perPage, Instant.now())
+    }
+
+    fun search(query: String, page: Int, perPage: Int, now: Instant): PlayerSearchPage {
         require(page >= 1) { "Page must be at least one (page=$page)" }
         require(perPage >= 1) { "perPage must be at least one (perPage=$perPage)" }
-        return searchAtOffset(query, (page - 1L) * perPage, perPage)
+        return searchAtOffset(query, (page - 1L) * perPage, perPage, now)
             .copy(page = page, perPage = perPage)
     }
 
-    fun searchAtOffset(query: String, offset: Long, limit: Int): PlayerSearchPage {
+    fun searchAtOffset(
+        query: String,
+        offset: Long,
+        limit: Int,
+        now: Instant = Instant.now(),
+    ): PlayerSearchPage {
         require(offset >= 0) { "offset must not be negative (offset=$offset)" }
         require(limit >= 0) { "limit must not be negative (limit=$limit)" }
 
@@ -68,7 +77,7 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 connection
                     .prepareStatement(
                         """
-                        WITH matching_identities AS (
+                        WITH RECURSIVE matching_identities AS (
                             SELECT identities.player_id,
                                    identities.minecraft_username,
                                    identities.minecraft_username_normalized,
@@ -94,15 +103,77 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                             FROM matching_identities
                             ORDER BY minecraft_username_normalized ASC, player_id ASC
                             LIMIT ? OFFSET ?
+                        ),
+                        assigned_roles AS (
+                            SELECT paged.player_id, roles.key AS role_key
+                            FROM paged_identities paged
+                            CROSS JOIN permission_roles roles
+                            WHERE roles.is_default
+                            UNION
+                            SELECT paged.player_id, grants.role_key
+                            FROM paged_identities paged
+                            JOIN permission_player_role_grants grants
+                              ON grants.player_id = paged.player_id
+                            WHERE grants.expires_at IS NULL OR grants.expires_at > ?
+                            UNION
+                            SELECT paged.player_id, mappings.role_key
+                            FROM paged_identities paged
+                            JOIN permission_player_keycloak_groups groups
+                              ON groups.player_id = paged.player_id
+                            JOIN permission_keycloak_group_mappings mappings
+                              ON mappings.keycloak_group = groups.keycloak_group_path
+                            WHERE mappings.expires_at IS NULL OR mappings.expires_at > ?
+                        ),
+                        resolved_roles(player_id, role_key) AS (
+                            SELECT player_id, role_key
+                            FROM assigned_roles
+                            UNION
+                            SELECT resolved.player_id, inheritance.parent_role_key
+                            FROM resolved_roles resolved
+                            JOIN permission_role_inheritance inheritance
+                              ON inheritance.child_role_key = resolved.role_key
+                        ),
+                        effective_role_counts AS (
+                            SELECT player_id, COUNT(*) AS effective_role_count
+                            FROM resolved_roles
+                            GROUP BY player_id
+                        ),
+                        effective_role_permission_counts AS (
+                            SELECT resolved.player_id,
+                                   COUNT(grants.id) AS effective_role_permission_grant_count
+                            FROM resolved_roles resolved
+                            JOIN permission_role_grants grants ON grants.role_key = resolved.role_key
+                            WHERE grants.expires_at IS NULL OR grants.expires_at > ?
+                            GROUP BY resolved.player_id
+                        ),
+                        effective_direct_permission_counts AS (
+                            SELECT paged.player_id,
+                                   COUNT(grants.id) AS effective_direct_permission_grant_count
+                            FROM paged_identities paged
+                            JOIN permission_player_grants grants
+                              ON grants.player_id = paged.player_id
+                            WHERE grants.expires_at IS NULL OR grants.expires_at > ?
+                            GROUP BY paged.player_id
                         )
                         SELECT paged_identities.player_id,
                                paged_identities.minecraft_username,
                                paged_identities.minecraft_username_normalized,
                                paged_identities.direct_role_grant_count,
                                paged_identities.direct_permission_grant_count,
+                               COALESCE(role_counts.effective_role_count, 0)
+                                   AS effective_role_count,
+                               COALESCE(role_permission_counts.effective_role_permission_grant_count, 0) +
+                                   COALESCE(direct_permission_counts.effective_direct_permission_grant_count, 0)
+                                   AS effective_permission_grant_count,
                                totals.total_count
                         FROM (SELECT COUNT(*) AS total_count FROM matching_identities) totals
                         LEFT JOIN paged_identities ON TRUE
+                        LEFT JOIN effective_role_counts role_counts
+                          ON role_counts.player_id = paged_identities.player_id
+                        LEFT JOIN effective_role_permission_counts role_permission_counts
+                          ON role_permission_counts.player_id = paged_identities.player_id
+                        LEFT JOIN effective_direct_permission_counts direct_permission_counts
+                          ON direct_permission_counts.player_id = paged_identities.player_id
                         ORDER BY paged_identities.minecraft_username_normalized ASC,
                                  paged_identities.player_id ASC
                         """
@@ -114,6 +185,10 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                         statement.setString(3, normalizedQuery)
                         statement.setInt(4, limit)
                         statement.setLong(5, offset)
+                        statement.setTimestamp(6, Timestamp.from(now))
+                        statement.setTimestamp(7, Timestamp.from(now))
+                        statement.setTimestamp(8, Timestamp.from(now))
+                        statement.setTimestamp(9, Timestamp.from(now))
                         statement.executeQuery().use { resultSet ->
                             var total = 0L
                             val items = buildList {
@@ -736,6 +811,8 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
             minecraftUsername = getString("minecraft_username"),
             directRoleGrantCount = getLong("direct_role_grant_count"),
             directPermissionGrantCount = getLong("direct_permission_grant_count"),
+            effectiveRoleCount = getLong("effective_role_count"),
+            effectivePermissionGrantCount = getLong("effective_permission_grant_count"),
         )
 
     private fun ResultSet.toIdentitySyncState() =

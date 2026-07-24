@@ -89,6 +89,8 @@ constructor(
                     linked = false,
                     directRoleGrantCount = 0,
                     directPermissionGrantCount = 0,
+                    effectiveRoleCount = 0,
+                    effectivePermissionGrantCount = 0,
                 )
             }
             MojangLookupResult.NotFound -> throw NotFoundException("player_not_found")
@@ -104,6 +106,8 @@ constructor(
             linked = true,
             directRoleGrantCount = directRoleGrantCount,
             directPermissionGrantCount = directPermissionGrantCount,
+            effectiveRoleCount = effectiveRoleCount,
+            effectivePermissionGrantCount = effectivePermissionGrantCount,
         )
 
     private fun String.isCompleteUuid(): Boolean = runCatching { UUID.fromString(this) }.isSuccess
