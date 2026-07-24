@@ -43,6 +43,42 @@ class PermissionsSchemaTest {
         }
     }
 
+    // V6 widens two CHECK constraints that V1 created inline, and therefore
+    // has to find them by definition rather than by name. If that lookup ever
+    // misses, every ENVIRONMENT-scoped grant is rejected at write time — with
+    // nothing failing until an admin tries to create one.
+    @Test
+    fun flywayAcceptsEnvironmentScopedGrants() {
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    INSERT INTO permission_player_grants
+                        (id, player_id, effect, permission_pattern, scope_kind, scope_value)
+                    VALUES (gen_random_uuid(), gen_random_uuid(), 'ALLOW', 'region.edit',
+                            'ENVIRONMENT', 'stage')
+                    """
+                        .trimIndent()
+                )
+                .use { statement -> assertEquals(1, statement.executeUpdate()) }
+
+            connection
+                .prepareStatement(
+                    """
+                    SELECT scope_value FROM permission_player_grants
+                    WHERE scope_kind = 'ENVIRONMENT'
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.executeQuery().use { resultSet ->
+                        assertTrue(resultSet.next())
+                        assertEquals("stage", resultSet.getString("scope_value"))
+                    }
+                }
+        }
+    }
+
     @Test
     fun flywayCreatesPolicyLookupIndexes() {
         val indexes =
