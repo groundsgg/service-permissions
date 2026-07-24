@@ -127,6 +127,8 @@ class PermissionPlayerSearchResourceTest {
             .body("items[0].name", equalTo("AlphaPlayer"))
             .body("items[0].directRoleGrantCount", equalTo(1))
             .body("items[0].directPermissionGrantCount", equalTo(1))
+            .body("items[0].effectiveRoleCount", equalTo(1))
+            .body("items[0].effectivePermissionGrantCount", equalTo(1))
 
         given()
             .queryParam("query", "player")
@@ -188,6 +190,8 @@ class PermissionPlayerSearchResourceTest {
             .body("linked", equalTo(false))
             .body("directRoleGrantCount", equalTo(0))
             .body("directPermissionGrantCount", equalTo(0))
+            .body("effectiveRoleCount", equalTo(0))
+            .body("effectivePermissionGrantCount", equalTo(0))
 
         org.junit.jupiter.api.Assertions.assertNull(identityRepository.findByPlayerId(playerId))
     }

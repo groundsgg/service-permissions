@@ -1,5 +1,8 @@
 package gg.grounds.permissions.persistence
 
+import gg.grounds.permissions.domain.PermissionEffect.ALLOW
+import gg.grounds.permissions.domain.PermissionScope
+import gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL
 import gg.grounds.permissions.identity.IdentitySyncStatus
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import io.quarkus.test.common.QuarkusTestResource
@@ -90,6 +93,63 @@ class PlayerIdentityRepositoryTest {
         assertEquals(listOf("SkyWalker"), substring.items.map { it.minecraftUsername })
         assertEquals(2, secondPage.total)
         assertEquals(listOf("SkyWalker"), secondPage.items.map { it.minecraftUsername })
+    }
+
+    @Test
+    fun countsEffectiveRolesAndPermissionGrantsFromGroupMappingsAndInheritance() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        val player =
+            identity(
+                "00000000-0000-0000-0000-000000000134",
+                "keycloak-effective-counts",
+                "MappedPlayer",
+                setOf("/admin"),
+            )
+        identityRepository.replacePlayer(player)
+        permissionRepository.createRole(RoleRecord(key = "staff", name = "Staff", isDefault = true))
+        permissionRepository.createRole(RoleRecord(key = "administrator", name = "Administrator"))
+        permissionRepository.addRoleInheritance(
+            childRoleKey = "administrator",
+            parentRoleKey = "staff",
+        )
+        permissionRepository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(
+                id = UUID.randomUUID(),
+                keycloakGroup = "/admin",
+                roleKey = "administrator",
+                expiresAt = now.plusSeconds(60),
+            )
+        )
+        listOf("grounds.command.admin", "grounds.command.kick").forEach { permission ->
+            permissionRepository.createRoleGrant(
+                RoleGrantRecord(
+                    id = UUID.randomUUID(),
+                    roleKey = "administrator",
+                    effect = ALLOW,
+                    pattern = permission,
+                    scope = PermissionScope(GLOBAL),
+                    expiresAt = now.plusSeconds(60),
+                )
+            )
+        }
+        permissionRepository.createRoleGrant(
+            RoleGrantRecord(
+                id = UUID.randomUUID(),
+                roleKey = "staff",
+                effect = ALLOW,
+                pattern = "grounds.command.expired",
+                scope = PermissionScope(GLOBAL),
+                expiresAt = now.minusSeconds(1),
+            )
+        )
+
+        val result = identityRepository.search("MappedPlayer", page = 1, perPage = 20, now = now)
+        val item = result.items.single()
+
+        assertEquals(0, item.directRoleGrantCount)
+        assertEquals(0, item.directPermissionGrantCount)
+        assertEquals(2, item.effectiveRoleCount)
+        assertEquals(2, item.effectivePermissionGrantCount)
     }
 
     @Test
