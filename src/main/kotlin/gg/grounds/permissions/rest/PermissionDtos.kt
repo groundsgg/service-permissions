@@ -9,6 +9,8 @@ import java.util.UUID
 
 data class ErrorResponse(val error: String)
 
+data class PermissionSyncConflictResponse(val error: String, val reason: String)
+
 data class PagedResponse<T>(val items: List<T>, val page: Int, val perPage: Int, val total: Long)
 
 data class PermissionSearchParameters(

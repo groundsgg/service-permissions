@@ -2,6 +2,7 @@ package gg.grounds.permissions.rest
 
 import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.persistence.DuplicateRoleKeyException
+import gg.grounds.permissions.sync.PermissionSyncConflictException
 import jakarta.ws.rs.NotFoundException
 import jakarta.ws.rs.ServiceUnavailableException
 import jakarta.ws.rs.core.Response
@@ -37,6 +38,19 @@ class IdentityProjectionUnavailableExceptionMapper :
 class DuplicateRoleKeyExceptionMapper : ExceptionMapper<DuplicateRoleKeyException> {
     override fun toResponse(exception: DuplicateRoleKeyException): Response =
         Response.status(Response.Status.CONFLICT).entity(ErrorResponse("role_key_conflict")).build()
+}
+
+@Provider
+class PermissionSyncConflictExceptionMapper : ExceptionMapper<PermissionSyncConflictException> {
+    override fun toResponse(exception: PermissionSyncConflictException): Response =
+        Response.status(Response.Status.CONFLICT)
+            .entity(
+                PermissionSyncConflictResponse(
+                    error = "permission_sync_conflict",
+                    reason = exception.reason.wireValue,
+                )
+            )
+            .build()
 }
 
 @Provider

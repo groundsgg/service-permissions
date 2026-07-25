@@ -4,10 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionScopeKind
+import gg.grounds.permissions.persistence.PermissionRepository
+import java.util.Optional
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 
 class PermissionSyncDiffTest {
     @Test
@@ -34,6 +38,9 @@ class PermissionSyncDiffTest {
         val json =
             """
             {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "1.2.3",
               "snapshotId": "snapshot-1",
               "roles": [{"key":"admin","name":"Admin","default":true}],
               "roleGrants": [],
@@ -46,7 +53,12 @@ class PermissionSyncDiffTest {
         val snapshot = mapper.readValue(json, GlobalPermissionSnapshot::class.java)
 
         assertEquals(true, snapshot.roles.single().isDefault)
-        assertEquals(true, mapper.writeValueAsString(snapshot).contains("\"default\":true"))
+        val serialized = mapper.writeValueAsString(snapshot)
+        assertEquals(true, serialized.contains("\"default\":true"))
+        assertEquals(true, serialized.contains("\"schemaVersion\":1"))
+        assertEquals(true, serialized.contains("\"sourceEnvironment\":\"prod\""))
+        assertEquals(true, serialized.contains("\"sourceServiceVersion\":\"1.2.3\""))
+        assertEquals(true, serialized.contains("\"snapshotId\":\"snapshot-1\""))
     }
 
     @Test
@@ -122,6 +134,33 @@ class PermissionSyncDiffTest {
             "Explicit action required (entityType=ROLE, technicalKey=staff)",
             error.message,
         )
+    }
+
+    @Test
+    fun projectSnapshotsAlwaysDeclareProjectSourceEnvironment() {
+        val repository = mock<PermissionRepository>()
+        whenever(repository.permissionProjectSnapshot())
+            .thenReturn(
+                PermissionProjectSnapshot(
+                    roles = emptyList(),
+                    roleGrants = emptyList(),
+                    inheritance = emptyList(),
+                    catalogEntries = emptyList(),
+                    keycloakMappings = emptyList(),
+                )
+            )
+
+        val snapshot =
+            PermissionSyncService(
+                    repository = repository,
+                    instanceEnvironmentConfig = Optional.of(" "),
+                    serviceVersion = "test-version",
+                )
+                .snapshot()
+
+        assertEquals(1, snapshot.schemaVersion)
+        assertEquals("project", snapshot.sourceEnvironment)
+        assertEquals("test-version", snapshot.sourceServiceVersion)
     }
 
     private fun sampleSnapshot() =

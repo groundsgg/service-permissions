@@ -1202,6 +1202,9 @@ class PermissionRestResourceTest {
                 """
                 {
                   "snapshot": {
+                    "schemaVersion": 1,
+                    "sourceEnvironment": "prod",
+                    "sourceServiceVersion": "source-version",
                     "snapshotId": "actor-attributed-import",
                     "roles": [],
                     "roleGrants": [],
@@ -1226,6 +1229,73 @@ class PermissionRestResourceTest {
             .body("items[0].actorUserId", equalTo("admin-user"))
             .body("items[0].target", equalTo("snapshot:actor-attributed-import"))
             .body("items[0].metadata.snapshotId", equalTo("actor-attributed-import"))
+    }
+
+    @Test
+    fun snapshotIncludesConfiguredCompatibilityMetadata() {
+        given()
+            .get("/v1/permissions/sync/snapshot")
+            .then()
+            .statusCode(200)
+            .body("schemaVersion", equalTo(1))
+            .body("sourceEnvironment", equalTo("stage"))
+            .body("sourceServiceVersion", equalTo("test-version"))
+    }
+
+    @Test
+    fun syncPreviewRejectsUnsupportedSnapshotSchema() {
+        given()
+            .contentType("application/json")
+            .body(syncSnapshotJson(schemaVersion = 2, sourceEnvironment = "prod"))
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("unsupported_schema"))
+    }
+
+    @Test
+    fun syncPreviewRejectsIncompatibleSnapshotSource() {
+        given()
+            .contentType("application/json")
+            .body(syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "sandbox"))
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("incompatible_source"))
+    }
+
+    @Test
+    fun syncPreviewRejectsSnapshotsFromItsOwnEnvironment() {
+        given()
+            .contentType("application/json")
+            .body(syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "stage"))
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("incompatible_source"))
+    }
+
+    @Test
+    fun syncImportRejectsUnsupportedSnapshotSchema() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": ${syncSnapshotJson(schemaVersion = 2, sourceEnvironment = "prod")},
+                  "actions": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("unsupported_schema"))
     }
 
     @Test
@@ -1557,9 +1627,28 @@ class PermissionRestResourceTest {
             .then()
             .statusCode(201)
     }
+
+    private fun syncSnapshotJson(schemaVersion: Int, sourceEnvironment: String): String =
+        """
+        {
+          "schemaVersion": $schemaVersion,
+          "sourceEnvironment": "$sourceEnvironment",
+          "sourceServiceVersion": "source-version",
+          "snapshotId": "compatibility-snapshot",
+          "roles": [],
+          "roleGrants": [],
+          "inheritance": [],
+          "catalogEntries": [],
+          "keycloakMappings": []
+        }
+        """
+            .trimIndent()
 }
 
 class PermissionRestResourceTestProfile : QuarkusTestProfile {
     override fun getConfigOverrides(): Map<String, String> =
-        mapOf("permissions.instance-environment" to "stage")
+        mapOf(
+            "permissions.instance-environment" to "stage",
+            "quarkus.application.version" to "test-version",
+        )
 }

@@ -159,7 +159,7 @@ class PermissionRestAuthorizationTest {
         private const val GRANT_ID = "00000000-0000-0000-0000-000000000002"
         private const val MAPPING_ID = "00000000-0000-0000-0000-000000000003"
         private const val SNAPSHOT =
-            """{"snapshotId":"snapshot-1","roles":[],"roleGrants":[],"inheritance":[],"catalogEntries":[]}"""
+            """{"schemaVersion":1,"sourceEnvironment":"prod","sourceServiceVersion":"test-version","snapshotId":"snapshot-1","roles":[],"roleGrants":[],"inheritance":[],"catalogEntries":[]}"""
         private val ROLE_BODY = """{"name":"Authorization Matrix Role"}"""
 
         private val SYNC_SNAPSHOT =

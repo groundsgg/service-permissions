@@ -50,6 +50,9 @@ data class SyncKeycloakMapping(
 data class SyncPlayerGrant(val technicalKey: String)
 
 data class GlobalPermissionSnapshot(
+    val schemaVersion: Int = 0,
+    val sourceEnvironment: String = "",
+    val sourceServiceVersion: String = "",
     val snapshotId: String,
     val roles: List<SyncRole>,
     val roleGrants: List<SyncRoleGrant>,
