@@ -11,7 +11,10 @@ import gg.grounds.permissions.identity.IdentitySyncStatus
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.policy.PolicyEngine
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
+import gg.grounds.permissions.sync.PermissionSnapshotFingerprint
 import gg.grounds.permissions.sync.PermissionSyncAction
+import gg.grounds.permissions.sync.PermissionSyncConflictException
+import gg.grounds.permissions.sync.PermissionSyncConflictReason
 import gg.grounds.permissions.sync.SyncAction
 import gg.grounds.permissions.sync.SyncEntityType
 import gg.grounds.permissions.sync.SyncInheritance
@@ -647,6 +650,7 @@ class PermissionRepositoryTest {
         assertThrows(Exception::class.java) {
             repository.importPermissionSnapshot(
                 snapshot,
+                expectedTargetFingerprint = currentFingerprint(),
                 actions =
                     listOf(
                         PermissionSyncAction(SyncEntityType.ROLE, "imported", SyncAction.IMPORT)
@@ -660,16 +664,24 @@ class PermissionRepositoryTest {
 
     @Test
     fun recordsSyncImportsWithTheProvidedAuditActor() {
+        val reviewedTargetFingerprint = currentFingerprint()
         repository.importPermissionSnapshot(
             GlobalPermissionSnapshot(
+                schemaVersion = 1,
+                sourceEnvironment = "prod",
+                sourceServiceVersion = "1.2.3",
                 snapshotId = "audit-actor-boundary",
-                roles = emptyList(),
+                roles = listOf(SyncRole("imported-role", "Imported role")),
                 roleGrants = emptyList(),
                 inheritance = emptyList(),
                 catalogEntries = emptyList(),
                 keycloakMappings = emptyList(),
             ),
-            actions = emptyList(),
+            expectedTargetFingerprint = reviewedTargetFingerprint,
+            actions =
+                listOf(
+                    PermissionSyncAction(SyncEntityType.ROLE, "imported-role", SyncAction.IMPORT)
+                ),
             actorUserId = "sync-user",
         )
 
@@ -683,6 +695,64 @@ class PermissionRepositoryTest {
 
         assertEquals("sync-user", event.actorUserId)
         assertEquals("audit-actor-boundary", event.metadata.get("snapshotId").asText())
+        assertEquals("prod", event.metadata.get("sourceEnvironment").asText())
+        assertEquals("1.2.3", event.metadata.get("sourceServiceVersion").asText())
+        assertEquals(reviewedTargetFingerprint, event.metadata.get("targetFingerprint").asText())
+        assertEquals("success", event.metadata.get("result").asText())
+        assertEquals(
+            "ROLE",
+            event.metadata.get("selectedActions").get(0).get("entityType").asText(),
+        )
+        assertEquals(
+            "imported-role",
+            event.metadata.get("selectedActions").get(0).get("technicalKey").asText(),
+        )
+        assertEquals("IMPORT", event.metadata.get("selectedActions").get(0).get("action").asText())
+    }
+
+    @Test
+    fun rejectsChangedTargetBeforeApplyingAnySnapshotWrites() {
+        val reviewedTargetFingerprint = currentFingerprint()
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "changed-after-preview", name = "Changed"),
+        )
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+
+        val error =
+            assertThrows(PermissionSyncConflictException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "stale-review",
+                        roles = listOf(SyncRole("must-not-import", "Must not import")),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "must-not-import",
+                                SyncAction.IMPORT,
+                            )
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(PermissionSyncConflictReason.TARGET_CHANGED, error.reason)
+        assertNull(repository.getRole("must-not-import"))
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
     }
 
     @Test
@@ -726,6 +796,7 @@ class PermissionRepositoryTest {
 
         repository.importPermissionSnapshot(
             snapshot,
+            expectedTargetFingerprint = currentFingerprint(),
             actions =
                 listOf(
                     PermissionSyncAction(
@@ -758,7 +829,12 @@ class PermissionRepositoryTest {
             )
 
         assertThrows(IllegalArgumentException::class.java) {
-            repository.importPermissionSnapshot(snapshot, emptyList(), "test-user")
+            repository.importPermissionSnapshot(
+                snapshot,
+                expectedTargetFingerprint = currentFingerprint(),
+                actions = emptyList(),
+                actorUserId = "test-user",
+            )
         }
         assertTrue(repository.listRoleInheritances().isEmpty())
     }
@@ -783,6 +859,10 @@ class PermissionRepositoryTest {
                 }
         }
     }
+
+    private fun currentFingerprint(): String =
+        PermissionSnapshotFingerprint(objectMapper)
+            .calculate(repository.permissionProjectSnapshot())
 
     private class InterleavingAuditDataSource(private val delegate: DataSource) :
         DataSource by delegate {

@@ -181,8 +181,15 @@ data class PermissionSyncAction(
 
 data class PermissionSyncImportRequest(
     val snapshot: GlobalPermissionSnapshot,
+    val expectedTargetFingerprint: String,
     val actions: List<PermissionSyncAction> = emptyList(),
 ) {
+    init {
+        require(expectedTargetFingerprint.isNotBlank()) {
+            "expectedTargetFingerprint must not be blank"
+        }
+    }
+
     fun validatedAgainst(diff: PermissionSyncDiff): PermissionSyncImportRequest {
         val actionsByKey = actions.associateBy { it.entityType to it.technicalKey }
         diff.conflicts.forEach { change ->
@@ -217,6 +224,7 @@ data class PermissionSyncImportRequest(
 
 data class PermissionSyncPreviewResponse(
     val snapshotId: String,
+    val targetFingerprint: String,
     val changes: List<SyncChange>,
     val conflicts: Set<SyncChange>,
     val projectOnlyEntries: Set<SyncChange>,

@@ -410,7 +410,8 @@ class PermissionRestAuthorizationTest {
                     "POST /sync/import",
                     "POST",
                     "/v1/permissions/sync/import",
-                    """{"snapshot":$SNAPSHOT,"actions":[{"entityType":"ROLE","technicalKey":"missing","action":"IMPORT"}]}""",
+                    """{"snapshot":$SNAPSHOT,"expectedTargetFingerprint":"reviewed-target","actions":[]}""",
+                    authorizedStatus = 200,
                 ),
             )
 

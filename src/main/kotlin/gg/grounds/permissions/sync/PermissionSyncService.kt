@@ -19,6 +19,7 @@ constructor(
     instanceEnvironmentConfig: Optional<String>,
     @param:ConfigProperty(name = "quarkus.application.version", defaultValue = "dev")
     private val serviceVersion: String,
+    private val fingerprint: PermissionSnapshotFingerprint,
 ) {
     private val instanceEnvironment =
         PermissionInstanceEnvironment.fromConfig(instanceEnvironmentConfig.orElse(null))
@@ -39,18 +40,30 @@ constructor(
         )
     }
 
-    fun preview(snapshot: GlobalPermissionSnapshot): PermissionSyncDiff {
+    fun preview(snapshot: GlobalPermissionSnapshot): PermissionSyncPreviewResponse {
         validateCompatibility(snapshot)
-        return PermissionSyncDiff.calculate(repository.permissionProjectSnapshot(), snapshot)
+        val target = repository.permissionProjectSnapshot()
+        val diff = PermissionSyncDiff.calculate(target, snapshot)
+        return PermissionSyncPreviewResponse(
+            snapshotId = snapshot.snapshotId,
+            targetFingerprint = fingerprint.calculate(target),
+            changes = diff.changes,
+            conflicts = diff.conflicts,
+            projectOnlyEntries = diff.projectOnlyEntries,
+        )
     }
 
     fun import(
         request: PermissionSyncImportRequest,
         actorUserId: String,
     ): PermissionSyncMetadataRecord {
-        val diff = preview(request.snapshot)
-        request.validatedAgainst(diff)
-        return repository.importPermissionSnapshot(request.snapshot, request.actions, actorUserId)
+        validateCompatibility(request.snapshot)
+        return repository.importPermissionSnapshot(
+            snapshot = request.snapshot,
+            expectedTargetFingerprint = request.expectedTargetFingerprint,
+            actions = request.actions,
+            actorUserId = actorUserId,
+        )
     }
 
     private fun validateCompatibility(snapshot: GlobalPermissionSnapshot) {
@@ -83,6 +96,7 @@ constructor(
 enum class PermissionSyncConflictReason(val wireValue: String) {
     UNSUPPORTED_SCHEMA("unsupported_schema"),
     INCOMPATIBLE_SOURCE("incompatible_source"),
+    TARGET_CHANGED("target_changed"),
 }
 
 class PermissionSyncConflictException(val reason: PermissionSyncConflictReason) :

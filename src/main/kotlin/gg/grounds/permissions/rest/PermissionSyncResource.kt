@@ -43,13 +43,7 @@ constructor(
         @Context headers: HttpHeaders,
     ): PermissionSyncPreviewResponse {
         authorization.requireMinecraftPermissionsView(identity, headers)
-        val diff = sync.preview(snapshot)
-        return PermissionSyncPreviewResponse(
-            snapshot.snapshotId,
-            diff.changes,
-            diff.conflicts,
-            diff.projectOnlyEntries,
-        )
+        return sync.preview(snapshot)
     }
 
     @POST
