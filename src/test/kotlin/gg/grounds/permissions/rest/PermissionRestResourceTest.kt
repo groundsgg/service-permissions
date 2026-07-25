@@ -1255,6 +1255,30 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun syncPreviewRejectsLegacySnapshotsWithoutCompatibilityMetadata() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshotId": "legacy-snapshot",
+                  "roles": [],
+                  "roleGrants": [],
+                  "inheritance": [],
+                  "catalogEntries": [],
+                  "keycloakMappings": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("unsupported_schema"))
+    }
+
+    @Test
     fun syncPreviewRejectsIncompatibleSnapshotSource() {
         given()
             .contentType("application/json")
