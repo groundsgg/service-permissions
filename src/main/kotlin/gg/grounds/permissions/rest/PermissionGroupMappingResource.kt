@@ -36,7 +36,7 @@ constructor(
 
     @GET
     fun listMappings(@Context headers: HttpHeaders): List<KeycloakGroupMappingResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         return repository.listKeycloakGroupMappings().map { it.toResponse() }
     }
 
@@ -50,7 +50,7 @@ constructor(
         @QueryParam("sortDirection") sortDirection: String?,
         @Context headers: HttpHeaders,
     ): PagedResponse<KeycloakGroupMappingResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val search =
             PermissionSearchPaging.validate(
                 query = query,
@@ -82,7 +82,7 @@ constructor(
         request: KeycloakGroupMappingRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val mapping = request.toRecord(UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
             .entity(repository.createKeycloakGroupMapping(actor, mapping).toResponse())
@@ -96,7 +96,7 @@ constructor(
         request: KeycloakGroupMappingRequest,
         @Context headers: HttpHeaders,
     ): KeycloakGroupMappingResponse {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val id = PermissionValidation.uuid(mappingId, "mappingId")
         return repository.updateKeycloakGroupMapping(actor, id, request.toRecord(id)).toResponse()
     }
@@ -107,7 +107,7 @@ constructor(
         @PathParam("mappingId") mappingId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.deleteKeycloakGroupMapping(
             actor,
             PermissionValidation.uuid(mappingId, "mappingId"),
@@ -115,8 +115,11 @@ constructor(
         return Response.noContent().build()
     }
 
-    private fun requireAdmin(headers: HttpHeaders): String =
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+    private fun requireView(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsView(identity, headers)
+
+    private fun requireManage(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsManage(identity, headers)
 
     private fun KeycloakGroupMappingRequest.toRecord(id: UUID): KeycloakGroupMappingRecord =
         KeycloakGroupMappingRecord(

@@ -16,6 +16,8 @@ import gg.grounds.permissions.persistence.RoleGrantRecord
 import gg.grounds.permissions.persistence.RoleRecord
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
+import io.quarkus.test.junit.QuarkusTestProfile
+import io.quarkus.test.junit.TestProfile
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import jakarta.inject.Inject
@@ -34,7 +36,11 @@ import org.junit.jupiter.api.Test
     value = PermissionsPostgresTestResource::class,
     restrictToAnnotatedClass = true,
 )
-@TestSecurity(user = "admin-user", roles = ["MINECRAFT_PERMISSIONS_MANAGE"])
+@TestProfile(PermissionRestResourceTestProfile::class)
+@TestSecurity(
+    user = "admin-user",
+    roles = ["GAME_AREA_ACCESS", "MINECRAFT_PERMISSIONS_STAGE_MANAGE"],
+)
 class PermissionRestResourceTest {
 
     @Inject lateinit var repository: PermissionRepository
@@ -1190,12 +1196,25 @@ class PermissionRestResourceTest {
 
     @Test
     fun syncImportRecordsTheAuthenticatedActor() {
+        val targetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "prod"))
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+
         given()
             .contentType("application/json")
             .body(
                 """
                 {
                   "snapshot": {
+                    "schemaVersion": 1,
+                    "sourceEnvironment": "prod",
+                    "sourceServiceVersion": "source-version",
                     "snapshotId": "actor-attributed-import",
                     "roles": [],
                     "roleGrants": [],
@@ -1203,6 +1222,7 @@ class PermissionRestResourceTest {
                     "catalogEntries": [],
                     "keycloakMappings": []
                   },
+                  "expectedTargetFingerprint": "$targetFingerprint",
                   "actions": []
                 }
                 """
@@ -1220,6 +1240,466 @@ class PermissionRestResourceTest {
             .body("items[0].actorUserId", equalTo("admin-user"))
             .body("items[0].target", equalTo("snapshot:actor-attributed-import"))
             .body("items[0].metadata.snapshotId", equalTo("actor-attributed-import"))
+            .body("items[0].metadata.sourceEnvironment", equalTo("prod"))
+            .body("items[0].metadata.sourceServiceVersion", equalTo("source-version"))
+            .body("items[0].metadata.targetFingerprint", equalTo(targetFingerprint))
+            .body("items[0].metadata.selectedActions", hasSize<Any>(0))
+            .body("items[0].metadata.result", equalTo("success"))
+    }
+
+    @Test
+    fun snapshotIncludesConfiguredCompatibilityMetadata() {
+        given()
+            .get("/v1/permissions/sync/snapshot")
+            .then()
+            .statusCode(200)
+            .body("schemaVersion", equalTo(1))
+            .body("sourceEnvironment", equalTo("stage"))
+            .body("sourceServiceVersion", equalTo("test-version"))
+    }
+
+    @Test
+    fun syncPreviewRejectsUnsupportedSnapshotSchema() {
+        given()
+            .contentType("application/json")
+            .body(syncSnapshotJson(schemaVersion = 2, sourceEnvironment = "prod"))
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("unsupported_schema"))
+    }
+
+    @Test
+    fun syncPreviewReturnsTheCurrentTargetFingerprint() {
+        given()
+            .contentType("application/json")
+            .body(syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "prod"))
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(200)
+            .body(
+                "targetFingerprint",
+                equalTo("b0da458196945c34afe51284df3923283663aa945bef30a167d76cd627b64a6f"),
+            )
+    }
+
+    @Test
+    fun syncImportRejectsMissingReviewedTargetFingerprint() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": ${syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "prod")},
+                  "actions": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(400)
+    }
+
+    @Test
+    fun syncImportRejectsAChangedTargetWithoutPartialWrites() {
+        val snapshot =
+            """
+            {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "source-version",
+              "snapshotId": "stale-review",
+              "roles": [{"key":"must-not-import","name":"Must not import"}],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": [],
+              "keycloakMappings": []
+            }
+            """
+                .trimIndent()
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+        createRole("ignored", "Changed after preview")
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": [
+                    {"entityType":"ROLE","technicalKey":"must-not-import","action":"IMPORT"}
+                  ]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("target_changed"))
+
+        assertEquals(null, repository.getRole("must-not-import"))
+    }
+
+    @Test
+    fun syncImportIgnoresPostPreviewCatalogHeartbeatAndScopeOrderDrift() {
+        val initialLastSeenAt = Instant.parse("2030-01-01T00:00:00Z")
+        val heartbeatLastSeenAt = Instant.parse("2030-01-02T00:00:00Z")
+        val initialEntry =
+            CatalogEntryRecord(
+                key = "grounds.command.fly",
+                label = "Fly",
+                source = "runtime",
+                sourceVersion = "1.0.0",
+                supportedScopes =
+                    listOf(PermissionScopeKind.GLOBAL, PermissionScopeKind.SERVER_TYPE),
+                custom = false,
+                lastSeenAt = initialLastSeenAt,
+            )
+        repository.upsertCatalogEntry("setup-user", initialEntry)
+        val snapshot =
+            """
+            {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "source-version",
+              "snapshotId": "catalog-heartbeat-review",
+              "roles": [],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": [{
+                "permissionKey": "grounds.command.fly",
+                "label": "Fly",
+                "source": "runtime",
+                "sourceVersion": "1.0.0",
+                "supportedScopes": ["GLOBAL", "SERVER_TYPE"],
+                "custom": false,
+                "lastSeenAt": "$initialLastSeenAt"
+              }],
+              "keycloakMappings": []
+            }
+            """
+                .trimIndent()
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .body("conflicts", hasSize<Any>(0))
+                .extract()
+                .path<String>("targetFingerprint")
+        repository.upsertCatalogEntry(
+            "heartbeat-user",
+            initialEntry.copy(
+                supportedScopes =
+                    listOf(PermissionScopeKind.SERVER_TYPE, PermissionScopeKind.GLOBAL),
+                lastSeenAt = heartbeatLastSeenAt,
+            ),
+        )
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(200)
+
+        val imported = repository.listCatalogEntries().single()
+        assertEquals(heartbeatLastSeenAt, imported.lastSeenAt)
+        assertEquals(
+            listOf(PermissionScopeKind.GLOBAL, PermissionScopeKind.SERVER_TYPE),
+            imported.supportedScopes,
+        )
+    }
+
+    @Test
+    fun syncImportRejectsContradictoryDuplicateActions() {
+        createRole("ignored", "Staff")
+        val snapshot =
+            """
+            {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "source-version",
+              "snapshotId": "duplicate-actions",
+              "roles": [{"key":"staff","name":"Global staff"}],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": [],
+              "keycloakMappings": []
+            }
+            """
+                .trimIndent()
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": [
+                    {"entityType":"ROLE","technicalKey":"staff","action":"IMPORT"},
+                    {"entityType":"ROLE","technicalKey":"staff","action":"KEEP_PROJECT"}
+                  ]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(400)
+
+        assertEquals("Staff", repository.getRole("staff")?.name)
+        given()
+            .queryParam("action", "permission.sync.imported")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
+    fun syncImportRejectsKeepingCurrentDefaultWhileApplyingDifferentDefault() {
+        repository.createRole(
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true)
+        )
+        repository.createRole(RoleRecord(key = "a-incoming-default", name = "Incoming default"))
+        val snapshot =
+            """
+            {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "source-version",
+              "snapshotId": "conflicting-default-actions",
+              "roles": [
+                {"key":"a-incoming-default","name":"Incoming default","default":true},
+                {"key":"z-current-default","name":"Current default","default":false}
+              ],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": [],
+              "keycloakMappings": []
+            }
+            """
+                .trimIndent()
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": [
+                    {
+                      "entityType": "ROLE",
+                      "technicalKey": "a-incoming-default",
+                      "action": "USE_GLOBAL"
+                    },
+                    {
+                      "entityType": "ROLE",
+                      "technicalKey": "z-current-default",
+                      "action": "KEEP_PROJECT"
+                    }
+                  ]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(400)
+            .body(
+                "error",
+                equalTo(
+                    "Permission sync would leave multiple default roles (roleKeys=a-incoming-default,z-current-default)"
+                ),
+            )
+
+        assertEquals(
+            mapOf("a-incoming-default" to false, "z-current-default" to true),
+            repository.listRoles().associate { it.key to it.isDefault },
+        )
+        given()
+            .queryParam("action", "permission.sync.imported")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
+    fun syncImportRejectsRoleRemovalAfterPostPreviewPlayerAssignment() {
+        val playerId = "00000000-0000-0000-0000-000000000503"
+        createRole("ignored", "Project only")
+        val snapshot = syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "prod")
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+        val assignmentId =
+            given()
+                .contentType("application/json")
+                .body("""{"roleKey":"project-only"}""")
+                .post("/v1/permissions/players/$playerId/roles")
+                .then()
+                .statusCode(201)
+                .extract()
+                .path<String>("id")
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": [
+                    {
+                      "entityType": "ROLE",
+                      "technicalKey": "project-only",
+                      "action": "REMOVE_PROJECT_ENTRY"
+                    }
+                  ]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("role_in_use"))
+
+        assertEquals("Project only", repository.getRole("project-only")?.name)
+        assertEquals(
+            listOf(UUID.fromString(assignmentId)),
+            repository
+                .listPlayerRoleGrantRecords(UUID.fromString(playerId))
+                .map(PlayerRoleGrantRecord::id),
+        )
+        given()
+            .queryParam("action", "permission.sync.imported")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
+    fun syncPreviewRejectsLegacySnapshotsWithoutCompatibilityMetadata() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshotId": "legacy-snapshot",
+                  "roles": [],
+                  "roleGrants": [],
+                  "inheritance": [],
+                  "catalogEntries": [],
+                  "keycloakMappings": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("unsupported_schema"))
+    }
+
+    @Test
+    fun syncPreviewRejectsIncompatibleSnapshotSource() {
+        given()
+            .contentType("application/json")
+            .body(syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "sandbox"))
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("incompatible_source"))
+    }
+
+    @Test
+    fun syncPreviewRejectsSnapshotsFromItsOwnEnvironment() {
+        given()
+            .contentType("application/json")
+            .body(syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "stage"))
+            .post("/v1/permissions/sync/preview")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("incompatible_source"))
+    }
+
+    @Test
+    fun syncImportRejectsUnsupportedSnapshotSchema() {
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": ${syncSnapshotJson(schemaVersion = 2, sourceEnvironment = "prod")},
+                  "expectedTargetFingerprint": "reviewed-target",
+                  "actions": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("unsupported_schema"))
     }
 
     @Test
@@ -1551,4 +2031,28 @@ class PermissionRestResourceTest {
             .then()
             .statusCode(201)
     }
+
+    private fun syncSnapshotJson(schemaVersion: Int, sourceEnvironment: String): String =
+        """
+        {
+          "schemaVersion": $schemaVersion,
+          "sourceEnvironment": "$sourceEnvironment",
+          "sourceServiceVersion": "source-version",
+          "snapshotId": "compatibility-snapshot",
+          "roles": [],
+          "roleGrants": [],
+          "inheritance": [],
+          "catalogEntries": [],
+          "keycloakMappings": []
+        }
+        """
+            .trimIndent()
+}
+
+class PermissionRestResourceTestProfile : QuarkusTestProfile {
+    override fun getConfigOverrides(): Map<String, String> =
+        mapOf(
+            "permissions.instance-environment" to "stage",
+            "quarkus.application.version" to "test-version",
+        )
 }

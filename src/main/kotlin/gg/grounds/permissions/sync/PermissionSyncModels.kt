@@ -50,6 +50,9 @@ data class SyncKeycloakMapping(
 data class SyncPlayerGrant(val technicalKey: String)
 
 data class GlobalPermissionSnapshot(
+    val schemaVersion: Int = 0,
+    val sourceEnvironment: String = "",
+    val sourceServiceVersion: String = "",
     val snapshotId: String,
     val roles: List<SyncRole>,
     val roleGrants: List<SyncRoleGrant>,
@@ -107,31 +110,33 @@ data class PermissionSyncDiff(
             project: PermissionProjectSnapshot,
             global: GlobalPermissionSnapshot,
         ): PermissionSyncDiff {
+            val normalizedProject = PermissionSyncPolicyProjection.normalize(project)
+            val normalizedGlobal = PermissionSyncPolicyProjection.normalize(global)
             val changes = buildList {
                 compare(
                     SyncEntityType.ROLE,
-                    project.roles.associateBy { it.key },
-                    global.roles.associateBy { it.key },
+                    normalizedProject.roles.associateBy { it.key },
+                    normalizedGlobal.roles.associateBy { it.key },
                 )
                 compare(
                     SyncEntityType.ROLE_GRANT,
-                    project.roleGrants.associateBy { it.id },
-                    global.roleGrants.associateBy { it.id },
+                    normalizedProject.roleGrants.associateBy { it.id },
+                    normalizedGlobal.roleGrants.associateBy { it.id },
                 )
                 compare(
                     SyncEntityType.INHERITANCE,
-                    project.inheritance.associateBy { it.key() },
-                    global.inheritance.associateBy { it.key() },
+                    normalizedProject.inheritance.associateBy { it.key() },
+                    normalizedGlobal.inheritance.associateBy { it.key() },
                 )
                 compare(
                     SyncEntityType.CATALOG_ENTRY,
-                    project.catalogEntries.associateBy { it.permissionKey },
-                    global.catalogEntries.associateBy { it.permissionKey },
+                    normalizedProject.catalogEntries.associateBy { it.permissionKey },
+                    normalizedGlobal.catalogEntries.associateBy { it.permissionKey },
                 )
                 compare(
                     SyncEntityType.KEYCLOAK_MAPPING,
-                    project.keycloakMappings.associateBy { it.id },
-                    global.keycloakMappings.orEmpty().associateBy { it.id },
+                    normalizedProject.keycloakMappings.associateBy { it.id },
+                    normalizedGlobal.keycloakMappings.associateBy { it.id },
                 )
             }
             return PermissionSyncDiff(
@@ -178,8 +183,26 @@ data class PermissionSyncAction(
 
 data class PermissionSyncImportRequest(
     val snapshot: GlobalPermissionSnapshot,
+    val expectedTargetFingerprint: String,
     val actions: List<PermissionSyncAction> = emptyList(),
 ) {
+    init {
+        require(expectedTargetFingerprint.isNotBlank()) {
+            "expectedTargetFingerprint must not be blank"
+        }
+        val duplicateKey =
+            actions
+                .groupingBy { it.entityType to it.technicalKey }
+                .eachCount()
+                .filterValues { it > 1 }
+                .keys
+                .sortedWith(compareBy({ it.first.ordinal }, { it.second }))
+                .firstOrNull()
+        require(duplicateKey == null) {
+            "Duplicate sync action (entityType=${duplicateKey?.first}, technicalKey=${duplicateKey?.second})"
+        }
+    }
+
     fun validatedAgainst(diff: PermissionSyncDiff): PermissionSyncImportRequest {
         val actionsByKey = actions.associateBy { it.entityType to it.technicalKey }
         diff.conflicts.forEach { change ->
@@ -214,6 +237,7 @@ data class PermissionSyncImportRequest(
 
 data class PermissionSyncPreviewResponse(
     val snapshotId: String,
+    val targetFingerprint: String,
     val changes: List<SyncChange>,
     val conflicts: Set<SyncChange>,
     val projectOnlyEntries: Set<SyncChange>,

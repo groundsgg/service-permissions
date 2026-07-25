@@ -14,204 +14,259 @@ import java.net.InetSocketAddress
 import java.security.Principal
 import java.util.Date
 import java.util.Locale
+import java.util.Optional
 import org.eclipse.microprofile.jwt.JsonWebToken
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.function.Executable
 
 class AdminAuthorizationServiceTest {
     @Test
-    fun acceptsForgeProjectOwnerAccessWhenJwtDoesNotContainPermission() {
-        val server =
-            forgeAccessServer(
-                path = "/v1/projects/project-a",
-                response = """{"id":"project-a","role":"owner"}""",
-            )
-        try {
-            val service =
-                AdminAuthorizationService(
-                    WebUserResolver(jsonWebToken(subject = "project-owner"), false),
-                    jsonWebToken(subject = "project-owner"),
-                    ObjectMapper(),
-                    "http://localhost:${server.address.port}",
-                    false,
-                )
+    fun appliesStageAuthorizationMatrixToDirectJwtClaims() {
+        val service = service(environment = "stage", jwtPermissions = setOf(AREA, STAGE_VIEW))
 
-            val userId =
-                service.requireMinecraftPermissionsAdmin(
-                    securityIdentity(),
-                    StaticAuthorizationHeaders(
-                        authorization = "Bearer project-owner-token",
-                        projectId = "project-a",
-                    ),
-                )
+        assertEquals(
+            "direct-user",
+            service.requireMinecraftPermissionsView(securityIdentity(), headers()),
+        )
+        assertThrows(ForbiddenException::class.java) {
+            service.requireMinecraftPermissionsManage(securityIdentity(), headers())
+        }
 
-            assertEquals("project-owner", userId)
-        } finally {
-            server.stop(0)
+        val stageManager =
+            service(environment = "stage", jwtPermissions = setOf(AREA, STAGE_MANAGE))
+        assertEquals(
+            "direct-user",
+            stageManager.requireMinecraftPermissionsView(securityIdentity(), headers()),
+        )
+        assertEquals(
+            "direct-user",
+            stageManager.requireMinecraftPermissionsManage(securityIdentity(), headers()),
+        )
+
+        val withoutArea = service(environment = "stage", jwtPermissions = setOf(STAGE_VIEW))
+        assertThrows(ForbiddenException::class.java) {
+            withoutArea.requireMinecraftPermissionsView(securityIdentity(), headers())
         }
     }
 
     @Test
-    fun acceptsForgeProjectOwnerAccessWhenProjectHeaderIsLowercase() {
-        val server =
-            forgeAccessServer(
-                path = "/v1/projects/project-a",
-                response = """{"id":"project-a","role":"owner"}""",
-            )
-        try {
-            val service =
-                AdminAuthorizationService(
-                    WebUserResolver(jsonWebToken(subject = "project-owner"), false),
-                    jsonWebToken(subject = "project-owner"),
-                    ObjectMapper(),
-                    "http://localhost:${server.address.port}",
-                    false,
-                )
+    fun rejectsStagePermissionsInProductionForDirectJwtClaims() {
+        val service = service(environment = "prod", jwtPermissions = setOf(AREA, STAGE_MANAGE))
 
-            val userId =
-                service.requireMinecraftPermissionsAdmin(
-                    securityIdentity(),
-                    StaticAuthorizationHeaders(
-                        authorization = "Bearer project-owner-token",
-                        projectId = "project-a",
-                        projectHeaderName = "x-grounds-project-id",
-                    ),
-                )
-
-            assertEquals("project-owner", userId)
-        } finally {
-            server.stop(0)
+        assertThrows(ForbiddenException::class.java) {
+            service.requireMinecraftPermissionsView(securityIdentity(), headers())
+        }
+        assertThrows(ForbiddenException::class.java) {
+            service.requireMinecraftPermissionsManage(securityIdentity(), headers())
         }
     }
 
     @Test
-    fun rejectsForgeProjectViewersWhenJwtDoesNotContainPermission() {
-        val server =
-            forgeAccessServer(
-                path = "/v1/projects/project-a",
-                response = """{"id":"project-a","role":"viewer"}""",
-            )
-        try {
-            val service =
-                AdminAuthorizationService(
-                    WebUserResolver(jsonWebToken(subject = "project-viewer"), false),
-                    jsonWebToken(subject = "project-viewer"),
-                    ObjectMapper(),
-                    "http://localhost:${server.address.port}",
-                    false,
+    fun appliesStageAuthorizationMatrixToForgeEffectiveAccess() {
+        assertForgeViewAndManageAccess(
+            permissions = setOf(AREA, STAGE_MANAGE),
+            expectedView = true,
+            expectedManage = true,
+        )
+        assertForgeViewAndManageAccess(
+            permissions = setOf(AREA, STAGE_VIEW),
+            expectedView = true,
+            expectedManage = false,
+        )
+        assertForgeViewAndManageAccess(
+            permissions = setOf(STAGE_VIEW),
+            expectedView = false,
+            expectedManage = false,
+        )
+    }
+
+    @Test
+    fun rejectsStagePermissionsInProductionForForgeEffectiveAccess() {
+        assertForgeViewAndManageAccess(
+            permissions = setOf(AREA, STAGE_MANAGE),
+            environment = "prod",
+            expectedView = false,
+            expectedManage = false,
+        )
+    }
+
+    @Test
+    fun acceptsLegacyManagePermissionOnlyInProjectModeForDirectJwtClaims() {
+        val projectMode = service(jwtPermissions = setOf(LEGACY_MANAGE))
+        assertEquals(
+            "direct-user",
+            projectMode.requireMinecraftPermissionsManage(securityIdentity(), headers()),
+        )
+
+        val sharedMode = service(environment = "stage", jwtPermissions = setOf(LEGACY_MANAGE))
+        assertThrows(ForbiddenException::class.java) {
+            sharedMode.requireMinecraftPermissionsManage(securityIdentity(), headers())
+        }
+    }
+
+    @Test
+    fun acceptsLegacyManagePermissionOnlyInProjectModeForForgeEffectiveAccess() {
+        assertForgeViewAndManageAccess(
+            permissions = setOf(LEGACY_MANAGE),
+            environment = "",
+            expectedView = true,
+            expectedManage = true,
+        )
+        assertForgeViewAndManageAccess(
+            permissions = setOf(LEGACY_MANAGE),
+            environment = "stage",
+            expectedView = false,
+            expectedManage = false,
+        )
+    }
+
+    @Test
+    fun acceptsForgeProjectOwnersAndEditorsInProjectMode() {
+        listOf("owner", "editor").forEachIndexed { index, role ->
+            val server = forgeServer(projectRole = role)
+            try {
+                val service = service(forgeBaseUrl = server.baseUrl)
+
+                assertEquals(
+                    "direct-user",
+                    service.requireMinecraftPermissionsManage(
+                        securityIdentity(),
+                        headers(
+                            projectId = "project-a",
+                            projectHeaderName =
+                                if (index == 0) "x-grounds-project-id" else PROJECT_ID_HEADER,
+                        ),
+                    ),
                 )
+            } finally {
+                server.stop()
+            }
+        }
+    }
+
+    @Test
+    fun rejectsForgeProjectViewersInProjectMode() {
+        val server = forgeServer(projectRole = "viewer")
+        try {
+            val service = service(forgeBaseUrl = server.baseUrl)
 
             assertThrows(ForbiddenException::class.java) {
-                service.requireMinecraftPermissionsAdmin(
+                service.requireMinecraftPermissionsManage(
                     securityIdentity(),
-                    StaticAuthorizationHeaders(
-                        authorization = "Bearer project-viewer-token",
-                        projectId = "project-a",
-                    ),
+                    headers(projectId = "project-a"),
                 )
             }
         } finally {
-            server.stop(0)
+            server.stop()
         }
     }
 
     @Test
-    fun acceptsTrustedForgeProjectEditorHeaderWhenEnabled() {
-        val service =
-            AdminAuthorizationService(
-                WebUserResolver(jsonWebToken(subject = "project-editor"), false),
-                jsonWebToken(subject = "project-editor"),
-                ObjectMapper(),
-                "http://localhost:1",
-                true,
-            )
+    fun acceptsTrustedForgeProjectEditorHeaderInProjectMode() {
+        val service = service(trustForgeProjectRoleHeader = true)
 
-        val userId =
-            service.requireMinecraftPermissionsAdmin(
+        assertEquals(
+            "direct-user",
+            service.requireMinecraftPermissionsManage(
                 securityIdentity(),
-                StaticAuthorizationHeaders(
-                    authorization = "Bearer project-editor-token",
-                    projectId = "project-a",
-                    projectRole = "editor",
-                ),
-            )
-
-        assertEquals("project-editor", userId)
+                headers(projectId = "project-a", projectRole = "editor"),
+            ),
+        )
     }
 
     @Test
-    fun ignoresTrustedForgeProjectRoleHeaderWhenDisabled() {
-        val service =
-            AdminAuthorizationService(
-                WebUserResolver(jsonWebToken(subject = "project-editor"), false),
-                jsonWebToken(subject = "project-editor"),
-                ObjectMapper(),
-                "http://localhost:1",
-                false,
-            )
-
-        assertThrows(ForbiddenException::class.java) {
-            service.requireMinecraftPermissionsAdmin(
-                securityIdentity(),
-                StaticAuthorizationHeaders(
-                    authorization = "Bearer project-editor-token",
-                    projectId = "project-a",
-                    projectRole = "editor",
-                ),
-            )
-        }
-    }
-
-    @Test
-    fun acceptsForgeEffectiveAccessPermissionWhenJwtDoesNotContainPermission() {
-        val server = forgeAccessServer("""{"permissions":["MINECRAFT_PERMISSIONS_MANAGE"]}""")
+    fun permitsForgeValidatedProjectRoleOnlyForSnapshotReadInSharedMode() {
+        val server = forgeServer(projectRole = "owner")
         try {
-            val service =
-                AdminAuthorizationService(
-                    WebUserResolver(jsonWebToken(subject = "admin-user"), false),
-                    jsonWebToken(subject = "admin-user"),
-                    ObjectMapper(),
-                    "http://localhost:${server.address.port}",
-                    false,
-                )
+            val service = service(environment = "stage", forgeBaseUrl = server.baseUrl)
+            val requestHeaders = headers(projectId = "project-a")
 
-            val userId =
-                service.requireMinecraftPermissionsAdmin(
-                    securityIdentity(),
-                    StaticAuthorizationHeaders("Bearer forge-admin-token"),
-                )
-
-            assertEquals("admin-user", userId)
+            assertThrows(ForbiddenException::class.java) {
+                service.requireMinecraftPermissionsView(securityIdentity(), requestHeaders)
+            }
+            assertEquals(
+                "direct-user",
+                service.requireMinecraftPermissionsSnapshotRead(securityIdentity(), requestHeaders),
+            )
         } finally {
-            server.stop(0)
+            server.stop()
         }
     }
 
-    private fun forgeAccessServer(
-        response: String,
-        path: String = "/v1/control-center/access/me",
-    ): HttpServer {
+    private fun assertForgeViewAndManageAccess(
+        permissions: Set<String>,
+        environment: String = "stage",
+        expectedView: Boolean,
+        expectedManage: Boolean,
+    ) {
+        val server = forgeServer(permissions = permissions)
+        try {
+            val service = service(environment = environment, forgeBaseUrl = server.baseUrl)
+            val requestHeaders = headers()
+
+            assertAccess(expectedView) {
+                service.requireMinecraftPermissionsView(securityIdentity(), requestHeaders)
+            }
+            assertAccess(expectedManage) {
+                service.requireMinecraftPermissionsManage(securityIdentity(), requestHeaders)
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
+    private fun assertAccess(expected: Boolean, access: () -> String) {
+        if (expected) {
+            assertEquals("direct-user", access())
+        } else {
+            assertThrows(ForbiddenException::class.java, Executable { access() })
+        }
+    }
+
+    private fun service(
+        environment: String = "",
+        jwtPermissions: Set<String> = emptySet(),
+        forgeBaseUrl: String = "http://localhost:1",
+        trustForgeProjectRoleHeader: Boolean = false,
+    ): AdminAuthorizationService =
+        AdminAuthorizationService(
+            WebUserResolver(jsonWebToken(subject = "direct-user"), false),
+            jsonWebToken(subject = "direct-user", permissions = jwtPermissions),
+            ObjectMapper(),
+            forgeBaseUrl,
+            trustForgeProjectRoleHeader,
+            Optional.of(environment),
+        )
+
+    private fun forgeServer(
+        permissions: Set<String> = emptySet(),
+        projectRole: String? = null,
+    ): ForgeServer {
         val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
-        server.createContext(path) { exchange ->
-            val bytes = response.toByteArray()
-            exchange.responseHeaders.add("Content-Type", "application/json")
-            exchange.sendResponseHeaders(200, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
+        server.createContext("/v1/control-center/access/me") { exchange ->
+            exchange.respondJson("""{"permissions":${permissions.toJsonArray()}}""")
+        }
+        server.createContext("/v1/projects/project-a") { exchange ->
+            exchange.respondJson("""{"id":"project-a","role":"$projectRole"}""")
         }
         server.start()
-        return server
+        return ForgeServer(server)
     }
 
-    private fun jsonWebToken(subject: String): JsonWebToken =
+    private fun Set<String>.toJsonArray(): String =
+        joinToString("\",\"", prefix = "[\"", postfix = "\"]")
+
+    private fun jsonWebToken(subject: String, permissions: Set<String> = emptySet()): JsonWebToken =
         Proxy.newProxyInstance(
             JsonWebToken::class.java.classLoader,
             arrayOf(JsonWebToken::class.java),
-        ) { _, method, _ ->
+        ) { _, method, arguments ->
             when (method.name) {
                 "getSubject" -> subject
                 "getName" -> subject
-                "getClaim" -> null
+                "getClaim" -> if (arguments?.singleOrNull() == "permissions") permissions else null
                 else -> null
             }
         } as JsonWebToken
@@ -223,11 +278,46 @@ class AdminAuthorizationServiceTest {
         ) { _, method, _ ->
             when (method.name) {
                 "isAnonymous" -> false
-                "getPrincipal" -> Principal { "admin-user" }
+                "getPrincipal" -> Principal { "direct-user" }
                 "getRoles" -> emptySet<String>()
                 else -> null
             }
         } as SecurityIdentity
+
+    private fun headers(
+        projectId: String? = null,
+        projectHeaderName: String = PROJECT_ID_HEADER,
+        projectRole: String? = null,
+    ): StaticAuthorizationHeaders =
+        StaticAuthorizationHeaders(
+            authorization = "Bearer authorization-token",
+            projectId = projectId,
+            projectHeaderName = projectHeaderName,
+            projectRole = projectRole,
+        )
+
+    private class ForgeServer(private val server: HttpServer) {
+        val baseUrl = "http://localhost:${server.address.port}"
+
+        fun stop() {
+            server.stop(0)
+        }
+    }
+
+    private companion object {
+        private const val AREA = "GAME_AREA_ACCESS"
+        private const val STAGE_VIEW = "MINECRAFT_PERMISSIONS_STAGE_VIEW"
+        private const val STAGE_MANAGE = "MINECRAFT_PERMISSIONS_STAGE_MANAGE"
+        private const val LEGACY_MANAGE = "MINECRAFT_PERMISSIONS_MANAGE"
+        private const val PROJECT_ID_HEADER = "X-Grounds-Project-Id"
+    }
+}
+
+private fun com.sun.net.httpserver.HttpExchange.respondJson(body: String) {
+    val bytes = body.toByteArray()
+    responseHeaders.add("Content-Type", "application/json")
+    sendResponseHeaders(200, bytes.size.toLong())
+    responseBody.use { it.write(bytes) }
 }
 
 private class StaticAuthorizationHeaders(

@@ -40,13 +40,13 @@ constructor(
 
     @GET
     fun listRoles(@Context headers: HttpHeaders): List<RoleListResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         return repository.listRolesWithAggregateCounts().map { it.toListResponse() }
     }
 
     @POST
     fun createRole(request: RoleRequest, @Context headers: HttpHeaders): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val name = PermissionValidation.displayName(request.name)
         val role =
             RoleRecord(
@@ -70,7 +70,7 @@ constructor(
         @PathParam("roleKey") roleKey: String,
         @Context headers: HttpHeaders,
     ): RoleResponse {
-        requireAdmin(headers)
+        requireView(headers)
         return repository.getRole(PermissionValidation.roleKey(roleKey))?.toResponse()
             ?: throw NotFoundException("Role not found (roleKey=$roleKey)")
     }
@@ -82,7 +82,7 @@ constructor(
         request: RoleRequest,
         @Context headers: HttpHeaders,
     ): RoleResponse {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val existing =
             repository.getRole(key) ?: throw NotFoundException("Role not found (roleKey=$key)")
@@ -107,7 +107,7 @@ constructor(
     @DELETE
     @Path("/{roleKey}")
     fun deleteRole(@PathParam("roleKey") roleKey: String, @Context headers: HttpHeaders): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.deleteRole(actor, PermissionValidation.roleKey(roleKey))
         return Response.noContent().build()
     }
@@ -119,7 +119,7 @@ constructor(
         @PathParam("parentRoleKey") parentRoleKey: String,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.addRoleInheritance(
             actorUserId = actor,
             childRoleKey = PermissionValidation.roleKey(roleKey),
@@ -135,7 +135,7 @@ constructor(
         @PathParam("parentRoleKey") parentRoleKey: String,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.removeRoleInheritance(
             actorUserId = actor,
             childRoleKey = PermissionValidation.roleKey(roleKey),
@@ -150,7 +150,7 @@ constructor(
         @PathParam("roleKey") roleKey: String,
         @Context headers: HttpHeaders,
     ): List<RoleGrantResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         return repository.listRoleGrantRecords(PermissionValidation.roleKey(roleKey)).map {
             it.toResponse()
         }
@@ -167,7 +167,7 @@ constructor(
         @QueryParam("sortDirection") sortDirection: String?,
         @Context headers: HttpHeaders,
     ): PagedResponse<RoleGrantResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val search =
             PermissionSearchPaging.validate(
                 query = query,
@@ -202,7 +202,7 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val grant = request.toRoleGrantRecord(roleKey = key, id = UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
@@ -218,7 +218,7 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): RoleGrantResponse {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val key = PermissionValidation.roleKey(roleKey)
         val id = PermissionValidation.uuid(grantId, "grantId")
         return repository
@@ -233,7 +233,7 @@ constructor(
         @PathParam("grantId") grantId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.deleteRoleGrant(
             actorUserId = actor,
             roleKey = PermissionValidation.roleKey(roleKey),
@@ -242,8 +242,11 @@ constructor(
         return Response.noContent().build()
     }
 
-    private fun requireAdmin(headers: HttpHeaders): String =
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+    private fun requireView(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsView(identity, headers)
+
+    private fun requireManage(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsManage(identity, headers)
 
     private fun GrantRequest.toRoleGrantRecord(roleKey: String, id: UUID): RoleGrantRecord =
         RoleGrantRecord(

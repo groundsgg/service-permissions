@@ -41,7 +41,7 @@ constructor(
     @GET
     @Path("/status")
     fun status(@Context headers: HttpHeaders): IdentitySyncStatusResponse {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsView(identity, headers)
         val state = identityRepository.currentSyncState()
         return IdentitySyncStatusResponse(
             status = state.status.name,
@@ -57,7 +57,7 @@ constructor(
 
     @POST
     fun synchronize(@Context headers: HttpHeaders): Response {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsManage(identity, headers)
         dispatcher.dispatchAll()
         return Response.accepted(SyncDispatchResponse("RUNNING")).build()
     }
@@ -79,7 +79,7 @@ constructor(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsManage(identity, headers)
         val parsedPlayerId = PermissionValidation.uuid(playerId, "playerId")
         val projectedIdentity =
             identityRepository.findByPlayerId(parsedPlayerId)

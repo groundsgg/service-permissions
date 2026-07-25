@@ -18,7 +18,13 @@ import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.identity.IdentitySyncReadinessCheck
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionProjectSnapshot
+import gg.grounds.permissions.sync.PermissionSnapshotFingerprint
 import gg.grounds.permissions.sync.PermissionSyncAction
+import gg.grounds.permissions.sync.PermissionSyncConflictException
+import gg.grounds.permissions.sync.PermissionSyncConflictReason
+import gg.grounds.permissions.sync.PermissionSyncDiff
+import gg.grounds.permissions.sync.PermissionSyncImportRequest
+import gg.grounds.permissions.sync.PermissionSyncPolicyProjection
 import gg.grounds.permissions.sync.SyncAction
 import gg.grounds.permissions.sync.SyncCatalogEntry
 import gg.grounds.permissions.sync.SyncEntityType
@@ -184,7 +190,9 @@ constructor(
             throw error
         }
 
-    fun listRoles(): List<RoleRecord> = read { connection ->
+    fun listRoles(): List<RoleRecord> = read(::listRoles)
+
+    private fun listRoles(connection: Connection): List<RoleRecord> =
         connection
             .prepareStatement(
                 """
@@ -195,7 +203,6 @@ constructor(
                     .trimIndent()
             )
             .use { statement -> statement.executeQuery().use { rows -> rows.toRoleRecords() } }
-    }
 
     fun listAuditEvents(query: PermissionAuditEventQuery): PermissionAuditEventPage {
         validateAuditEventQuery(query)
@@ -441,6 +448,13 @@ constructor(
         }
 
     fun listRoleGrantRecords(roleKey: String): List<RoleGrantRecord> = read { connection ->
+        listRoleGrantRecords(connection, roleKey)
+    }
+
+    private fun listRoleGrantRecords(
+        connection: Connection,
+        roleKey: String,
+    ): List<RoleGrantRecord> =
         connection
             .prepareStatement(
                 """
@@ -461,7 +475,6 @@ constructor(
                     }
                 }
             }
-    }
 
     fun searchRoleGrantRecords(
         roleKey: String,
@@ -544,7 +557,9 @@ constructor(
         PagedRecords(items, total)
     }
 
-    fun listRoleInheritances(): List<SyncInheritance> = read { connection ->
+    fun listRoleInheritances(): List<SyncInheritance> = read(::listRoleInheritances)
+
+    private fun listRoleInheritances(connection: Connection): List<SyncInheritance> =
         connection
             .prepareStatement(
                 "SELECT parent_role_key, child_role_key FROM permission_role_inheritance ORDER BY parent_role_key, child_role_key"
@@ -563,7 +578,6 @@ constructor(
                     }
                 }
             }
-    }
 
     fun updateRoleGrant(
         actorUserId: String,
@@ -1023,7 +1037,12 @@ constructor(
             mapping
         }
 
-    fun listKeycloakGroupMappings(): List<KeycloakGroupMappingRecord> = read { connection ->
+    fun listKeycloakGroupMappings(): List<KeycloakGroupMappingRecord> =
+        read(::listKeycloakGroupMappings)
+
+    private fun listKeycloakGroupMappings(
+        connection: Connection
+    ): List<KeycloakGroupMappingRecord> =
         connection
             .prepareStatement(
                 """
@@ -1042,7 +1061,6 @@ constructor(
                     }
                 }
             }
-    }
 
     fun searchKeycloakGroupMappings(
         query: String,
@@ -1237,7 +1255,9 @@ constructor(
         return entry
     }
 
-    fun listCatalogEntries(): List<CatalogEntryRecord> = read { connection ->
+    fun listCatalogEntries(): List<CatalogEntryRecord> = read(::listCatalogEntries)
+
+    private fun listCatalogEntries(connection: Connection): List<CatalogEntryRecord> =
         connection
             .prepareStatement(
                 """
@@ -1257,7 +1277,6 @@ constructor(
                     }
                 }
             }
-    }
 
     fun searchCatalogEntries(
         query: String,
@@ -1334,38 +1353,61 @@ constructor(
     }
 
     fun permissionProjectSnapshot(): PermissionProjectSnapshot =
-        PermissionProjectSnapshot(
-            roles = listRoles().map { it.toSync() },
+        consistentRead(::permissionProjectSnapshot)
+
+    private fun permissionProjectSnapshot(connection: Connection): PermissionProjectSnapshot {
+        val roles = listRoles(connection)
+        return PermissionProjectSnapshot(
+            roles = roles.map { it.toSync() },
             roleGrants =
-                listRoles().flatMap { role -> listRoleGrantRecords(role.key) }.map { it.toSync() },
-            inheritance = listRoleInheritances(),
-            catalogEntries = listCatalogEntries().map { it.toSync() },
-            keycloakMappings = listKeycloakGroupMappings().map { it.toSync() },
+                roles
+                    .flatMap { role -> listRoleGrantRecords(connection, role.key) }
+                    .map { it.toSync() },
+            inheritance = listRoleInheritances(connection),
+            catalogEntries = listCatalogEntries(connection).map { it.toSync() },
+            keycloakMappings = listKeycloakGroupMappings(connection).map { it.toSync() },
         )
+    }
 
     fun importPermissionSnapshot(
         snapshot: GlobalPermissionSnapshot,
+        expectedTargetFingerprint: String,
         actions: List<PermissionSyncAction>,
         actorUserId: String,
-    ): PermissionSyncMetadataRecord =
-        dataSource.connection.use { connection ->
+    ): PermissionSyncMetadataRecord {
+        val request = PermissionSyncImportRequest(snapshot, expectedTargetFingerprint, actions)
+        val sourcePolicy = PermissionSyncPolicyProjection.normalize(snapshot)
+        return dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
-                val actionMap = actions.associateBy { it.entityType to it.technicalKey }
-                actions
+                lockPolicyVersion(connection)
+                val currentTarget = permissionProjectSnapshot(connection)
+                val currentTargetFingerprint =
+                    PermissionSnapshotFingerprint(objectMapper).calculate(currentTarget)
+                if (currentTargetFingerprint != expectedTargetFingerprint) {
+                    throw PermissionSyncConflictException(
+                        PermissionSyncConflictReason.TARGET_CHANGED
+                    )
+                }
+                request.validatedAgainst(PermissionSyncDiff.calculate(currentTarget, snapshot))
+                val actionMap = request.actions.associateBy { it.entityType to it.technicalKey }
+                validateEffectiveDefaultRoles(currentTarget.roles, sourcePolicy.roles, actionMap)
+                rejectRoleRemovalsWithPlayerAssignments(connection, request.actions)
+                demoteCurrentDefaultBeforeAppliedDefault(connection, sourcePolicy.roles, actionMap)
+                request.actions
                     .filter { it.action == SyncAction.REMOVE_PROJECT_ENTRY }
                     .forEach { action ->
                         deleteSyncEntry(connection, action.entityType, action.technicalKey)
                     }
-                snapshot.roles.forEach { role ->
+                sourcePolicy.roles.forEach { role ->
                     val action = actionMap[SyncEntityType.ROLE to role.key]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertRole(connection, role)
                 }
-                snapshot.roleGrants.forEach { grant ->
+                sourcePolicy.roleGrants.forEach { grant ->
                     val action = actionMap[SyncEntityType.ROLE_GRANT to grant.id.toString()]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertRoleGrant(connection, grant)
                 }
-                snapshot.inheritance.forEach { inheritance ->
+                sourcePolicy.inheritance.forEach { inheritance ->
                     val action = actionMap[SyncEntityType.INHERITANCE to inheritance.key()]?.action
                     if (action != SyncAction.KEEP_PROJECT) {
                         require(inheritance.parentRoleKey != inheritance.childRoleKey) {
@@ -1383,12 +1425,21 @@ constructor(
                         upsertInheritance(connection, inheritance)
                     }
                 }
-                snapshot.catalogEntries.forEach { entry ->
+                val targetCatalogEntries =
+                    currentTarget.catalogEntries.associateBy(SyncCatalogEntry::permissionKey)
+                sourcePolicy.catalogEntries.forEach { entry ->
                     val action =
                         actionMap[SyncEntityType.CATALOG_ENTRY to entry.permissionKey]?.action
-                    if (action != SyncAction.KEEP_PROJECT) upsertCatalog(connection, entry)
+                    if (action != SyncAction.KEEP_PROJECT) {
+                        upsertCatalog(
+                            connection,
+                            entry.copy(
+                                lastSeenAt = targetCatalogEntries[entry.permissionKey]?.lastSeenAt
+                            ),
+                        )
+                    }
                 }
-                snapshot.keycloakMappings.orEmpty().forEach { mapping ->
+                sourcePolicy.keycloakMappings.forEach { mapping ->
                     val action =
                         actionMap[SyncEntityType.KEYCLOAK_MAPPING to mapping.id.toString()]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertMapping(connection, mapping)
@@ -1411,7 +1462,17 @@ constructor(
                     action = "permission.sync.imported",
                     target = "snapshot:${snapshot.snapshotId}",
                     metadata =
-                        objectMapper.createObjectNode().put("snapshotId", snapshot.snapshotId),
+                        objectMapper.createObjectNode().apply {
+                            put("snapshotId", snapshot.snapshotId)
+                            put("sourceEnvironment", snapshot.sourceEnvironment)
+                            put("sourceServiceVersion", snapshot.sourceServiceVersion)
+                            put("targetFingerprint", expectedTargetFingerprint)
+                            set<JsonNode>(
+                                "selectedActions",
+                                objectMapper.valueToTree(request.actions),
+                            )
+                            put("result", "success")
+                        },
                 )
                 connection.commit()
                 PermissionSyncMetadataRecord(snapshot.snapshotId, actorUserId, importedAt)
@@ -1420,6 +1481,7 @@ constructor(
                 throw error
             }
         }
+    }
 
     fun deleteCustomCatalogEntry(actorUserId: String, permissionKey: String) {
         writeIfChanged(
@@ -1507,9 +1569,15 @@ constructor(
 
     fun importPermissionSnapshot(
         snapshot: GlobalPermissionSnapshot,
+        expectedTargetFingerprint: String,
         actions: List<PermissionSyncAction>,
     ): PermissionSyncMetadataRecord =
-        importPermissionSnapshot(snapshot, actions, REPOSITORY_SYSTEM_ACTOR)
+        importPermissionSnapshot(
+            snapshot,
+            expectedTargetFingerprint,
+            actions,
+            REPOSITORY_SYSTEM_ACTOR,
+        )
 
     fun deleteCustomCatalogEntry(permissionKey: String) =
         deleteCustomCatalogEntry(REPOSITORY_SYSTEM_ACTOR, permissionKey)
@@ -1560,6 +1628,7 @@ constructor(
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
+                lockPolicyVersion(connection)
                 listOf(
                         "permission_player_keycloak_groups",
                         "permission_player_identity_tombstones",
@@ -1844,6 +1913,7 @@ constructor(
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
+                lockPolicyVersion(connection)
                 val result = block(connection)
                 incrementPolicyVersion(connection)
                 insertAuditEvent(connection, actorUserId, action, target, metadata)
@@ -1865,6 +1935,7 @@ constructor(
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
+                lockPolicyVersion(connection)
                 if (block(connection)) {
                     incrementPolicyVersion(connection)
                     insertAuditEvent(connection, actorUserId, action, target, metadata)
@@ -1894,6 +1965,14 @@ constructor(
                 "UPDATE permission_policy_versions SET version = version + 1, updated_at = now() WHERE id = 1"
             )
             .use { it.executeUpdate() }
+    }
+
+    private fun lockPolicyVersion(connection: Connection) {
+        connection
+            .prepareStatement(
+                "SELECT version FROM permission_policy_versions WHERE id = 1 FOR UPDATE"
+            )
+            .use { statement -> statement.executeQuery().use { rows -> check(rows.next()) } }
     }
 
     private fun insertAuditEvent(
@@ -2104,6 +2183,72 @@ constructor(
             statement.setObject(1, if (column == "id") UUID.fromString(key) else key)
             statement.executeUpdate()
         }
+    }
+
+    private fun validateEffectiveDefaultRoles(
+        currentRoles: List<SyncRole>,
+        sourceRoles: List<SyncRole>,
+        actionMap: Map<Pair<SyncEntityType, String>, PermissionSyncAction>,
+    ) {
+        val effectiveRoles = currentRoles.associateByTo(linkedMapOf(), SyncRole::key)
+        actionMap
+            .filter { (key, action) ->
+                key.first == SyncEntityType.ROLE && action.action == SyncAction.REMOVE_PROJECT_ENTRY
+            }
+            .keys
+            .forEach { (_, roleKey) -> effectiveRoles.remove(roleKey) }
+        sourceRoles.forEach { role ->
+            val action = actionMap[SyncEntityType.ROLE to role.key]?.action
+            if (action != SyncAction.KEEP_PROJECT) effectiveRoles[role.key] = role
+        }
+        val defaultRoleKeys =
+            effectiveRoles.values.filter(SyncRole::isDefault).map(SyncRole::key).sorted()
+        require(defaultRoleKeys.size <= 1) {
+            "Permission sync would leave multiple default roles (roleKeys=${defaultRoleKeys.joinToString(",")})"
+        }
+    }
+
+    private fun rejectRoleRemovalsWithPlayerAssignments(
+        connection: Connection,
+        actions: List<PermissionSyncAction>,
+    ) {
+        actions
+            .asSequence()
+            .filter {
+                it.entityType == SyncEntityType.ROLE && it.action == SyncAction.REMOVE_PROJECT_ENTRY
+            }
+            .map(PermissionSyncAction::technicalKey)
+            .sorted()
+            .forEach { roleKey ->
+                if (
+                    entityExists(connection, "permission_player_role_grants", "role_key = ?") {
+                        statement ->
+                        statement.setString(1, roleKey)
+                    }
+                ) {
+                    throw PermissionSyncConflictException(PermissionSyncConflictReason.ROLE_IN_USE)
+                }
+            }
+    }
+
+    private fun demoteCurrentDefaultBeforeAppliedDefault(
+        connection: Connection,
+        sourceRoles: List<SyncRole>,
+        actionMap: Map<Pair<SyncEntityType, String>, PermissionSyncAction>,
+    ) {
+        val appliedDefaultRole =
+            sourceRoles.firstOrNull { role ->
+                role.isDefault &&
+                    actionMap[SyncEntityType.ROLE to role.key]?.action != SyncAction.KEEP_PROJECT
+            } ?: return
+        connection
+            .prepareStatement(
+                "UPDATE permission_roles SET is_default = FALSE, updated_at = now() WHERE is_default = TRUE AND key <> ?"
+            )
+            .use { statement ->
+                statement.setString(1, appliedDefaultRole.key)
+                statement.executeUpdate()
+            }
     }
 
     private fun RoleRecord.toSync() =

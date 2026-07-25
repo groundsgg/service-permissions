@@ -11,7 +11,10 @@ import gg.grounds.permissions.identity.IdentitySyncStatus
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.policy.PolicyEngine
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
+import gg.grounds.permissions.sync.PermissionSnapshotFingerprint
 import gg.grounds.permissions.sync.PermissionSyncAction
+import gg.grounds.permissions.sync.PermissionSyncConflictException
+import gg.grounds.permissions.sync.PermissionSyncConflictReason
 import gg.grounds.permissions.sync.SyncAction
 import gg.grounds.permissions.sync.SyncEntityType
 import gg.grounds.permissions.sync.SyncInheritance
@@ -24,9 +27,15 @@ import jakarta.inject.Inject
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 import java.sql.Connection
+import java.sql.PreparedStatement
 import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -647,6 +656,7 @@ class PermissionRepositoryTest {
         assertThrows(Exception::class.java) {
             repository.importPermissionSnapshot(
                 snapshot,
+                expectedTargetFingerprint = currentFingerprint(),
                 actions =
                     listOf(
                         PermissionSyncAction(SyncEntityType.ROLE, "imported", SyncAction.IMPORT)
@@ -660,16 +670,24 @@ class PermissionRepositoryTest {
 
     @Test
     fun recordsSyncImportsWithTheProvidedAuditActor() {
+        val reviewedTargetFingerprint = currentFingerprint()
         repository.importPermissionSnapshot(
             GlobalPermissionSnapshot(
+                schemaVersion = 1,
+                sourceEnvironment = "prod",
+                sourceServiceVersion = "1.2.3",
                 snapshotId = "audit-actor-boundary",
-                roles = emptyList(),
+                roles = listOf(SyncRole("imported-role", "Imported role")),
                 roleGrants = emptyList(),
                 inheritance = emptyList(),
                 catalogEntries = emptyList(),
                 keycloakMappings = emptyList(),
             ),
-            actions = emptyList(),
+            expectedTargetFingerprint = reviewedTargetFingerprint,
+            actions =
+                listOf(
+                    PermissionSyncAction(SyncEntityType.ROLE, "imported-role", SyncAction.IMPORT)
+                ),
             actorUserId = "sync-user",
         )
 
@@ -683,6 +701,567 @@ class PermissionRepositoryTest {
 
         assertEquals("sync-user", event.actorUserId)
         assertEquals("audit-actor-boundary", event.metadata.get("snapshotId").asText())
+        assertEquals("prod", event.metadata.get("sourceEnvironment").asText())
+        assertEquals("1.2.3", event.metadata.get("sourceServiceVersion").asText())
+        assertEquals(reviewedTargetFingerprint, event.metadata.get("targetFingerprint").asText())
+        assertEquals("success", event.metadata.get("result").asText())
+        assertEquals(
+            "ROLE",
+            event.metadata.get("selectedActions").get(0).get("entityType").asText(),
+        )
+        assertEquals(
+            "imported-role",
+            event.metadata.get("selectedActions").get(0).get("technicalKey").asText(),
+        )
+        assertEquals("IMPORT", event.metadata.get("selectedActions").get(0).get("action").asText())
+    }
+
+    @Test
+    fun rejectsChangedTargetBeforeApplyingAnySnapshotWrites() {
+        val reviewedTargetFingerprint = currentFingerprint()
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "changed-after-preview", name = "Changed"),
+        )
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+
+        val error =
+            assertThrows(PermissionSyncConflictException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "stale-review",
+                        roles = listOf(SyncRole("must-not-import", "Must not import")),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "must-not-import",
+                                SyncAction.IMPORT,
+                            )
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(PermissionSyncConflictReason.TARGET_CHANGED, error.reason)
+        assertNull(repository.getRole("must-not-import"))
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun rejectsDuplicateActionsWithoutWritesMetadataOrAudit() {
+        repository.createRole(testActor, RoleRecord(key = "staff", name = "Project staff"))
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "duplicate-actions",
+                        roles = listOf(SyncRole("staff", "Global staff")),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(SyncEntityType.ROLE, "staff", SyncAction.IMPORT),
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "staff",
+                                SyncAction.KEEP_PROJECT,
+                            ),
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals("Duplicate sync action (entityType=ROLE, technicalKey=staff)", error.message)
+        assertEquals("Project staff", repository.getRole("staff")?.name)
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun transfersDefaultRoleFromLaterKeyToEarlierKey() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true),
+        )
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "a-incoming-default", name = "Incoming default"),
+        )
+        val reviewedTargetFingerprint = currentFingerprint()
+
+        repository.importPermissionSnapshot(
+            GlobalPermissionSnapshot(
+                snapshotId = "default-transfer",
+                roles =
+                    listOf(
+                        SyncRole(
+                            key = "a-incoming-default",
+                            name = "Incoming default",
+                            isDefault = true,
+                        ),
+                        SyncRole(
+                            key = "z-current-default",
+                            name = "Current default",
+                            isDefault = false,
+                        ),
+                    ),
+                roleGrants = emptyList(),
+                inheritance = emptyList(),
+                catalogEntries = emptyList(),
+            ),
+            expectedTargetFingerprint = reviewedTargetFingerprint,
+            actions =
+                listOf(
+                    PermissionSyncAction(
+                        SyncEntityType.ROLE,
+                        "a-incoming-default",
+                        SyncAction.USE_GLOBAL,
+                    ),
+                    PermissionSyncAction(
+                        SyncEntityType.ROLE,
+                        "z-current-default",
+                        SyncAction.USE_GLOBAL,
+                    ),
+                ),
+            actorUserId = "sync-user",
+        )
+
+        assertEquals(
+            listOf("a-incoming-default"),
+            repository.listRoles().filter(RoleRecord::isDefault).map(RoleRecord::key),
+        )
+    }
+
+    @Test
+    fun rejectsKeepingCurrentDefaultWhileApplyingDifferentDefault() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true),
+        )
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "a-incoming-default", name = "Incoming default"),
+        )
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "conflicting-default-actions",
+                        roles =
+                            listOf(
+                                SyncRole(
+                                    key = "a-incoming-default",
+                                    name = "Incoming default",
+                                    isDefault = true,
+                                ),
+                                SyncRole(
+                                    key = "z-current-default",
+                                    name = "Current default",
+                                    isDefault = false,
+                                ),
+                            ),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "a-incoming-default",
+                                SyncAction.USE_GLOBAL,
+                            ),
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "z-current-default",
+                                SyncAction.KEEP_PROJECT,
+                            ),
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(
+            "Permission sync would leave multiple default roles (roleKeys=a-incoming-default,z-current-default)",
+            error.message,
+        )
+        assertEquals(
+            mapOf("a-incoming-default" to false, "z-current-default" to true),
+            repository.listRoles().associate { it.key to it.isDefault },
+        )
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun rejectsMultipleIncomingDefaultRolesBeforeWrites() {
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "multiple-incoming-defaults",
+                        roles =
+                            listOf(
+                                SyncRole("z-global-default", "Zulu", isDefault = true),
+                                SyncRole("a-global-default", "Alpha", isDefault = true),
+                            ),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "a-global-default",
+                                SyncAction.IMPORT,
+                            ),
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "z-global-default",
+                                SyncAction.IMPORT,
+                            ),
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(
+            "Permission sync would leave multiple default roles (roleKeys=a-global-default,z-global-default)",
+            error.message,
+        )
+        assertTrue(repository.listRoles().isEmpty())
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun rejectsIncomingDefaultWhileRetainingProjectOnlyDefault() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-project-default", name = "Project default", isDefault = true),
+        )
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "retained-project-default",
+                        roles =
+                            listOf(
+                                SyncRole("a-global-default", "Global default", isDefault = true)
+                            ),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "a-global-default",
+                                SyncAction.IMPORT,
+                            )
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(
+            "Permission sync would leave multiple default roles (roleKeys=a-global-default,z-project-default)",
+            error.message,
+        )
+        assertEquals(
+            mapOf("z-project-default" to true),
+            repository.listRoles().associate { it.key to it.isDefault },
+        )
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun keepsCurrentDefaultWhenIncomingDefaultUsesKeepProject() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true),
+        )
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "a-incoming-default", name = "Incoming default"),
+        )
+
+        repository.importPermissionSnapshot(
+            GlobalPermissionSnapshot(
+                snapshotId = "kept-default-transfer",
+                roles =
+                    listOf(
+                        SyncRole(
+                            key = "a-incoming-default",
+                            name = "Incoming default",
+                            isDefault = true,
+                        )
+                    ),
+                roleGrants = emptyList(),
+                inheritance = emptyList(),
+                catalogEntries = emptyList(),
+            ),
+            expectedTargetFingerprint = currentFingerprint(),
+            actions =
+                listOf(
+                    PermissionSyncAction(
+                        SyncEntityType.ROLE,
+                        "a-incoming-default",
+                        SyncAction.KEEP_PROJECT,
+                    )
+                ),
+            actorUserId = "sync-user",
+        )
+
+        assertEquals(
+            listOf("z-current-default"),
+            repository.listRoles().filter(RoleRecord::isDefault).map(RoleRecord::key),
+        )
+    }
+
+    @Test
+    fun rejectsRoleRemovalWhenPostPreviewPlayerAssignmentReferencesRole() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000501")
+        val assignmentId = UUID.fromString("00000000-0000-0000-0000-000000000502")
+        repository.createRole(testActor, RoleRecord(key = "project-only", name = "Project only"))
+        val reviewedTargetFingerprint = currentFingerprint()
+        repository.createPlayerRoleGrant(
+            "assignment-user",
+            PlayerRoleGrantRecord(assignmentId, playerId, "project-only"),
+        )
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(PermissionSyncConflictException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "role-in-use",
+                        roles = emptyList(),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "project-only",
+                                SyncAction.REMOVE_PROJECT_ENTRY,
+                            )
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(PermissionSyncConflictReason.ROLE_IN_USE, error.reason)
+        assertEquals("Project only", repository.getRole("project-only")?.name)
+        assertEquals(
+            listOf(assignmentId),
+            repository.listPlayerRoleGrantRecords(playerId).map(PlayerRoleGrantRecord::id),
+        )
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun normalPolicyWriterWaitsForImportFingerprintTransactionBeforeEnteringMutation() {
+        val observedDataSource = PolicyLockObservingDataSource(dataSource)
+        val observedRepository =
+            PermissionRepository(observedDataSource, objectMapper, identityRepository, mock())
+        val reviewedTargetFingerprint = currentFingerprint()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val importFuture =
+                executor.submit<PermissionSyncMetadataRecord> {
+                    observedRepository.importPermissionSnapshot(
+                        GlobalPermissionSnapshot(
+                            snapshotId = "concurrent-import",
+                            roles = listOf(SyncRole("imported", "Imported")),
+                            roleGrants = emptyList(),
+                            inheritance = emptyList(),
+                            catalogEntries = emptyList(),
+                        ),
+                        expectedTargetFingerprint = reviewedTargetFingerprint,
+                        actions =
+                            listOf(
+                                PermissionSyncAction(
+                                    SyncEntityType.ROLE,
+                                    "imported",
+                                    SyncAction.IMPORT,
+                                )
+                            ),
+                        actorUserId = "sync-user",
+                    )
+                }
+            assertTrue(observedDataSource.importReachedFirstPolicyWrite.await(10, TimeUnit.SECONDS))
+
+            val writerFuture =
+                executor.submit<RoleRecord> {
+                    observedRepository.createRole(
+                        "writer-user",
+                        RoleRecord(key = "writer", name = "Writer"),
+                    )
+                }
+            assertTrue(observedDataSource.writerAttemptedPolicyLock.await(10, TimeUnit.SECONDS))
+            assertEquals(1L, observedDataSource.writerReachedPolicyWrite.count)
+            assertEquals(false, writerFuture.isDone)
+
+            observedDataSource.allowImportPolicyWrite.countDown()
+            assertEquals("concurrent-import", importFuture.get(10, TimeUnit.SECONDS).snapshotId)
+            assertEquals("writer", writerFuture.get(10, TimeUnit.SECONDS).key)
+            assertEquals(0L, observedDataSource.writerReachedPolicyWrite.count)
+            assertEquals(
+                setOf("imported", "writer"),
+                repository.listRoles().mapTo(mutableSetOf()) { it.key },
+            )
+        } finally {
+            observedDataSource.allowImportPolicyWrite.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun playerAssignmentWriterCannotEnterBetweenRoleUseGuardAndRoleDelete() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000504")
+        repository.createRole(testActor, RoleRecord(key = "project-only", name = "Project only"))
+        val reviewedTargetFingerprint = currentFingerprint()
+        val observedDataSource =
+            PolicyLockObservingDataSource(
+                delegate = dataSource,
+                importPolicyWriteSqlPrefix = "DELETE FROM permission_roles",
+                writerPolicyWriteSqlPrefix = "INSERT INTO permission_player_role_grants",
+            )
+        val observedRepository =
+            PermissionRepository(observedDataSource, objectMapper, identityRepository, mock())
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val importFuture =
+                executor.submit<PermissionSyncMetadataRecord> {
+                    observedRepository.importPermissionSnapshot(
+                        GlobalPermissionSnapshot(
+                            snapshotId = "guarded-role-removal",
+                            roles = emptyList(),
+                            roleGrants = emptyList(),
+                            inheritance = emptyList(),
+                            catalogEntries = emptyList(),
+                        ),
+                        expectedTargetFingerprint = reviewedTargetFingerprint,
+                        actions =
+                            listOf(
+                                PermissionSyncAction(
+                                    SyncEntityType.ROLE,
+                                    "project-only",
+                                    SyncAction.REMOVE_PROJECT_ENTRY,
+                                )
+                            ),
+                        actorUserId = "sync-user",
+                    )
+                }
+            assertTrue(observedDataSource.importReachedFirstPolicyWrite.await(10, TimeUnit.SECONDS))
+
+            val writerFuture =
+                executor.submit<PlayerRoleGrantRecord> {
+                    observedRepository.createPlayerRoleGrant(
+                        "assignment-user",
+                        PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "project-only"),
+                    )
+                }
+            assertTrue(observedDataSource.writerAttemptedPolicyLock.await(10, TimeUnit.SECONDS))
+            assertEquals(1L, observedDataSource.writerReachedPolicyWrite.count)
+            assertEquals(false, writerFuture.isDone)
+
+            observedDataSource.allowImportPolicyWrite.countDown()
+            assertEquals("guarded-role-removal", importFuture.get(10, TimeUnit.SECONDS).snapshotId)
+            assertThrows(ExecutionException::class.java) { writerFuture.get(10, TimeUnit.SECONDS) }
+            assertNull(repository.getRole("project-only"))
+            assertTrue(repository.listPlayerRoleGrantRecords(playerId).isEmpty())
+        } finally {
+            observedDataSource.allowImportPolicyWrite.countDown()
+            executor.shutdownNow()
+        }
     }
 
     @Test
@@ -726,6 +1305,7 @@ class PermissionRepositoryTest {
 
         repository.importPermissionSnapshot(
             snapshot,
+            expectedTargetFingerprint = currentFingerprint(),
             actions =
                 listOf(
                     PermissionSyncAction(
@@ -758,7 +1338,12 @@ class PermissionRepositoryTest {
             )
 
         assertThrows(IllegalArgumentException::class.java) {
-            repository.importPermissionSnapshot(snapshot, emptyList(), "test-user")
+            repository.importPermissionSnapshot(
+                snapshot,
+                expectedTargetFingerprint = currentFingerprint(),
+                actions = emptyList(),
+                actorUserId = "test-user",
+            )
         }
         assertTrue(repository.listRoleInheritances().isEmpty())
     }
@@ -783,6 +1368,21 @@ class PermissionRepositoryTest {
                 }
         }
     }
+
+    private fun currentFingerprint(): String =
+        PermissionSnapshotFingerprint(objectMapper)
+            .calculate(repository.permissionProjectSnapshot())
+
+    private fun countSyncMetadata(): Long =
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("SELECT COUNT(*) FROM permission_sync_metadata").use {
+                statement ->
+                statement.executeQuery().use { rows ->
+                    check(rows.next())
+                    rows.getLong(1)
+                }
+            }
+        }
 
     private class InterleavingAuditDataSource(private val delegate: DataSource) :
         DataSource by delegate {
@@ -841,5 +1441,69 @@ class PermissionRepositoryTest {
                     }
             }
         }
+    }
+
+    private class PolicyLockObservingDataSource(
+        private val delegate: DataSource,
+        private val importPolicyWriteSqlPrefix: String = "INSERT INTO permission_roles",
+        private val writerPolicyWriteSqlPrefix: String = "INSERT INTO permission_roles",
+    ) : DataSource by delegate {
+        val importReachedFirstPolicyWrite = CountDownLatch(1)
+        val allowImportPolicyWrite = CountDownLatch(1)
+        val writerAttemptedPolicyLock = CountDownLatch(1)
+        val writerReachedPolicyWrite = CountDownLatch(1)
+        private val connectionSequence = AtomicInteger()
+
+        override fun getConnection(): Connection {
+            val connection = delegate.connection
+            val connectionNumber = connectionSequence.incrementAndGet()
+            return Proxy.newProxyInstance(
+                Connection::class.java.classLoader,
+                arrayOf(Connection::class.java),
+            ) { _, method, arguments ->
+                val sql = arguments?.firstOrNull() as? String
+                if (method.name == "prepareStatement" && sql != null) {
+                    if (connectionNumber == 1 && sql.startsWith(importPolicyWriteSqlPrefix)) {
+                        importReachedFirstPolicyWrite.countDown()
+                        check(allowImportPolicyWrite.await(10, TimeUnit.SECONDS)) {
+                            "Timed out waiting to release import policy write"
+                        }
+                    }
+                    if (connectionNumber == 2 && sql.startsWith(writerPolicyWriteSqlPrefix)) {
+                        writerReachedPolicyWrite.countDown()
+                    }
+                }
+                val result = invoke(connection, method, arguments)
+                if (
+                    connectionNumber == 2 &&
+                        method.name == "prepareStatement" &&
+                        sql?.startsWith("SELECT version FROM permission_policy_versions") == true
+                ) {
+                    val statement = result as PreparedStatement
+                    Proxy.newProxyInstance(
+                        PreparedStatement::class.java.classLoader,
+                        arrayOf(PreparedStatement::class.java),
+                    ) { _, statementMethod, statementArguments ->
+                        if (statementMethod.name == "executeQuery") {
+                            writerAttemptedPolicyLock.countDown()
+                        }
+                        invoke(statement, statementMethod, statementArguments)
+                    } as PreparedStatement
+                } else {
+                    result
+                }
+            } as Connection
+        }
+
+        private fun invoke(
+            target: Any,
+            method: java.lang.reflect.Method,
+            arguments: Array<out Any?>?,
+        ): Any? =
+            try {
+                method.invoke(target, *(arguments ?: emptyArray()))
+            } catch (error: InvocationTargetException) {
+                throw error.targetException
+            }
     }
 }

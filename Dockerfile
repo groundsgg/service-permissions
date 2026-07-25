@@ -1,6 +1,7 @@
 FROM eclipse-temurin:25-jdk AS build
 
 ARG GITHUB_USER
+ARG BUILD_VERSION=dev
 
 WORKDIR /workspace
 
@@ -17,6 +18,7 @@ RUN --mount=type=cache,target=/root/.gradle/caches,sharing=locked \
       ./gradlew --no-daemon --stacktrace \
         -Pgithub.user="${GITHUB_USER}" \
         -Pgithub.token="${token}" \
+        -Dquarkus.application.version="${BUILD_VERSION}" \
         quarkusBuild -x test \
     '
 

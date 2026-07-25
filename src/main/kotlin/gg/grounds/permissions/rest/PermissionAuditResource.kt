@@ -39,7 +39,7 @@ constructor(
         @QueryParam("perPage") @DefaultValue("25") perPage: Int,
         @Context headers: HttpHeaders,
     ): PermissionAuditPageResponse {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsView(identity, headers)
         val result =
             repository.listAuditEvents(
                 PermissionAuditEventQuery(
