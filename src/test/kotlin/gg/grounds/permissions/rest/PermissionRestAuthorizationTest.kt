@@ -76,6 +76,12 @@ class PermissionRestAuthorizationTest {
         given().post("/v1/permissions/identity-sync").then().statusCode(403)
     }
 
+    @Test
+    @TestSecurity(user = "user-without-access")
+    fun rejectsAuthenticatedUsersWithoutSnapshotReadAccess() {
+        given().get("/v1/permissions/sync/snapshot").then().statusCode(403)
+    }
+
     @ParameterizedTest(name = "stage view reaches read endpoint {0}")
     @MethodSource("readEndpoints")
     @TestSecurity(
