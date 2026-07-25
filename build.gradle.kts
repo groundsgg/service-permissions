@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.compile.JavaCompile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
@@ -17,6 +18,14 @@ java {
 tasks.withType<JavaCompile>().configureEach { options.release.set(25) }
 
 tasks.withType<KotlinCompile>().configureEach { compilerOptions.jvmTarget.set(JvmTarget.JVM_25) }
+
+tasks.register<Copy>("generateOpenApiSnapshot") {
+    group = "documentation"
+    dependsOn(tasks.named("quarkusBuild"))
+    from(layout.buildDirectory.file("generated/openapi/openapi.json"))
+    into(layout.buildDirectory.dir("api-reference"))
+    rename { "openapi.json" }
+}
 
 repositories {
     mavenCentral()
@@ -43,8 +52,11 @@ dependencies {
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-smallrye-jwt")
     implementation("io.quarkus:quarkus-smallrye-health")
+    implementation("io.quarkus:quarkus-smallrye-openapi")
     implementation("io.quarkus:quarkus-scheduler")
     implementation("io.quarkus:quarkus-opentelemetry")
+    implementation("io.quarkus:quarkus-kubernetes-client")
+    implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("com.google.protobuf:protobuf-kotlin")
@@ -54,6 +66,7 @@ dependencies {
     testImplementation("io.quarkus:quarkus-junit5-mockito")
     testImplementation("io.quarkus:quarkus-test-security")
     testImplementation("io.rest-assured:rest-assured")
+    testImplementation("org.assertj:assertj-core:3.27.7")
     testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")
 }
