@@ -1255,6 +1255,35 @@ constructor(
         return entry
     }
 
+    fun replaceRuntimeManifest(registration: RuntimeManifestRegistration) {
+        require(
+            registration.permissions.map(CatalogEntryRecord::key).distinct().size ==
+                registration.permissions.size
+        ) {
+            "Runtime manifest permission keys must be unique"
+        }
+        write(
+            actorUserId = RUNTIME_CATALOG_ACTOR,
+            action = "catalog.runtime_manifest.replaced",
+            target = "catalog-source:${registration.source}",
+            metadata =
+                auditMetadata {
+                    put("source", registration.source)
+                    put("sourceVersion", registration.sourceVersion)
+                    put("serverType", registration.serverType)
+                    put("serverId", registration.serverId)
+                    put("permissionCount", registration.permissions.size)
+                },
+        ) { connection ->
+            assertRuntimeCatalogOwnership(connection, registration)
+            registration.permissions.forEach { entry ->
+                upsertRuntimeCatalogEntry(connection, registration, entry)
+            }
+            deleteStaleRuntimeCatalogEntries(connection, registration)
+            insertRuntimeManifestRegistration(connection, registration)
+        }
+    }
+
     fun listCatalogEntries(): List<CatalogEntryRecord> = read(::listCatalogEntries)
 
     private fun listCatalogEntries(connection: Connection): List<CatalogEntryRecord> =
@@ -2046,6 +2075,149 @@ constructor(
                 statement.executeQuery().use { rows -> rows.next() }
             }
 
+    private fun assertRuntimeCatalogOwnership(
+        connection: Connection,
+        registration: RuntimeManifestRegistration,
+    ) {
+        if (registration.permissions.isEmpty()) {
+            return
+        }
+        connection
+            .prepareStatement(
+                """
+                SELECT permission_key, source, custom
+                FROM permission_catalog_entries
+                WHERE permission_key = ANY (?)
+                ORDER BY permission_key ASC
+                FOR UPDATE
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setArray(
+                    1,
+                    connection.createArrayOf(
+                        "text",
+                        registration.permissions.map(CatalogEntryRecord::key).toTypedArray(),
+                    ),
+                )
+                statement.executeQuery().use { rows ->
+                    while (rows.next()) {
+                        val existingSource = rows.getString("source")
+                        if (rows.getBoolean("custom") || existingSource != registration.source) {
+                            throw CatalogSourceConflictException(
+                                permissionKey = rows.getString("permission_key"),
+                                existingSource = existingSource,
+                                requestedSource = registration.source,
+                            )
+                        }
+                    }
+                }
+            }
+    }
+
+    private fun upsertRuntimeCatalogEntry(
+        connection: Connection,
+        registration: RuntimeManifestRegistration,
+        entry: CatalogEntryRecord,
+    ) {
+        connection
+            .prepareStatement(
+                """
+                INSERT INTO permission_catalog_entries (
+                    permission_key, label, description, source, source_version,
+                    supported_scopes, custom, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, FALSE, ?)
+                ON CONFLICT (permission_key) DO UPDATE SET
+                    label = EXCLUDED.label,
+                    description = EXCLUDED.description,
+                    source = EXCLUDED.source,
+                    source_version = EXCLUDED.source_version,
+                    supported_scopes = EXCLUDED.supported_scopes,
+                    custom = FALSE,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    updated_at = now()
+                WHERE permission_catalog_entries.label IS DISTINCT FROM EXCLUDED.label
+                   OR permission_catalog_entries.description IS DISTINCT FROM EXCLUDED.description
+                   OR permission_catalog_entries.source IS DISTINCT FROM EXCLUDED.source
+                   OR permission_catalog_entries.source_version IS DISTINCT FROM EXCLUDED.source_version
+                   OR permission_catalog_entries.supported_scopes IS DISTINCT FROM EXCLUDED.supported_scopes
+                   OR permission_catalog_entries.custom IS DISTINCT FROM FALSE
+                   OR permission_catalog_entries.last_seen_at IS DISTINCT FROM EXCLUDED.last_seen_at
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, entry.key)
+                statement.setString(2, entry.label)
+                statement.setString(3, entry.description)
+                statement.setString(4, registration.source)
+                statement.setString(5, registration.sourceVersion)
+                statement.setArray(
+                    6,
+                    connection.createArrayOf(
+                        "text",
+                        entry.supportedScopes.map { it.name }.toTypedArray(),
+                    ),
+                )
+                statement.setTimestamp(7, Timestamp.from(registration.registeredAt))
+                statement.executeUpdate()
+            }
+    }
+
+    private fun deleteStaleRuntimeCatalogEntries(
+        connection: Connection,
+        registration: RuntimeManifestRegistration,
+    ) {
+        connection
+            .prepareStatement(
+                """
+                DELETE FROM permission_catalog_entries
+                WHERE custom = FALSE
+                  AND source = ?
+                  AND permission_key <> ALL (?)
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setString(1, registration.source)
+                statement.setArray(
+                    2,
+                    connection.createArrayOf(
+                        "text",
+                        registration.permissions.map(CatalogEntryRecord::key).toTypedArray(),
+                    ),
+                )
+                statement.executeUpdate()
+            }
+    }
+
+    private fun insertRuntimeManifestRegistration(
+        connection: Connection,
+        registration: RuntimeManifestRegistration,
+    ) {
+        connection
+            .prepareStatement(
+                """
+                INSERT INTO permission_runtime_registrations (
+                    id, source, source_version, server_type, server_id, registered_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setObject(1, UUID.randomUUID())
+                statement.setString(2, registration.source)
+                statement.setString(3, registration.sourceVersion)
+                statement.setString(4, registration.serverType)
+                statement.setString(5, registration.serverId)
+                statement.setTimestamp(6, Timestamp.from(registration.registeredAt))
+                statement.executeUpdate()
+            }
+    }
+
     private fun upsertRole(connection: Connection, role: SyncRole) {
         connection
             .prepareStatement(
@@ -2498,6 +2670,7 @@ constructor(
 
     companion object {
         private const val REPOSITORY_SYSTEM_ACTOR = "system:repository"
+        private const val RUNTIME_CATALOG_ACTOR = "runtime:catalog"
         private const val POSTGRES_UNIQUE_VIOLATION = "23505"
         private const val PERMISSION_ROLES_PRIMARY_KEY = "permission_roles_pkey"
         private val REFRESH_AFTER_OFFSET = Duration.ofMinutes(5)

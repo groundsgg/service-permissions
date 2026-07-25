@@ -1,6 +1,7 @@
 package gg.grounds.permissions.rest
 
 import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
+import gg.grounds.permissions.persistence.CatalogSourceConflictException
 import gg.grounds.permissions.persistence.DuplicateRoleKeyException
 import gg.grounds.permissions.sync.PermissionSyncConflictException
 import jakarta.ws.rs.NotFoundException
@@ -25,12 +26,13 @@ abstract class PermissionExceptionMapperSupport {
         detail: String,
         error: String? = null,
         reason: String? = null,
+        type: URI = URI.create("about:blank"),
     ): Response =
         Response.status(status)
             .type(MediaType.valueOf(PROBLEM_JSON))
             .entity(
                 ProblemDetails(
-                    type = URI.create("about:blank"),
+                    type = type,
                     title = status.reasonPhrase,
                     status = status.statusCode,
                     detail = detail,
@@ -126,6 +128,18 @@ class DuplicateRoleKeyExceptionMapper :
             Response.Status.CONFLICT,
             "A role with this key already exists.",
             "role_key_conflict",
+        )
+}
+
+@Provider
+class CatalogSourceConflictExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<CatalogSourceConflictException> {
+    override fun toResponse(exception: CatalogSourceConflictException): Response =
+        problem(
+            status = Response.Status.CONFLICT,
+            detail = "A permission key is already owned by another catalog source.",
+            error = "catalog_source_conflict",
+            type = URI.create("/problems/catalog-source-conflict"),
         )
 }
 
