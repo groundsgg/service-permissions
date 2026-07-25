@@ -33,6 +33,24 @@ class PermissionSyncDiffTest {
     }
 
     @Test
+    fun rejectsPlayerRoleGrantsInGlobalSnapshots() {
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                GlobalPermissionSnapshot(
+                    snapshotId = "snapshot-1",
+                    roles = emptyList(),
+                    roleGrants = emptyList(),
+                    inheritance = emptyList(),
+                    catalogEntries = emptyList(),
+                    keycloakMappings = emptyList(),
+                    playerRoleGrants = listOf(SyncPlayerGrant("must-never-be-accepted")),
+                )
+            }
+
+        assertEquals("playerRoleGrants must not be provided", error.message)
+    }
+
+    @Test
     fun preservesDefaultRoleWireNameDuringSnapshotRoundTrip() {
         val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
         val json =
@@ -162,6 +180,63 @@ class PermissionSyncDiffTest {
         assertEquals("project", snapshot.sourceEnvironment)
         assertEquals("test-version", snapshot.sourceServiceVersion)
     }
+
+    @Test
+    fun productionTargetsAcceptStageSnapshots() {
+        assertEquals(
+            emptyList<SyncChange>(),
+            serviceFor("prod").preview(compatibleSnapshot("stage")).changes,
+        )
+    }
+
+    @Test
+    fun projectTargetsAcceptProductionSnapshots() {
+        assertEquals(
+            emptyList<SyncChange>(),
+            serviceFor(" ").preview(compatibleSnapshot("prod")).changes,
+        )
+    }
+
+    @Test
+    fun legacySnapshotsWithoutMetadataReportUnsupportedSchema() {
+        val error =
+            assertThrows(PermissionSyncConflictException::class.java) {
+                serviceFor("stage")
+                    .preview(
+                        compatibleSnapshot(sourceEnvironment = "prod")
+                            .copy(schemaVersion = 0, sourceEnvironment = "")
+                    )
+            }
+
+        assertEquals(PermissionSyncConflictReason.UNSUPPORTED_SCHEMA, error.reason)
+    }
+
+    private fun serviceFor(instanceEnvironment: String): PermissionSyncService {
+        val repository = mock<PermissionRepository>()
+        whenever(repository.permissionProjectSnapshot()).thenReturn(emptyProjectSnapshot())
+        return PermissionSyncService(repository, Optional.of(instanceEnvironment), "test-version")
+    }
+
+    private fun compatibleSnapshot(sourceEnvironment: String) =
+        GlobalPermissionSnapshot(
+            schemaVersion = 1,
+            sourceEnvironment = sourceEnvironment,
+            sourceServiceVersion = "test-version",
+            snapshotId = "snapshot-1",
+            roles = emptyList(),
+            roleGrants = emptyList(),
+            inheritance = emptyList(),
+            catalogEntries = emptyList(),
+        )
+
+    private fun emptyProjectSnapshot() =
+        PermissionProjectSnapshot(
+            roles = emptyList(),
+            roleGrants = emptyList(),
+            inheritance = emptyList(),
+            catalogEntries = emptyList(),
+            keycloakMappings = emptyList(),
+        )
 
     private fun sampleSnapshot() =
         GlobalPermissionSnapshot(
