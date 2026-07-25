@@ -59,6 +59,8 @@ One Quarkus deployment exposes two logical API surfaces through two Kubernetes S
 
 Both Services target the same pods and HTTP listener. The additional Service creates a stable runtime URL, separates deployment configuration, supports targeted NetworkPolicies, and establishes the DNS identity needed by the later HTTPS work. It is not a separate application and does not replace backend authorization.
 
+The REST-only Quarkus listener moves from the shared gRPC-era port `9000` to HTTP port `8080`. Both Kubernetes Services target port `8080`, and the runtime URL is `http://service-permissions-runtime.<namespace>.svc.cluster.local:8080` until issue #298 adds HTTPS.
+
 The public ingress must not publish `/v1/permissions/runtime/**`. Backend authentication remains authoritative even if routing is misconfigured.
 
 ```mermaid
@@ -224,6 +226,8 @@ Every non-success REST response uses `application/problem+json` and includes:
 - `instance`
 - `requestId` as an extension field
 
+Existing administration clients depend on stable machine-readable error codes such as `role_key_conflict`. Administration problems therefore preserve that code in an optional RFC 9457 extension field named `error`; conflict-specific safe metadata such as the permission-sync `reason` remains an optional extension as well. New clients render `detail` for humans and use the extension only for documented branching behavior.
+
 Validation details may identify fields but must not echo bearer tokens, credentials, sensitive headers, or raw upstream Kubernetes responses. Authentication failures use stable public messages; specific validation causes belong only in safe structured logs.
 
 ## Authentication and Authorization
@@ -332,7 +336,7 @@ Configuration:
 - `PERMISSIONS_TOKEN_FILE`
 - existing server type and server ID context values
 
-The old `PERMISSIONS_GRPC_TARGET` is removed.
+The old `PERMISSIONS_GRPC_TARGET` is removed. `PERMISSIONS_SERVICE_URL` must be an absolute `http` or `https` URI and must not contain embedded credentials, query parameters, or fragments.
 
 ### Snapshot behavior
 
@@ -543,6 +547,7 @@ Database changes must remain backward-compatible. Additive nullable structures o
 After the rollout passes:
 
 - remove old gRPC ports and health configuration
+- remove port `9000` and expose the REST listener on port `8080`
 - remove Protobuf generation and dependencies
 - remove `PERMISSIONS_GRPC_TARGET`
 - remove obsolete dashboards and alerts
