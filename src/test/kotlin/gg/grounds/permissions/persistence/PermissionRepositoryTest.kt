@@ -32,6 +32,7 @@ import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -806,6 +807,159 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun transfersDefaultRoleFromLaterKeyToEarlierKey() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true),
+        )
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "a-incoming-default", name = "Incoming default"),
+        )
+        val reviewedTargetFingerprint = currentFingerprint()
+
+        repository.importPermissionSnapshot(
+            GlobalPermissionSnapshot(
+                snapshotId = "default-transfer",
+                roles =
+                    listOf(
+                        SyncRole(
+                            key = "a-incoming-default",
+                            name = "Incoming default",
+                            isDefault = true,
+                        ),
+                        SyncRole(
+                            key = "z-current-default",
+                            name = "Current default",
+                            isDefault = false,
+                        ),
+                    ),
+                roleGrants = emptyList(),
+                inheritance = emptyList(),
+                catalogEntries = emptyList(),
+            ),
+            expectedTargetFingerprint = reviewedTargetFingerprint,
+            actions =
+                listOf(
+                    PermissionSyncAction(
+                        SyncEntityType.ROLE,
+                        "a-incoming-default",
+                        SyncAction.USE_GLOBAL,
+                    ),
+                    PermissionSyncAction(
+                        SyncEntityType.ROLE,
+                        "z-current-default",
+                        SyncAction.USE_GLOBAL,
+                    ),
+                ),
+            actorUserId = "sync-user",
+        )
+
+        assertEquals(
+            listOf("a-incoming-default"),
+            repository.listRoles().filter(RoleRecord::isDefault).map(RoleRecord::key),
+        )
+    }
+
+    @Test
+    fun keepsCurrentDefaultWhenIncomingDefaultUsesKeepProject() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true),
+        )
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "a-incoming-default", name = "Incoming default"),
+        )
+
+        repository.importPermissionSnapshot(
+            GlobalPermissionSnapshot(
+                snapshotId = "kept-default-transfer",
+                roles =
+                    listOf(
+                        SyncRole(
+                            key = "a-incoming-default",
+                            name = "Incoming default",
+                            isDefault = true,
+                        )
+                    ),
+                roleGrants = emptyList(),
+                inheritance = emptyList(),
+                catalogEntries = emptyList(),
+            ),
+            expectedTargetFingerprint = currentFingerprint(),
+            actions =
+                listOf(
+                    PermissionSyncAction(
+                        SyncEntityType.ROLE,
+                        "a-incoming-default",
+                        SyncAction.KEEP_PROJECT,
+                    )
+                ),
+            actorUserId = "sync-user",
+        )
+
+        assertEquals(
+            listOf("z-current-default"),
+            repository.listRoles().filter(RoleRecord::isDefault).map(RoleRecord::key),
+        )
+    }
+
+    @Test
+    fun rejectsRoleRemovalWhenPostPreviewPlayerAssignmentReferencesRole() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000501")
+        val assignmentId = UUID.fromString("00000000-0000-0000-0000-000000000502")
+        repository.createRole(testActor, RoleRecord(key = "project-only", name = "Project only"))
+        val reviewedTargetFingerprint = currentFingerprint()
+        repository.createPlayerRoleGrant(
+            "assignment-user",
+            PlayerRoleGrantRecord(assignmentId, playerId, "project-only"),
+        )
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(PermissionSyncConflictException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "role-in-use",
+                        roles = emptyList(),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "project-only",
+                                SyncAction.REMOVE_PROJECT_ENTRY,
+                            )
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(PermissionSyncConflictReason.ROLE_IN_USE, error.reason)
+        assertEquals("Project only", repository.getRole("project-only")?.name)
+        assertEquals(
+            listOf(assignmentId),
+            repository.listPlayerRoleGrantRecords(playerId).map(PlayerRoleGrantRecord::id),
+        )
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
     fun normalPolicyWriterWaitsForImportFingerprintTransactionBeforeEnteringMutation() {
         val observedDataSource = PolicyLockObservingDataSource(dataSource)
         val observedRepository =
@@ -857,6 +1011,68 @@ class PermissionRepositoryTest {
                 setOf("imported", "writer"),
                 repository.listRoles().mapTo(mutableSetOf()) { it.key },
             )
+        } finally {
+            observedDataSource.allowImportPolicyWrite.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun playerAssignmentWriterCannotEnterBetweenRoleUseGuardAndRoleDelete() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000504")
+        repository.createRole(testActor, RoleRecord(key = "project-only", name = "Project only"))
+        val reviewedTargetFingerprint = currentFingerprint()
+        val observedDataSource =
+            PolicyLockObservingDataSource(
+                delegate = dataSource,
+                importPolicyWriteSqlPrefix = "DELETE FROM permission_roles",
+                writerPolicyWriteSqlPrefix = "INSERT INTO permission_player_role_grants",
+            )
+        val observedRepository =
+            PermissionRepository(observedDataSource, objectMapper, identityRepository, mock())
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val importFuture =
+                executor.submit<PermissionSyncMetadataRecord> {
+                    observedRepository.importPermissionSnapshot(
+                        GlobalPermissionSnapshot(
+                            snapshotId = "guarded-role-removal",
+                            roles = emptyList(),
+                            roleGrants = emptyList(),
+                            inheritance = emptyList(),
+                            catalogEntries = emptyList(),
+                        ),
+                        expectedTargetFingerprint = reviewedTargetFingerprint,
+                        actions =
+                            listOf(
+                                PermissionSyncAction(
+                                    SyncEntityType.ROLE,
+                                    "project-only",
+                                    SyncAction.REMOVE_PROJECT_ENTRY,
+                                )
+                            ),
+                        actorUserId = "sync-user",
+                    )
+                }
+            assertTrue(observedDataSource.importReachedFirstPolicyWrite.await(10, TimeUnit.SECONDS))
+
+            val writerFuture =
+                executor.submit<PlayerRoleGrantRecord> {
+                    observedRepository.createPlayerRoleGrant(
+                        "assignment-user",
+                        PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "project-only"),
+                    )
+                }
+            assertTrue(observedDataSource.writerAttemptedPolicyLock.await(10, TimeUnit.SECONDS))
+            assertEquals(1L, observedDataSource.writerReachedPolicyWrite.count)
+            assertEquals(false, writerFuture.isDone)
+
+            observedDataSource.allowImportPolicyWrite.countDown()
+            assertEquals("guarded-role-removal", importFuture.get(10, TimeUnit.SECONDS).snapshotId)
+            assertThrows(ExecutionException::class.java) { writerFuture.get(10, TimeUnit.SECONDS) }
+            assertNull(repository.getRole("project-only"))
+            assertTrue(repository.listPlayerRoleGrantRecords(playerId).isEmpty())
         } finally {
             observedDataSource.allowImportPolicyWrite.countDown()
             executor.shutdownNow()
@@ -1042,8 +1258,11 @@ class PermissionRepositoryTest {
         }
     }
 
-    private class PolicyLockObservingDataSource(private val delegate: DataSource) :
-        DataSource by delegate {
+    private class PolicyLockObservingDataSource(
+        private val delegate: DataSource,
+        private val importPolicyWriteSqlPrefix: String = "INSERT INTO permission_roles",
+        private val writerPolicyWriteSqlPrefix: String = "INSERT INTO permission_roles",
+    ) : DataSource by delegate {
         val importReachedFirstPolicyWrite = CountDownLatch(1)
         val allowImportPolicyWrite = CountDownLatch(1)
         val writerAttemptedPolicyLock = CountDownLatch(1)
@@ -1059,13 +1278,13 @@ class PermissionRepositoryTest {
             ) { _, method, arguments ->
                 val sql = arguments?.firstOrNull() as? String
                 if (method.name == "prepareStatement" && sql != null) {
-                    if (connectionNumber == 1 && sql.startsWith("INSERT INTO permission_roles")) {
+                    if (connectionNumber == 1 && sql.startsWith(importPolicyWriteSqlPrefix)) {
                         importReachedFirstPolicyWrite.countDown()
                         check(allowImportPolicyWrite.await(10, TimeUnit.SECONDS)) {
                             "Timed out waiting to release import policy write"
                         }
                     }
-                    if (connectionNumber == 2 && sql.startsWith("INSERT INTO permission_roles")) {
+                    if (connectionNumber == 2 && sql.startsWith(writerPolicyWriteSqlPrefix)) {
                         writerReachedPolicyWrite.countDown()
                     }
                 }

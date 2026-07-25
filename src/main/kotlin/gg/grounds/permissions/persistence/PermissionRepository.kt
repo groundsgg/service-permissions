@@ -1391,6 +1391,8 @@ constructor(
                 }
                 request.validatedAgainst(PermissionSyncDiff.calculate(currentTarget, snapshot))
                 val actionMap = request.actions.associateBy { it.entityType to it.technicalKey }
+                rejectRoleRemovalsWithPlayerAssignments(connection, request.actions)
+                demoteCurrentDefaultBeforeAppliedDefault(connection, sourcePolicy.roles, actionMap)
                 request.actions
                     .filter { it.action == SyncAction.REMOVE_PROJECT_ENTRY }
                     .forEach { action ->
@@ -2180,6 +2182,49 @@ constructor(
             statement.setObject(1, if (column == "id") UUID.fromString(key) else key)
             statement.executeUpdate()
         }
+    }
+
+    private fun rejectRoleRemovalsWithPlayerAssignments(
+        connection: Connection,
+        actions: List<PermissionSyncAction>,
+    ) {
+        actions
+            .asSequence()
+            .filter {
+                it.entityType == SyncEntityType.ROLE && it.action == SyncAction.REMOVE_PROJECT_ENTRY
+            }
+            .map(PermissionSyncAction::technicalKey)
+            .sorted()
+            .forEach { roleKey ->
+                if (
+                    entityExists(connection, "permission_player_role_grants", "role_key = ?") {
+                        statement ->
+                        statement.setString(1, roleKey)
+                    }
+                ) {
+                    throw PermissionSyncConflictException(PermissionSyncConflictReason.ROLE_IN_USE)
+                }
+            }
+    }
+
+    private fun demoteCurrentDefaultBeforeAppliedDefault(
+        connection: Connection,
+        sourceRoles: List<SyncRole>,
+        actionMap: Map<Pair<SyncEntityType, String>, PermissionSyncAction>,
+    ) {
+        val appliedDefaultRole =
+            sourceRoles.firstOrNull { role ->
+                role.isDefault &&
+                    actionMap[SyncEntityType.ROLE to role.key]?.action != SyncAction.KEEP_PROJECT
+            } ?: return
+        connection
+            .prepareStatement(
+                "UPDATE permission_roles SET is_default = FALSE, updated_at = now() WHERE is_default = TRUE AND key <> ?"
+            )
+            .use { statement ->
+                statement.setString(1, appliedDefaultRole.key)
+                statement.executeUpdate()
+            }
     }
 
     private fun RoleRecord.toSync() =

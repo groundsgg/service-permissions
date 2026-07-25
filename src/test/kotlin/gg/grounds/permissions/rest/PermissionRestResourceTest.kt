@@ -1492,6 +1492,69 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun syncImportRejectsRoleRemovalAfterPostPreviewPlayerAssignment() {
+        val playerId = "00000000-0000-0000-0000-000000000503"
+        createRole("ignored", "Project only")
+        val snapshot = syncSnapshotJson(schemaVersion = 1, sourceEnvironment = "prod")
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+        val assignmentId =
+            given()
+                .contentType("application/json")
+                .body("""{"roleKey":"project-only"}""")
+                .post("/v1/permissions/players/$playerId/roles")
+                .then()
+                .statusCode(201)
+                .extract()
+                .path<String>("id")
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": [
+                    {
+                      "entityType": "ROLE",
+                      "technicalKey": "project-only",
+                      "action": "REMOVE_PROJECT_ENTRY"
+                    }
+                  ]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(409)
+            .body("error", equalTo("permission_sync_conflict"))
+            .body("reason", equalTo("role_in_use"))
+
+        assertEquals("Project only", repository.getRole("project-only")?.name)
+        assertEquals(
+            listOf(UUID.fromString(assignmentId)),
+            repository
+                .listPlayerRoleGrantRecords(UUID.fromString(playerId))
+                .map(PlayerRoleGrantRecord::id),
+        )
+        given()
+            .queryParam("action", "permission.sync.imported")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
     fun syncPreviewRejectsLegacySnapshotsWithoutCompatibilityMetadata() {
         given()
             .contentType("application/json")

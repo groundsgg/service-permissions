@@ -97,6 +97,7 @@ enum class PermissionSyncConflictReason(val wireValue: String) {
     UNSUPPORTED_SCHEMA("unsupported_schema"),
     INCOMPATIBLE_SOURCE("incompatible_source"),
     TARGET_CHANGED("target_changed"),
+    ROLE_IN_USE("role_in_use"),
 }
 
 class PermissionSyncConflictException(val reason: PermissionSyncConflictReason) :
