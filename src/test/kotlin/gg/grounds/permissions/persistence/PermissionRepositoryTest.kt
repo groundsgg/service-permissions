@@ -862,6 +862,191 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun rejectsKeepingCurrentDefaultWhileApplyingDifferentDefault() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true),
+        )
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "a-incoming-default", name = "Incoming default"),
+        )
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "conflicting-default-actions",
+                        roles =
+                            listOf(
+                                SyncRole(
+                                    key = "a-incoming-default",
+                                    name = "Incoming default",
+                                    isDefault = true,
+                                ),
+                                SyncRole(
+                                    key = "z-current-default",
+                                    name = "Current default",
+                                    isDefault = false,
+                                ),
+                            ),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "a-incoming-default",
+                                SyncAction.USE_GLOBAL,
+                            ),
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "z-current-default",
+                                SyncAction.KEEP_PROJECT,
+                            ),
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(
+            "Permission sync would leave multiple default roles (roleKeys=a-incoming-default,z-current-default)",
+            error.message,
+        )
+        assertEquals(
+            mapOf("a-incoming-default" to false, "z-current-default" to true),
+            repository.listRoles().associate { it.key to it.isDefault },
+        )
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun rejectsMultipleIncomingDefaultRolesBeforeWrites() {
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "multiple-incoming-defaults",
+                        roles =
+                            listOf(
+                                SyncRole("z-global-default", "Zulu", isDefault = true),
+                                SyncRole("a-global-default", "Alpha", isDefault = true),
+                            ),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "a-global-default",
+                                SyncAction.IMPORT,
+                            ),
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "z-global-default",
+                                SyncAction.IMPORT,
+                            ),
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(
+            "Permission sync would leave multiple default roles (roleKeys=a-global-default,z-global-default)",
+            error.message,
+        )
+        assertTrue(repository.listRoles().isEmpty())
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun rejectsIncomingDefaultWhileRetainingProjectOnlyDefault() {
+        repository.createRole(
+            testActor,
+            RoleRecord(key = "z-project-default", name = "Project default", isDefault = true),
+        )
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "retained-project-default",
+                        roles =
+                            listOf(
+                                SyncRole("a-global-default", "Global default", isDefault = true)
+                            ),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "a-global-default",
+                                SyncAction.IMPORT,
+                            )
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals(
+            "Permission sync would leave multiple default roles (roleKeys=a-global-default,z-project-default)",
+            error.message,
+        )
+        assertEquals(
+            mapOf("z-project-default" to true),
+            repository.listRoles().associate { it.key to it.isDefault },
+        )
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
     fun keepsCurrentDefaultWhenIncomingDefaultUsesKeepProject() {
         repository.createRole(
             testActor,

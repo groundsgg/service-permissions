@@ -1492,6 +1492,85 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun syncImportRejectsKeepingCurrentDefaultWhileApplyingDifferentDefault() {
+        repository.createRole(
+            RoleRecord(key = "z-current-default", name = "Current default", isDefault = true)
+        )
+        repository.createRole(RoleRecord(key = "a-incoming-default", name = "Incoming default"))
+        val snapshot =
+            """
+            {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "source-version",
+              "snapshotId": "conflicting-default-actions",
+              "roles": [
+                {"key":"a-incoming-default","name":"Incoming default","default":true},
+                {"key":"z-current-default","name":"Current default","default":false}
+              ],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": [],
+              "keycloakMappings": []
+            }
+            """
+                .trimIndent()
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": [
+                    {
+                      "entityType": "ROLE",
+                      "technicalKey": "a-incoming-default",
+                      "action": "USE_GLOBAL"
+                    },
+                    {
+                      "entityType": "ROLE",
+                      "technicalKey": "z-current-default",
+                      "action": "KEEP_PROJECT"
+                    }
+                  ]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(400)
+            .body(
+                "error",
+                equalTo(
+                    "Permission sync would leave multiple default roles (roleKeys=a-incoming-default,z-current-default)"
+                ),
+            )
+
+        assertEquals(
+            mapOf("a-incoming-default" to false, "z-current-default" to true),
+            repository.listRoles().associate { it.key to it.isDefault },
+        )
+        given()
+            .queryParam("action", "permission.sync.imported")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
     fun syncImportRejectsRoleRemovalAfterPostPreviewPlayerAssignment() {
         val playerId = "00000000-0000-0000-0000-000000000503"
         createRole("ignored", "Project only")

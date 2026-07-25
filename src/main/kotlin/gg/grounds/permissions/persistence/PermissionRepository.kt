@@ -1391,6 +1391,7 @@ constructor(
                 }
                 request.validatedAgainst(PermissionSyncDiff.calculate(currentTarget, snapshot))
                 val actionMap = request.actions.associateBy { it.entityType to it.technicalKey }
+                validateEffectiveDefaultRoles(currentTarget.roles, sourcePolicy.roles, actionMap)
                 rejectRoleRemovalsWithPlayerAssignments(connection, request.actions)
                 demoteCurrentDefaultBeforeAppliedDefault(connection, sourcePolicy.roles, actionMap)
                 request.actions
@@ -2181,6 +2182,29 @@ constructor(
         connection.prepareStatement("DELETE FROM $table WHERE $column = ?").use { statement ->
             statement.setObject(1, if (column == "id") UUID.fromString(key) else key)
             statement.executeUpdate()
+        }
+    }
+
+    private fun validateEffectiveDefaultRoles(
+        currentRoles: List<SyncRole>,
+        sourceRoles: List<SyncRole>,
+        actionMap: Map<Pair<SyncEntityType, String>, PermissionSyncAction>,
+    ) {
+        val effectiveRoles = currentRoles.associateByTo(linkedMapOf(), SyncRole::key)
+        actionMap
+            .filter { (key, action) ->
+                key.first == SyncEntityType.ROLE && action.action == SyncAction.REMOVE_PROJECT_ENTRY
+            }
+            .keys
+            .forEach { (_, roleKey) -> effectiveRoles.remove(roleKey) }
+        sourceRoles.forEach { role ->
+            val action = actionMap[SyncEntityType.ROLE to role.key]?.action
+            if (action != SyncAction.KEEP_PROJECT) effectiveRoles[role.key] = role
+        }
+        val defaultRoleKeys =
+            effectiveRoles.values.filter(SyncRole::isDefault).map(SyncRole::key).sorted()
+        require(defaultRoleKeys.size <= 1) {
+            "Permission sync would leave multiple default roles (roleKeys=${defaultRoleKeys.joinToString(",")})"
         }
     }
 
