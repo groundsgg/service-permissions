@@ -15,6 +15,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.time.Duration
+import java.util.Optional
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.jwt.JsonWebToken
 
@@ -29,57 +30,174 @@ class AdminAuthorizationService(
         defaultValue = "false",
     )
     private val trustForgeProjectRoleHeader: Boolean,
+    @ConfigProperty(name = "permissions.instance-environment", defaultValue = " ")
+    instanceEnvironmentConfig: Optional<String>,
 ) {
+    private val instanceEnvironment =
+        PermissionInstanceEnvironment.fromConfig(instanceEnvironmentConfig.orElse(null))
     private val httpClient: HttpClient =
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
 
-    fun requireMinecraftPermissionsAdmin(identity: SecurityIdentity, headers: HttpHeaders): String {
-        val userId = webUserResolver.requireUser(identity)
-        if (!hasMinecraftPermissionManagementAccess(identity, headers)) {
-            throw ForbiddenException("missing_permission")
-        }
-        return userId
-    }
+    @Deprecated("Use requireMinecraftPermissionsManage instead")
+    fun requireMinecraftPermissionsAdmin(identity: SecurityIdentity, headers: HttpHeaders): String =
+        requireMinecraftPermissionsManage(identity, headers)
 
-    private fun hasMinecraftPermissionManagementAccess(
+    fun requireMinecraftPermissionsView(identity: SecurityIdentity, headers: HttpHeaders): String =
+        requireMinecraftPermissions(
+            identity,
+            headers,
+            PermissionAccess.VIEW,
+            allowForgeProjectRole = false,
+        )
+
+    fun requireMinecraftPermissionsManage(
         identity: SecurityIdentity,
         headers: HttpHeaders,
-    ): Boolean =
-        ADMIN_PERMISSION in identity.roles ||
-            JWT_PERMISSION_CLAIMS.any { claimName -> claimContainsPermission(claimName) } ||
-            trustedForgeProjectRoleAllowsManagement(headers) ||
-            forgeProjectAccessAllowsManagement(headers) ||
-            forgeEffectiveAccessContainsPermission(headers)
+    ): String =
+        requireMinecraftPermissions(
+            identity,
+            headers,
+            PermissionAccess.MANAGE,
+            allowForgeProjectRole = false,
+        )
 
-    private fun trustedForgeProjectRoleAllowsManagement(headers: HttpHeaders): Boolean {
-        if (!trustForgeProjectRoleHeader) {
-            return false
+    fun requireMinecraftPermissionsSnapshotRead(
+        identity: SecurityIdentity,
+        headers: HttpHeaders,
+    ): String =
+        requireMinecraftPermissions(
+            identity,
+            headers,
+            PermissionAccess.VIEW,
+            allowForgeProjectRole = true,
+        )
+
+    private fun requireMinecraftPermissions(
+        identity: SecurityIdentity,
+        headers: HttpHeaders,
+        access: PermissionAccess,
+        allowForgeProjectRole: Boolean,
+    ): String {
+        val userId = webUserResolver.requireUser(identity)
+        val projectMode = instanceEnvironment == null
+        val resolution =
+            resolveAccess(
+                identity = identity,
+                headers = headers,
+                access = access,
+                allowForgeProjectRole = allowForgeProjectRole || projectMode,
+                allowTrustedProjectRole = projectMode,
+            )
+
+        if (hasAccess(resolution.permissions, access)) {
+            return userId
         }
-        val projectId = headerString(headers, PROJECT_ID_HEADER)?.trim()
-        if (projectId.isNullOrBlank()) {
-            return false
+        if (resolution.trustedProjectRole in PROJECT_ADMIN_ROLES) {
+            return userId
         }
-        val role = headerString(headers, PROJECT_ROLE_HEADER)?.trim()
-        return role in PROJECT_ADMIN_ROLES
+        if (resolution.forgeProjectRole in PROJECT_ADMIN_ROLES) {
+            return userId
+        }
+        throw ForbiddenException("missing_permission")
     }
 
-    private fun forgeProjectAccessAllowsManagement(headers: HttpHeaders): Boolean {
-        val projectId = headerString(headers, PROJECT_ID_HEADER)?.trim()
-        if (projectId.isNullOrBlank()) {
-            return false
+    private fun resolveAccess(
+        identity: SecurityIdentity,
+        headers: HttpHeaders,
+        access: PermissionAccess,
+        allowForgeProjectRole: Boolean,
+        allowTrustedProjectRole: Boolean,
+    ): AccessResolution {
+        val projectId = headerString(headers, PROJECT_ID_HEADER)?.trim()?.takeIf(String::isNotBlank)
+        val permissions =
+            linkedSetOf<String>().apply {
+                addAll(identity.roles)
+                JWT_PERMISSION_CLAIMS.forEach { claimName -> addAll(claimPermissions(claimName)) }
+            }
+        val trustedProjectRole =
+            if (allowTrustedProjectRole) trustedForgeProjectRole(headers, projectId) else null
+
+        if (!hasAccess(permissions, access) && trustedProjectRole !in PROJECT_ADMIN_ROLES) {
+            permissions += forgeEffectiveAccessPermissions(headers)
+        }
+
+        val forgeProjectRole =
+            if (
+                !hasAccess(permissions, access) &&
+                    trustedProjectRole !in PROJECT_ADMIN_ROLES &&
+                    allowForgeProjectRole
+            ) {
+                forgeProjectRole(headers, projectId)
+            } else {
+                null
+            }
+
+        return AccessResolution(permissions, trustedProjectRole, forgeProjectRole)
+    }
+
+    private fun hasAccess(permissions: Set<String>, access: PermissionAccess): Boolean =
+        when (instanceEnvironment) {
+            null -> LEGACY_MANAGE_PERMISSION in permissions
+            PermissionInstanceEnvironment.STAGE ->
+                GAME_AREA_ACCESS_PERMISSION in permissions &&
+                    when (access) {
+                        PermissionAccess.VIEW ->
+                            STAGE_VIEW_PERMISSION in permissions ||
+                                STAGE_MANAGE_PERMISSION in permissions
+                        PermissionAccess.MANAGE -> STAGE_MANAGE_PERMISSION in permissions
+                    }
+            PermissionInstanceEnvironment.PRODUCTION ->
+                GAME_AREA_ACCESS_PERMISSION in permissions &&
+                    when (access) {
+                        PermissionAccess.VIEW ->
+                            PRODUCTION_VIEW_PERMISSION in permissions ||
+                                PRODUCTION_MANAGE_PERMISSION in permissions
+                        PermissionAccess.MANAGE -> PRODUCTION_MANAGE_PERMISSION in permissions
+                    }
+        }
+
+    private fun trustedForgeProjectRole(headers: HttpHeaders, projectId: String?): String? {
+        if (!trustForgeProjectRoleHeader || projectId == null) {
+            return null
+        }
+        return headerString(headers, PROJECT_ROLE_HEADER)?.trim()
+    }
+
+    private fun forgeProjectRole(headers: HttpHeaders, projectId: String?): String? {
+        if (projectId == null) {
+            return null
         }
         val authorization = headerString(headers, HttpHeaders.AUTHORIZATION)?.trim()
         if (authorization.isNullOrBlank()) {
-            return false
+            return null
         }
 
+        val response =
+            sendForgeRequest(
+                "${forgeBaseUrl.trimEnd('/')}/v1/projects/${encodePathSegment(projectId)}",
+                authorization,
+            ) ?: return null
+        return parseProjectRole(response)
+    }
+
+    private fun forgeEffectiveAccessPermissions(headers: HttpHeaders): Set<String> {
+        val authorization = headerString(headers, HttpHeaders.AUTHORIZATION)?.trim()
+        if (authorization.isNullOrBlank()) {
+            return emptySet()
+        }
+
+        val response =
+            sendForgeRequest(
+                "${forgeBaseUrl.trimEnd('/')}/v1/control-center/access/me",
+                authorization,
+            ) ?: return emptySet()
+        return parsePermissions(response)
+    }
+
+    private fun sendForgeRequest(url: String, authorization: String): String? {
         val request =
             HttpRequest.newBuilder()
-                .uri(
-                    URI.create(
-                        "${forgeBaseUrl.trimEnd('/')}/v1/projects/${encodePathSegment(projectId)}"
-                    )
-                )
+                .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(3))
                 .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON)
                 .header(HttpHeaders.AUTHORIZATION, authorization)
@@ -90,49 +208,10 @@ class AdminAuthorizationService(
             try {
                 httpClient.send(request, HttpResponse.BodyHandlers.ofString())
             } catch (_: Exception) {
-                return false
+                return null
             }
 
-        if (response.statusCode() == 401 || response.statusCode() == 403) {
-            return false
-        }
-        if (response.statusCode() !in 200..299) {
-            return false
-        }
-
-        return parseProjectRole(response.body()) in PROJECT_ADMIN_ROLES
-    }
-
-    private fun forgeEffectiveAccessContainsPermission(headers: HttpHeaders): Boolean {
-        val authorization = headerString(headers, HttpHeaders.AUTHORIZATION)?.trim()
-        if (authorization.isNullOrBlank()) {
-            return false
-        }
-
-        val request =
-            HttpRequest.newBuilder()
-                .uri(URI.create("${forgeBaseUrl.trimEnd('/')}/v1/control-center/access/me"))
-                .timeout(Duration.ofSeconds(3))
-                .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON)
-                .header(HttpHeaders.AUTHORIZATION, authorization)
-                .GET()
-                .build()
-
-        val response =
-            try {
-                httpClient.send(request, HttpResponse.BodyHandlers.ofString())
-            } catch (_: Exception) {
-                return false
-            }
-
-        if (response.statusCode() == 401 || response.statusCode() == 403) {
-            return false
-        }
-        if (response.statusCode() !in 200..299) {
-            return false
-        }
-
-        return parsePermissions(response.body()).contains(ADMIN_PERMISSION)
+        return response.body().takeIf { response.statusCode() in 200..299 }
     }
 
     private fun parsePermissions(body: String): Set<String> {
@@ -159,12 +238,12 @@ class AdminAuthorizationService(
         return root.get("role")?.asText()
     }
 
-    private fun claimContainsPermission(claimName: String): Boolean =
+    private fun claimPermissions(claimName: String): Set<String> =
         when (val claim = jwtClaim(claimName)) {
-            is String -> claim == ADMIN_PERMISSION
-            is Iterable<*> -> claim.any { permissionValue(it) == ADMIN_PERMISSION }
-            is Array<*> -> claim.any { permissionValue(it) == ADMIN_PERMISSION }
-            else -> false
+            is String -> setOf(claim)
+            is Iterable<*> -> claim.mapNotNull(::permissionValue).toSet()
+            is Array<*> -> claim.mapNotNull(::permissionValue).toSet()
+            else -> emptySet()
         }
 
     private fun permissionValue(value: Any?): String? =
@@ -193,8 +272,24 @@ class AdminAuthorizationService(
     private fun encodePathSegment(value: String): String =
         URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
 
+    private data class AccessResolution(
+        val permissions: Set<String>,
+        val trustedProjectRole: String?,
+        val forgeProjectRole: String?,
+    )
+
+    private enum class PermissionAccess {
+        VIEW,
+        MANAGE,
+    }
+
     private companion object {
-        private const val ADMIN_PERMISSION = "MINECRAFT_PERMISSIONS_MANAGE"
+        private const val GAME_AREA_ACCESS_PERMISSION = "GAME_AREA_ACCESS"
+        private const val LEGACY_MANAGE_PERMISSION = "MINECRAFT_PERMISSIONS_MANAGE"
+        private const val STAGE_VIEW_PERMISSION = "MINECRAFT_PERMISSIONS_STAGE_VIEW"
+        private const val STAGE_MANAGE_PERMISSION = "MINECRAFT_PERMISSIONS_STAGE_MANAGE"
+        private const val PRODUCTION_VIEW_PERMISSION = "MINECRAFT_PERMISSIONS_PRODUCTION_VIEW"
+        private const val PRODUCTION_MANAGE_PERMISSION = "MINECRAFT_PERMISSIONS_PRODUCTION_MANAGE"
         private const val PROJECT_ID_HEADER = "X-Grounds-Project-Id"
         private const val PROJECT_ROLE_HEADER = "X-Grounds-Project-Role"
         private val PROJECT_ADMIN_ROLES = setOf("owner", "editor")
