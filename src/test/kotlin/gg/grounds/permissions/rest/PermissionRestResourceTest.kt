@@ -1354,6 +1354,144 @@ class PermissionRestResourceTest {
     }
 
     @Test
+    fun syncImportIgnoresPostPreviewCatalogHeartbeatAndScopeOrderDrift() {
+        val initialLastSeenAt = Instant.parse("2030-01-01T00:00:00Z")
+        val heartbeatLastSeenAt = Instant.parse("2030-01-02T00:00:00Z")
+        val initialEntry =
+            CatalogEntryRecord(
+                key = "grounds.command.fly",
+                label = "Fly",
+                source = "runtime",
+                sourceVersion = "1.0.0",
+                supportedScopes =
+                    listOf(PermissionScopeKind.GLOBAL, PermissionScopeKind.SERVER_TYPE),
+                custom = false,
+                lastSeenAt = initialLastSeenAt,
+            )
+        repository.upsertCatalogEntry("setup-user", initialEntry)
+        val snapshot =
+            """
+            {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "source-version",
+              "snapshotId": "catalog-heartbeat-review",
+              "roles": [],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": [{
+                "permissionKey": "grounds.command.fly",
+                "label": "Fly",
+                "source": "runtime",
+                "sourceVersion": "1.0.0",
+                "supportedScopes": ["GLOBAL", "SERVER_TYPE"],
+                "custom": false,
+                "lastSeenAt": "$initialLastSeenAt"
+              }],
+              "keycloakMappings": []
+            }
+            """
+                .trimIndent()
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .body("conflicts", hasSize<Any>(0))
+                .extract()
+                .path<String>("targetFingerprint")
+        repository.upsertCatalogEntry(
+            "heartbeat-user",
+            initialEntry.copy(
+                supportedScopes =
+                    listOf(PermissionScopeKind.SERVER_TYPE, PermissionScopeKind.GLOBAL),
+                lastSeenAt = heartbeatLastSeenAt,
+            ),
+        )
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": []
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(200)
+
+        val imported = repository.listCatalogEntries().single()
+        assertEquals(heartbeatLastSeenAt, imported.lastSeenAt)
+        assertEquals(
+            listOf(PermissionScopeKind.GLOBAL, PermissionScopeKind.SERVER_TYPE),
+            imported.supportedScopes,
+        )
+    }
+
+    @Test
+    fun syncImportRejectsContradictoryDuplicateActions() {
+        createRole("ignored", "Staff")
+        val snapshot =
+            """
+            {
+              "schemaVersion": 1,
+              "sourceEnvironment": "prod",
+              "sourceServiceVersion": "source-version",
+              "snapshotId": "duplicate-actions",
+              "roles": [{"key":"staff","name":"Global staff"}],
+              "roleGrants": [],
+              "inheritance": [],
+              "catalogEntries": [],
+              "keycloakMappings": []
+            }
+            """
+                .trimIndent()
+        val reviewedTargetFingerprint =
+            given()
+                .contentType("application/json")
+                .body(snapshot)
+                .post("/v1/permissions/sync/preview")
+                .then()
+                .statusCode(200)
+                .extract()
+                .path<String>("targetFingerprint")
+
+        given()
+            .contentType("application/json")
+            .body(
+                """
+                {
+                  "snapshot": $snapshot,
+                  "expectedTargetFingerprint": "$reviewedTargetFingerprint",
+                  "actions": [
+                    {"entityType":"ROLE","technicalKey":"staff","action":"IMPORT"},
+                    {"entityType":"ROLE","technicalKey":"staff","action":"KEEP_PROJECT"}
+                  ]
+                }
+                """
+                    .trimIndent()
+            )
+            .post("/v1/permissions/sync/import")
+            .then()
+            .statusCode(400)
+
+        assertEquals("Staff", repository.getRole("staff")?.name)
+        given()
+            .queryParam("action", "permission.sync.imported")
+            .get("/v1/permissions/audit")
+            .then()
+            .statusCode(200)
+            .body("items", hasSize<Any>(0))
+    }
+
+    @Test
     fun syncPreviewRejectsLegacySnapshotsWithoutCompatibilityMetadata() {
         given()
             .contentType("application/json")

@@ -27,9 +27,14 @@ import jakarta.inject.Inject
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 import java.sql.Connection
+import java.sql.PreparedStatement
 import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -756,6 +761,109 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun rejectsDuplicateActionsWithoutWritesMetadataOrAudit() {
+        repository.createRole(testActor, RoleRecord(key = "staff", name = "Project staff"))
+        val reviewedTargetFingerprint = currentFingerprint()
+        val policyVersionBeforeImport = repository.currentPolicyVersion()
+        val syncMetadataBeforeImport = countSyncMetadata()
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.importPermissionSnapshot(
+                    GlobalPermissionSnapshot(
+                        snapshotId = "duplicate-actions",
+                        roles = listOf(SyncRole("staff", "Global staff")),
+                        roleGrants = emptyList(),
+                        inheritance = emptyList(),
+                        catalogEntries = emptyList(),
+                    ),
+                    expectedTargetFingerprint = reviewedTargetFingerprint,
+                    actions =
+                        listOf(
+                            PermissionSyncAction(SyncEntityType.ROLE, "staff", SyncAction.IMPORT),
+                            PermissionSyncAction(
+                                SyncEntityType.ROLE,
+                                "staff",
+                                SyncAction.KEEP_PROJECT,
+                            ),
+                        ),
+                    actorUserId = "sync-user",
+                )
+            }
+
+        assertEquals("Duplicate sync action (entityType=ROLE, technicalKey=staff)", error.message)
+        assertEquals("Project staff", repository.getRole("staff")?.name)
+        assertEquals(policyVersionBeforeImport, repository.currentPolicyVersion())
+        assertEquals(syncMetadataBeforeImport, countSyncMetadata())
+        assertTrue(
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(actions = setOf("permission.sync.imported"))
+                )
+                .items
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun normalPolicyWriterWaitsForImportFingerprintTransactionBeforeEnteringMutation() {
+        val observedDataSource = PolicyLockObservingDataSource(dataSource)
+        val observedRepository =
+            PermissionRepository(observedDataSource, objectMapper, identityRepository, mock())
+        val reviewedTargetFingerprint = currentFingerprint()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val importFuture =
+                executor.submit<PermissionSyncMetadataRecord> {
+                    observedRepository.importPermissionSnapshot(
+                        GlobalPermissionSnapshot(
+                            snapshotId = "concurrent-import",
+                            roles = listOf(SyncRole("imported", "Imported")),
+                            roleGrants = emptyList(),
+                            inheritance = emptyList(),
+                            catalogEntries = emptyList(),
+                        ),
+                        expectedTargetFingerprint = reviewedTargetFingerprint,
+                        actions =
+                            listOf(
+                                PermissionSyncAction(
+                                    SyncEntityType.ROLE,
+                                    "imported",
+                                    SyncAction.IMPORT,
+                                )
+                            ),
+                        actorUserId = "sync-user",
+                    )
+                }
+            assertTrue(observedDataSource.importReachedFirstPolicyWrite.await(10, TimeUnit.SECONDS))
+
+            val writerFuture =
+                executor.submit<RoleRecord> {
+                    observedRepository.createRole(
+                        "writer-user",
+                        RoleRecord(key = "writer", name = "Writer"),
+                    )
+                }
+            assertTrue(observedDataSource.writerAttemptedPolicyLock.await(10, TimeUnit.SECONDS))
+            assertEquals(1L, observedDataSource.writerReachedPolicyWrite.count)
+            assertEquals(false, writerFuture.isDone)
+
+            observedDataSource.allowImportPolicyWrite.countDown()
+            assertEquals("concurrent-import", importFuture.get(10, TimeUnit.SECONDS).snapshotId)
+            assertEquals("writer", writerFuture.get(10, TimeUnit.SECONDS).key)
+            assertEquals(0L, observedDataSource.writerReachedPolicyWrite.count)
+            assertEquals(
+                setOf("imported", "writer"),
+                repository.listRoles().mapTo(mutableSetOf()) { it.key },
+            )
+        } finally {
+            observedDataSource.allowImportPolicyWrite.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun readsAuditTotalsAndItemsFromOneSnapshot() {
         insertAuditEvent(
             id = UUID.fromString("00000000-0000-0000-0000-000000000101"),
@@ -864,6 +972,17 @@ class PermissionRepositoryTest {
         PermissionSnapshotFingerprint(objectMapper)
             .calculate(repository.permissionProjectSnapshot())
 
+    private fun countSyncMetadata(): Long =
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("SELECT COUNT(*) FROM permission_sync_metadata").use {
+                statement ->
+                statement.executeQuery().use { rows ->
+                    check(rows.next())
+                    rows.getLong(1)
+                }
+            }
+        }
+
     private class InterleavingAuditDataSource(private val delegate: DataSource) :
         DataSource by delegate {
         private var countRead = false
@@ -921,5 +1040,66 @@ class PermissionRepositoryTest {
                     }
             }
         }
+    }
+
+    private class PolicyLockObservingDataSource(private val delegate: DataSource) :
+        DataSource by delegate {
+        val importReachedFirstPolicyWrite = CountDownLatch(1)
+        val allowImportPolicyWrite = CountDownLatch(1)
+        val writerAttemptedPolicyLock = CountDownLatch(1)
+        val writerReachedPolicyWrite = CountDownLatch(1)
+        private val connectionSequence = AtomicInteger()
+
+        override fun getConnection(): Connection {
+            val connection = delegate.connection
+            val connectionNumber = connectionSequence.incrementAndGet()
+            return Proxy.newProxyInstance(
+                Connection::class.java.classLoader,
+                arrayOf(Connection::class.java),
+            ) { _, method, arguments ->
+                val sql = arguments?.firstOrNull() as? String
+                if (method.name == "prepareStatement" && sql != null) {
+                    if (connectionNumber == 1 && sql.startsWith("INSERT INTO permission_roles")) {
+                        importReachedFirstPolicyWrite.countDown()
+                        check(allowImportPolicyWrite.await(10, TimeUnit.SECONDS)) {
+                            "Timed out waiting to release import policy write"
+                        }
+                    }
+                    if (connectionNumber == 2 && sql.startsWith("INSERT INTO permission_roles")) {
+                        writerReachedPolicyWrite.countDown()
+                    }
+                }
+                val result = invoke(connection, method, arguments)
+                if (
+                    connectionNumber == 2 &&
+                        method.name == "prepareStatement" &&
+                        sql?.startsWith("SELECT version FROM permission_policy_versions") == true
+                ) {
+                    val statement = result as PreparedStatement
+                    Proxy.newProxyInstance(
+                        PreparedStatement::class.java.classLoader,
+                        arrayOf(PreparedStatement::class.java),
+                    ) { _, statementMethod, statementArguments ->
+                        if (statementMethod.name == "executeQuery") {
+                            writerAttemptedPolicyLock.countDown()
+                        }
+                        invoke(statement, statementMethod, statementArguments)
+                    } as PreparedStatement
+                } else {
+                    result
+                }
+            } as Connection
+        }
+
+        private fun invoke(
+            target: Any,
+            method: java.lang.reflect.Method,
+            arguments: Array<out Any?>?,
+        ): Any? =
+            try {
+                method.invoke(target, *(arguments ?: emptyArray()))
+            } catch (error: InvocationTargetException) {
+                throw error.targetException
+            }
     }
 }

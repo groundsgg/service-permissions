@@ -110,31 +110,33 @@ data class PermissionSyncDiff(
             project: PermissionProjectSnapshot,
             global: GlobalPermissionSnapshot,
         ): PermissionSyncDiff {
+            val normalizedProject = PermissionSyncPolicyProjection.normalize(project)
+            val normalizedGlobal = PermissionSyncPolicyProjection.normalize(global)
             val changes = buildList {
                 compare(
                     SyncEntityType.ROLE,
-                    project.roles.associateBy { it.key },
-                    global.roles.associateBy { it.key },
+                    normalizedProject.roles.associateBy { it.key },
+                    normalizedGlobal.roles.associateBy { it.key },
                 )
                 compare(
                     SyncEntityType.ROLE_GRANT,
-                    project.roleGrants.associateBy { it.id },
-                    global.roleGrants.associateBy { it.id },
+                    normalizedProject.roleGrants.associateBy { it.id },
+                    normalizedGlobal.roleGrants.associateBy { it.id },
                 )
                 compare(
                     SyncEntityType.INHERITANCE,
-                    project.inheritance.associateBy { it.key() },
-                    global.inheritance.associateBy { it.key() },
+                    normalizedProject.inheritance.associateBy { it.key() },
+                    normalizedGlobal.inheritance.associateBy { it.key() },
                 )
                 compare(
                     SyncEntityType.CATALOG_ENTRY,
-                    project.catalogEntries.associateBy { it.permissionKey },
-                    global.catalogEntries.associateBy { it.permissionKey },
+                    normalizedProject.catalogEntries.associateBy { it.permissionKey },
+                    normalizedGlobal.catalogEntries.associateBy { it.permissionKey },
                 )
                 compare(
                     SyncEntityType.KEYCLOAK_MAPPING,
-                    project.keycloakMappings.associateBy { it.id },
-                    global.keycloakMappings.orEmpty().associateBy { it.id },
+                    normalizedProject.keycloakMappings.associateBy { it.id },
+                    normalizedGlobal.keycloakMappings.associateBy { it.id },
                 )
             }
             return PermissionSyncDiff(
@@ -187,6 +189,17 @@ data class PermissionSyncImportRequest(
     init {
         require(expectedTargetFingerprint.isNotBlank()) {
             "expectedTargetFingerprint must not be blank"
+        }
+        val duplicateKey =
+            actions
+                .groupingBy { it.entityType to it.technicalKey }
+                .eachCount()
+                .filterValues { it > 1 }
+                .keys
+                .sortedWith(compareBy({ it.first.ordinal }, { it.second }))
+                .firstOrNull()
+        require(duplicateKey == null) {
+            "Duplicate sync action (entityType=${duplicateKey?.first}, technicalKey=${duplicateKey?.second})"
         }
     }
 

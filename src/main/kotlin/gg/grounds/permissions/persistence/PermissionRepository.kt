@@ -24,6 +24,7 @@ import gg.grounds.permissions.sync.PermissionSyncConflictException
 import gg.grounds.permissions.sync.PermissionSyncConflictReason
 import gg.grounds.permissions.sync.PermissionSyncDiff
 import gg.grounds.permissions.sync.PermissionSyncImportRequest
+import gg.grounds.permissions.sync.PermissionSyncPolicyProjection
 import gg.grounds.permissions.sync.SyncAction
 import gg.grounds.permissions.sync.SyncCatalogEntry
 import gg.grounds.permissions.sync.SyncEntityType
@@ -1373,8 +1374,10 @@ constructor(
         expectedTargetFingerprint: String,
         actions: List<PermissionSyncAction>,
         actorUserId: String,
-    ): PermissionSyncMetadataRecord =
-        dataSource.connection.use { connection ->
+    ): PermissionSyncMetadataRecord {
+        val request = PermissionSyncImportRequest(snapshot, expectedTargetFingerprint, actions)
+        val sourcePolicy = PermissionSyncPolicyProjection.normalize(snapshot)
+        return dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
                 lockPolicyVersion(connection)
@@ -1386,23 +1389,22 @@ constructor(
                         PermissionSyncConflictReason.TARGET_CHANGED
                     )
                 }
-                PermissionSyncImportRequest(snapshot, expectedTargetFingerprint, actions)
-                    .validatedAgainst(PermissionSyncDiff.calculate(currentTarget, snapshot))
-                val actionMap = actions.associateBy { it.entityType to it.technicalKey }
-                actions
+                request.validatedAgainst(PermissionSyncDiff.calculate(currentTarget, snapshot))
+                val actionMap = request.actions.associateBy { it.entityType to it.technicalKey }
+                request.actions
                     .filter { it.action == SyncAction.REMOVE_PROJECT_ENTRY }
                     .forEach { action ->
                         deleteSyncEntry(connection, action.entityType, action.technicalKey)
                     }
-                snapshot.roles.forEach { role ->
+                sourcePolicy.roles.forEach { role ->
                     val action = actionMap[SyncEntityType.ROLE to role.key]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertRole(connection, role)
                 }
-                snapshot.roleGrants.forEach { grant ->
+                sourcePolicy.roleGrants.forEach { grant ->
                     val action = actionMap[SyncEntityType.ROLE_GRANT to grant.id.toString()]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertRoleGrant(connection, grant)
                 }
-                snapshot.inheritance.forEach { inheritance ->
+                sourcePolicy.inheritance.forEach { inheritance ->
                     val action = actionMap[SyncEntityType.INHERITANCE to inheritance.key()]?.action
                     if (action != SyncAction.KEEP_PROJECT) {
                         require(inheritance.parentRoleKey != inheritance.childRoleKey) {
@@ -1420,12 +1422,21 @@ constructor(
                         upsertInheritance(connection, inheritance)
                     }
                 }
-                snapshot.catalogEntries.forEach { entry ->
+                val targetCatalogEntries =
+                    currentTarget.catalogEntries.associateBy(SyncCatalogEntry::permissionKey)
+                sourcePolicy.catalogEntries.forEach { entry ->
                     val action =
                         actionMap[SyncEntityType.CATALOG_ENTRY to entry.permissionKey]?.action
-                    if (action != SyncAction.KEEP_PROJECT) upsertCatalog(connection, entry)
+                    if (action != SyncAction.KEEP_PROJECT) {
+                        upsertCatalog(
+                            connection,
+                            entry.copy(
+                                lastSeenAt = targetCatalogEntries[entry.permissionKey]?.lastSeenAt
+                            ),
+                        )
+                    }
                 }
-                snapshot.keycloakMappings.orEmpty().forEach { mapping ->
+                sourcePolicy.keycloakMappings.forEach { mapping ->
                     val action =
                         actionMap[SyncEntityType.KEYCLOAK_MAPPING to mapping.id.toString()]?.action
                     if (action != SyncAction.KEEP_PROJECT) upsertMapping(connection, mapping)
@@ -1453,7 +1464,10 @@ constructor(
                             put("sourceEnvironment", snapshot.sourceEnvironment)
                             put("sourceServiceVersion", snapshot.sourceServiceVersion)
                             put("targetFingerprint", expectedTargetFingerprint)
-                            set<JsonNode>("selectedActions", objectMapper.valueToTree(actions))
+                            set<JsonNode>(
+                                "selectedActions",
+                                objectMapper.valueToTree(request.actions),
+                            )
                             put("result", "success")
                         },
                 )
@@ -1464,6 +1478,7 @@ constructor(
                 throw error
             }
         }
+    }
 
     fun deleteCustomCatalogEntry(actorUserId: String, permissionKey: String) {
         writeIfChanged(

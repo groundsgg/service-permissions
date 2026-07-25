@@ -213,6 +213,48 @@ class PermissionSyncDiffTest {
     }
 
     @Test
+    fun ignoresCatalogHeartbeatAndSupportedScopeOrderingWhenCalculatingDiff() {
+        val project =
+            emptyProjectSnapshot()
+                .copy(
+                    catalogEntries =
+                        listOf(
+                            SyncCatalogEntry(
+                                permissionKey = "grounds.command.fly",
+                                label = "Fly",
+                                source = "runtime",
+                                sourceVersion = "1.0.0",
+                                supportedScopes =
+                                    listOf(
+                                        PermissionScopeKind.SERVER_TYPE,
+                                        PermissionScopeKind.GLOBAL,
+                                    ),
+                                lastSeenAt = Instant.parse("2030-01-01T00:00:00Z"),
+                            )
+                        )
+                )
+        val global =
+            compatibleSnapshot("stage")
+                .copy(
+                    catalogEntries =
+                        listOf(
+                            project.catalogEntries
+                                .single()
+                                .copy(
+                                    supportedScopes =
+                                        listOf(
+                                            PermissionScopeKind.GLOBAL,
+                                            PermissionScopeKind.SERVER_TYPE,
+                                        ),
+                                    lastSeenAt = Instant.parse("2030-01-02T00:00:00Z"),
+                                )
+                        )
+                )
+
+        assertEquals(emptyList<SyncChange>(), PermissionSyncDiff.calculate(project, global).changes)
+    }
+
+    @Test
     fun rejectsImportWithoutExplicitConflictActions() {
         val conflict = SyncChange(SyncEntityType.ROLE, "staff", SyncChangeKind.CONFLICT)
         val error =
@@ -229,6 +271,34 @@ class PermissionSyncDiffTest {
             "Explicit action required (entityType=ROLE, technicalKey=staff)",
             error.message,
         )
+    }
+
+    @Test
+    fun rejectsDuplicateSyncActionsDeterministically() {
+        val conflict = SyncChange(SyncEntityType.ROLE, "staff", SyncChangeKind.CONFLICT)
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                PermissionSyncImportRequest(
+                        snapshot = sampleSnapshot(),
+                        expectedTargetFingerprint = "reviewed-target",
+                        actions =
+                            listOf(
+                                PermissionSyncAction(
+                                    SyncEntityType.ROLE,
+                                    "staff",
+                                    SyncAction.IMPORT,
+                                ),
+                                PermissionSyncAction(
+                                    SyncEntityType.ROLE,
+                                    "staff",
+                                    SyncAction.KEEP_PROJECT,
+                                ),
+                            ),
+                    )
+                    .validatedAgainst(PermissionSyncDiff(listOf(conflict), setOf(conflict)))
+            }
+
+        assertEquals("Duplicate sync action (entityType=ROLE, technicalKey=staff)", error.message)
     }
 
     @Test
