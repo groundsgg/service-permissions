@@ -38,10 +38,6 @@ class AdminAuthorizationService(
     private val httpClient: HttpClient =
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
 
-    @Deprecated("Use requireMinecraftPermissionsManage instead")
-    fun requireMinecraftPermissionsAdmin(identity: SecurityIdentity, headers: HttpHeaders): String =
-        requireMinecraftPermissionsManage(identity, headers)
-
     fun requireMinecraftPermissionsView(identity: SecurityIdentity, headers: HttpHeaders): String =
         requireMinecraftPermissions(
             identity,

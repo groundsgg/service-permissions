@@ -41,7 +41,7 @@ constructor(
         @QueryParam("perPage") @DefaultValue("20") perPage: Int,
         @Context headers: HttpHeaders,
     ): PlayerSearchResponse {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsView(identity, headers)
         val normalizedQuery = query?.trim().orEmpty()
         require(
             normalizedQuery.length >= MINIMUM_QUERY_LENGTH || normalizedQuery.isCompleteUuid()
@@ -66,7 +66,7 @@ constructor(
         @QueryParam("query") query: String?,
         @Context headers: HttpHeaders,
     ): PlayerSearchItemResponse {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsView(identity, headers)
         val normalizedQuery = query?.trim().orEmpty()
         require(isValidMinecraftUsername(normalizedQuery)) {
             "query must be a valid Minecraft username"

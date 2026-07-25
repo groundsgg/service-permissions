@@ -35,7 +35,7 @@ constructor(
 
     @GET
     fun listCatalog(@Context headers: HttpHeaders): List<CatalogEntryResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         return repository.listCatalogEntries().map { it.toResponse() }
     }
 
@@ -49,7 +49,7 @@ constructor(
         @QueryParam("sortDirection") sortDirection: String?,
         @Context headers: HttpHeaders,
     ): PagedResponse<CatalogEntryResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val search =
             PermissionSearchPaging.validate(
                 query = query,
@@ -79,7 +79,7 @@ constructor(
     @POST
     @Path("/custom")
     fun createCustomEntry(request: CatalogEntryRequest, @Context headers: HttpHeaders): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val entry = request.toRecord(custom = true)
         return Response.status(Response.Status.CREATED)
             .entity(repository.upsertCatalogEntry(actor, entry).toResponse())
@@ -93,7 +93,7 @@ constructor(
         request: CatalogEntryRequest,
         @Context headers: HttpHeaders,
     ): CatalogEntryResponse {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         return repository
             .upsertCatalogEntry(actor, request.copy(key = permissionKey).toRecord(custom = true))
             .toResponse()
@@ -105,7 +105,7 @@ constructor(
         @PathParam("permissionKey") permissionKey: String,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.deleteCustomCatalogEntry(
             actor,
             PermissionValidation.permissionKey(permissionKey),
@@ -113,8 +113,11 @@ constructor(
         return Response.noContent().build()
     }
 
-    private fun requireAdmin(headers: HttpHeaders): String =
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+    private fun requireView(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsView(identity, headers)
+
+    private fun requireManage(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsManage(identity, headers)
 
     private fun CatalogEntryRequest.toRecord(custom: Boolean): CatalogEntryRecord =
         CatalogEntryRecord(

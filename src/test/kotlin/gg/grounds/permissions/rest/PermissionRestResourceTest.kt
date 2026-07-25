@@ -16,6 +16,8 @@ import gg.grounds.permissions.persistence.RoleGrantRecord
 import gg.grounds.permissions.persistence.RoleRecord
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
+import io.quarkus.test.junit.QuarkusTestProfile
+import io.quarkus.test.junit.TestProfile
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import jakarta.inject.Inject
@@ -34,7 +36,11 @@ import org.junit.jupiter.api.Test
     value = PermissionsPostgresTestResource::class,
     restrictToAnnotatedClass = true,
 )
-@TestSecurity(user = "admin-user", roles = ["MINECRAFT_PERMISSIONS_MANAGE"])
+@TestProfile(PermissionRestResourceTestProfile::class)
+@TestSecurity(
+    user = "admin-user",
+    roles = ["GAME_AREA_ACCESS", "MINECRAFT_PERMISSIONS_STAGE_MANAGE"],
+)
 class PermissionRestResourceTest {
 
     @Inject lateinit var repository: PermissionRepository
@@ -1551,4 +1557,9 @@ class PermissionRestResourceTest {
             .then()
             .statusCode(201)
     }
+}
+
+class PermissionRestResourceTestProfile : QuarkusTestProfile {
+    override fun getConfigOverrides(): Map<String, String> =
+        mapOf("permissions.instance-environment" to "stage")
 }

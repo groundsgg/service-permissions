@@ -57,7 +57,7 @@ constructor(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
     ): List<PlayerRoleGrantResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         return repository.listPlayerRoleGrantRecords(id).map { it.toResponse() }
     }
@@ -73,7 +73,7 @@ constructor(
         @QueryParam("sortDirection") sortDirection: String?,
         @Context headers: HttpHeaders,
     ): PagedResponse<PlayerEffectiveRoleResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val search =
             PermissionSearchPaging.validate(
@@ -97,7 +97,7 @@ constructor(
         request: PlayerRoleGrantRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val grant =
             PlayerRoleGrantRecord(
@@ -119,7 +119,7 @@ constructor(
         request: PlayerRoleGrantRequest,
         @Context headers: HttpHeaders,
     ): PlayerRoleGrantResponse {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
         val grant =
@@ -139,7 +139,7 @@ constructor(
         @PathParam("grantId") grantId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.deletePlayerRoleGrant(
             actorUserId = actor,
             playerId = PermissionValidation.uuid(playerId, "playerId"),
@@ -154,7 +154,7 @@ constructor(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
     ): List<PlayerGrantResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         return repository.listPlayerGrantRecords(id).map { it.toResponse() }
     }
@@ -170,7 +170,7 @@ constructor(
         @QueryParam("sortDirection") sortDirection: String?,
         @Context headers: HttpHeaders,
     ): PagedResponse<PlayerGrantResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val search =
             PermissionSearchPaging.validate(
                 query = query,
@@ -205,7 +205,7 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val grant = request.toPlayerGrantRecord(playerId = id, grantId = UUID.randomUUID())
         return Response.status(Response.Status.CREATED)
@@ -221,7 +221,7 @@ constructor(
         request: GrantRequest,
         @Context headers: HttpHeaders,
     ): PlayerGrantResponse {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
         return repository
@@ -241,7 +241,7 @@ constructor(
         @PathParam("grantId") grantId: String,
         @Context headers: HttpHeaders,
     ): Response {
-        val actor = requireAdmin(headers)
+        val actor = requireManage(headers)
         repository.deletePlayerGrant(
             actorUserId = actor,
             playerId = PermissionValidation.uuid(playerId, "playerId"),
@@ -258,7 +258,7 @@ constructor(
         @QueryParam("serverId") serverId: String?,
         @Context headers: HttpHeaders,
     ): EffectivePermissionResponse {
-        requireAdmin(headers)
+        requireView(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val snapshot = snapshotFor(id, serverType, serverId)
         return EffectivePermissionResponse(
@@ -299,7 +299,7 @@ constructor(
         @QueryParam("serverId") serverId: String?,
         @Context headers: HttpHeaders,
     ): PagedResponse<EffectiveGrantResponse> {
-        requireAdmin(headers)
+        requireView(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val search =
             PermissionSearchPaging.validate(
@@ -336,7 +336,7 @@ constructor(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
     ): PlayerIdentityResponse {
-        requireAdmin(headers)
+        requireView(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val projectedIdentity = identityRepository.findByPlayerId(id)
         val fresh =
@@ -365,7 +365,7 @@ constructor(
         @QueryParam("serverId") serverId: String?,
         @Context headers: HttpHeaders,
     ): PermissionCheckResponse {
-        requireAdmin(headers)
+        requireView(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val normalizedPermission = PermissionValidation.permissionKey(permission)
         val snapshot = snapshotFor(id, serverType, serverId)
@@ -586,8 +586,11 @@ constructor(
         )
     }
 
-    private fun requireAdmin(headers: HttpHeaders): String =
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+    private fun requireView(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsView(identity, headers)
+
+    private fun requireManage(headers: HttpHeaders): String =
+        authorization.requireMinecraftPermissionsManage(identity, headers)
 
     private fun GrantRequest.toPlayerGrantRecord(playerId: UUID, grantId: UUID): PlayerGrantRecord =
         PlayerGrantRecord(

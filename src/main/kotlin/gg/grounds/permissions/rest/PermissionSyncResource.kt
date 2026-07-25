@@ -32,7 +32,7 @@ constructor(
     @GET
     @Path("/snapshot")
     fun snapshot(@Context headers: HttpHeaders): GlobalPermissionSnapshot {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsSnapshotRead(identity, headers)
         return sync.snapshot()
     }
 
@@ -42,7 +42,7 @@ constructor(
         snapshot: GlobalPermissionSnapshot,
         @Context headers: HttpHeaders,
     ): PermissionSyncPreviewResponse {
-        authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        authorization.requireMinecraftPermissionsView(identity, headers)
         val diff = sync.preview(snapshot)
         return PermissionSyncPreviewResponse(
             snapshot.snapshotId,
@@ -55,7 +55,7 @@ constructor(
     @POST
     @Path("/import")
     fun import(request: PermissionSyncImportRequest, @Context headers: HttpHeaders): Response {
-        val actor = authorization.requireMinecraftPermissionsAdmin(identity, headers)
+        val actor = authorization.requireMinecraftPermissionsManage(identity, headers)
         val metadata = sync.import(request, actor)
         return Response.ok(metadata).build()
     }
