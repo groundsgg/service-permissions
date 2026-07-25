@@ -9,6 +9,8 @@ import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.matchesPattern
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Test
 
 @QuarkusTest
@@ -51,5 +53,35 @@ class ProblemDetailsTest {
                 "requestId",
                 matchesPattern("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
             )
+    }
+
+    @Test
+    fun `invalid audit timestamp omits secret query values from problem response`() {
+        val secret = "secret-like-token-123"
+        val response =
+            given()
+                .queryParam("to", secret)
+                .get("/v1/permissions/audit")
+                .then()
+                .statusCode(400)
+                .contentType("application/problem+json")
+                .extract()
+                .response()
+
+        assertFalse(response.asString().contains(secret))
+        assertEquals("invalid_request", response.jsonPath().getString("error"))
+        assertEquals("The request is invalid.", response.jsonPath().getString("detail"))
+        assertEquals("/v1/permissions/audit", response.jsonPath().getString("instance"))
+    }
+
+    @Test
+    fun `invalid encoded path uses a valid query-free problem instance`() {
+        given()
+            .urlEncodingEnabled(false)
+            .get("/v1/permissions/roles/bad%20key")
+            .then()
+            .statusCode(400)
+            .contentType("application/problem+json")
+            .body("instance", equalTo("/v1/permissions/roles/bad%20key"))
     }
 }

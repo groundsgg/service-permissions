@@ -64,7 +64,7 @@ constructor(
         try {
             Instant.parse(value)
         } catch (error: DateTimeParseException) {
-            throw IllegalArgumentException("invalid timestamp (value=$value)", error)
+            throw IllegalArgumentException("invalid_timestamp", error)
         }
 }
 
