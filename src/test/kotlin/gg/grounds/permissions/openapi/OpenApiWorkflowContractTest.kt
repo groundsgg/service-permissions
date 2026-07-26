@@ -32,7 +32,14 @@ class OpenApiWorkflowContractTest {
         assertThat(workflow).contains("actions/checkout@v7")
         assertThat(workflow).contains("actions/setup-java@v5", "java-version: \"25\"")
         assertThat(workflow).contains("gradle/actions/setup-gradle@v6")
-        assertThat(workflow).contains("./gradlew spotlessCheck test generateOpenApiSnapshot")
+        assertThat(workflow)
+            .contains(
+                "name: Validate service",
+                "run: ./gradlew spotlessCheck test",
+                "name: Generate OpenAPI snapshot",
+                "run: ./gradlew generateOpenApiSnapshot",
+            )
+        assertThat(workflow).doesNotContain("spotlessCheck test generateOpenApiSnapshot")
         assertThat(workflow).contains("actions/upload-artifact@v7")
         assertThat(workflow)
             .contains(
