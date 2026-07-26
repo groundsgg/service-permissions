@@ -17,6 +17,7 @@ import java.util.UUID
 import org.hamcrest.Matchers.empty
 import org.hamcrest.Matchers.equalTo
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
@@ -185,18 +186,34 @@ class PermissionRuntimeResourceTest {
     }
 
     @Test
-    fun `records a malformed manifest binding failure once`() {
+    fun `returns a safe problem response for a malformed manifest binding failure`() {
         val requestCountBefore = runtimeRequestCount("invalid")
         val manifestCountBefore = manifestCount("failure")
+        val requestId = "runtime-binding-request-123"
+        val malformedManifest = """{"sourceVersion":"secret-like-token","""
 
-        given()
-            .header("Authorization", "Bearer runtime-token")
-            .contentType("application/json")
-            .body("{\"sourceVersion\":")
-            .put(MANIFEST_PATH)
-            .then()
-            .statusCode(400)
+        val response =
+            given()
+                .header("Authorization", "Bearer runtime-token")
+                .header("X-Request-ID", requestId)
+                .contentType("application/json")
+                .body(malformedManifest)
+                .put(MANIFEST_PATH)
+                .then()
+                .statusCode(400)
+                .contentType("application/problem+json")
+                .body("type", equalTo("about:blank"))
+                .body("title", equalTo("Bad Request"))
+                .body("status", equalTo(400))
+                .body("detail", equalTo("The request is invalid."))
+                .body("instance", equalTo(MANIFEST_PATH))
+                .body("requestId", equalTo(requestId))
+                .body("error", equalTo("invalid_request"))
+                .extract()
+                .response()
 
+        assertFalse(response.asString().contains("secret-like-token"))
+        assertFalse(response.asString().contains("runtime-token"))
         assertEquals(requestCountBefore + 1, runtimeRequestCount("invalid"))
         assertEquals(manifestCountBefore + 1, manifestCount("failure"))
     }
