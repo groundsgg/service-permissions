@@ -4,41 +4,16 @@ import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 
 class RestOnlyRuntimeGuardTest {
     private val projectRoot = Path.of("").toAbsolutePath()
+    @TempDir lateinit var temporaryDirectory: Path
 
     @Test
     fun `excludes obsolete gRPC runtime sources and configuration`() {
-        val activePaths =
-            listOf(
-                projectRoot.resolve("build.gradle.kts"),
-                projectRoot.resolve("settings.gradle.kts"),
-                projectRoot.resolve("Dockerfile"),
-                projectRoot.resolve("src/main/kotlin"),
-                projectRoot.resolve("src/main/java"),
-                projectRoot.resolve("src/main/resources"),
-            )
-        val prohibitedReferences =
-            listOf(
-                "quarkus-grpc",
-                "protobuf-kotlin",
-                "src/main/proto",
-                "PermissionSnapshotGrpcService",
-                "PermissionCatalogGrpcService",
-                "9000",
-            )
-
-        val matches =
-            activePaths.flatMap(::regularFiles).flatMap { path ->
-                val contents = Files.readString(path)
-                prohibitedReferences.filter(contents::contains).map { reference ->
-                    "${projectRoot.relativize(path)}: $reference"
-                }
-            }
-
         assertThat(projectRoot.resolve("src/main/proto")).doesNotExist()
-        assertThat(matches).isEmpty()
+        assertThat(restOnlyViolations(projectRoot)).isEmpty()
         assertThat(
                 Files.readString(projectRoot.resolve("src/main/resources/application.properties"))
             )
@@ -47,35 +22,36 @@ class RestOnlyRuntimeGuardTest {
     }
 
     @Test
-    fun `detects obsolete runtime references in Java sources`() {
-        val javaSource = projectRoot.resolve("src/main/java/LegacyGrpcFixture.java")
+    fun `detects obsolete Java references and accepts clean source trees`() {
+        val temporaryProjectRoot = temporaryDirectory.resolve("project")
+        val javaSource = temporaryProjectRoot.resolve("src/main/java/LegacyGrpcFixture.java")
         Files.createDirectories(javaSource.parent)
         Files.writeString(javaSource, "// quarkus-grpc")
 
-        try {
-            val matches =
-                activePaths().flatMap(::regularFiles).flatMap { path ->
-                    val contents = Files.readString(path)
-                    prohibitedReferences().filter(contents::contains).map { reference ->
-                        "${projectRoot.relativize(path)}: $reference"
-                    }
-                }
+        assertThat(restOnlyViolations(temporaryProjectRoot))
+            .contains("src/main/java/LegacyGrpcFixture.java: quarkus-grpc")
 
-            assertThat(matches).contains("src/main/java/LegacyGrpcFixture.java: quarkus-grpc")
-        } finally {
-            Files.deleteIfExists(javaSource)
-            Files.deleteIfExists(javaSource.parent)
-        }
+        Files.delete(javaSource)
+
+        assertThat(restOnlyViolations(temporaryProjectRoot)).isEmpty()
     }
 
-    private fun activePaths() =
+    private fun restOnlyViolations(root: Path): List<String> =
+        activePaths(root).flatMap(::regularFiles).flatMap { path ->
+            val contents = Files.readString(path)
+            prohibitedReferences().filter(contents::contains).map { reference ->
+                "${root.relativize(path)}: $reference"
+            }
+        }
+
+    private fun activePaths(root: Path) =
         listOf(
-            projectRoot.resolve("build.gradle.kts"),
-            projectRoot.resolve("settings.gradle.kts"),
-            projectRoot.resolve("Dockerfile"),
-            projectRoot.resolve("src/main/kotlin"),
-            projectRoot.resolve("src/main/java"),
-            projectRoot.resolve("src/main/resources"),
+            root.resolve("build.gradle.kts"),
+            root.resolve("settings.gradle.kts"),
+            root.resolve("Dockerfile"),
+            root.resolve("src/main/kotlin"),
+            root.resolve("src/main/java"),
+            root.resolve("src/main/resources"),
         )
 
     private fun prohibitedReferences() =
