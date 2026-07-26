@@ -39,8 +39,11 @@ jobs:
             echo "github.token=${{ secrets.GITHUB_TOKEN }}"
           } > ~/.gradle/gradle.properties
 
-      - name: Generate and validate OpenAPI snapshot
-        run: ./gradlew spotlessCheck test generateOpenApiSnapshot
+      - name: Validate service
+        run: ./gradlew spotlessCheck test
+
+      - name: Generate OpenAPI snapshot
+        run: ./gradlew generateOpenApiSnapshot
 
       - name: Verify snapshot artifact
         run: |
