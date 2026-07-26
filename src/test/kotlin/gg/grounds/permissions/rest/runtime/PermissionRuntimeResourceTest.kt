@@ -144,6 +144,27 @@ class PermissionRuntimeResourceTest {
     }
 
     @Test
+    fun `clears a runtime manifest when the replacement contains no permissions`() {
+        given()
+            .header("Authorization", "Bearer runtime-token")
+            .contentType("application/json")
+            .body(VALID_MANIFEST)
+            .put(MANIFEST_PATH)
+            .then()
+            .statusCode(204)
+
+        given()
+            .header("Authorization", "Bearer runtime-token")
+            .contentType("application/json")
+            .body(EMPTY_MANIFEST)
+            .put(MANIFEST_PATH)
+            .then()
+            .statusCode(204)
+
+        assertEquals(emptyList<Any>(), repository.listCatalogEntries())
+    }
+
+    @Test
     fun `rejects duplicate permission keys before replacing a runtime manifest`() {
         given()
             .header("Authorization", "Bearer runtime-token")
@@ -265,6 +286,7 @@ class PermissionRuntimeResourceTest {
             )
         const val VALID_MANIFEST =
             """{"sourceVersion":"1.4.0","serverType":"velocity","serverId":"velocity-1","permissions":[{"key":"grounds.chat.staff","label":"Staff chat","description":"Allows access to staff chat.","supportedScopes":["GLOBAL","SERVER_TYPE","SERVER"]}]}"""
+        const val EMPTY_MANIFEST = """{"sourceVersion":"1.5.0","permissions":[]}"""
         const val DUPLICATE_KEYS_MANIFEST =
             """{"sourceVersion":"1.4.0","permissions":[{"key":"grounds.chat.staff","label":"Staff chat","description":"Allows access to staff chat.","supportedScopes":["GLOBAL"]},{"key":"grounds.chat.staff","label":"Staff chat again","description":"Duplicate.","supportedScopes":["GLOBAL"]}]}"""
     }

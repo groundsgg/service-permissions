@@ -225,7 +225,6 @@ class PermissionsOpenApiFilter : OASFilter {
             schemas.property("RuntimeManifestRequest", "serverId"),
             NONBLANK_PATTERN,
         )
-        schemas.property("RuntimeManifestRequest", "permissions")?.minItems = 1
         applyStringConstraint(
             schemas.property("RuntimeManifestPermissionRequest", "key"),
             KEY_PATTERN,

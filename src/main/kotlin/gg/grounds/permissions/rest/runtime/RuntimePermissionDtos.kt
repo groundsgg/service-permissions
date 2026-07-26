@@ -47,7 +47,7 @@ data class RuntimeRoleMetadataDto(
 @JsonIgnoreProperties(ignoreUnknown = false)
 @Schema(
     description =
-        "Complete permission catalog manifest published by one runtime source; permission keys must be unique and source must not appear in the body.",
+        "Complete permission catalog manifest published by one runtime source; an empty permissions list clears the source, permission keys must be unique, and source must not appear in the body.",
     requiredProperties = ["sourceVersion", "permissions"],
 )
 data class RuntimeManifestRequest(
@@ -56,8 +56,7 @@ data class RuntimeManifestRequest(
     val serverType: String?,
     @field:Schema(required = false, nullable = true, minLength = 1, pattern = "\\S")
     val serverId: String?,
-    @field:Schema(nullable = false, minItems = 1)
-    val permissions: List<RuntimeManifestPermissionRequest>?,
+    @field:Schema(nullable = false) val permissions: List<RuntimeManifestPermissionRequest>?,
 ) {
     @field:JsonIgnore @field:Schema(hidden = true) private var bodySourcePresent: Boolean = false
 

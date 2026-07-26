@@ -111,7 +111,6 @@ constructor(
         val normalizedSourceVersion = required(sourceVersion, "sourceVersion")
         val catalogEntries =
             requireNotNull(permissions) { "permissions must not be null" }
-                .also { require(it.isNotEmpty()) { "permissions must not be empty" } }
                 .mapIndexed { index, permission ->
                     permission.toCatalogEntry(normalizedSource, normalizedSourceVersion, index)
                 }

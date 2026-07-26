@@ -198,10 +198,9 @@ class OpenApiContractTest {
                     .path("RuntimeManifestRequest")
                     .path("properties")
                     .path("permissions")
-                    .path("minItems")
-                    .asInt()
+                    .has("minItems")
             )
-            .isEqualTo(1)
+            .isFalse()
         assertStringConstraint(
             schemas,
             "RuntimeManifestPermissionRequest",
@@ -253,7 +252,11 @@ class OpenApiContractTest {
         )
 
         assertThat(schemas.path("RuntimeManifestRequest").path("description").asText())
-            .contains("permission keys must be unique", "source must not appear in the body")
+            .contains(
+                "an empty permissions list clears the source",
+                "permission keys must be unique",
+                "source must not appear in the body",
+            )
         assertThat(schemas.path("GrantRequest").path("description").asText())
             .contains("scopeValue must be absent for GLOBAL", "required for all other scopes")
         assertThat(schemas.path("PermissionSyncImportRequest").path("description").asText())
