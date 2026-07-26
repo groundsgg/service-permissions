@@ -16,6 +16,7 @@ import jakarta.ws.rs.GET
 import jakarta.ws.rs.Path
 import jakarta.ws.rs.Produces
 import jakarta.ws.rs.core.MediaType
+import org.eclipse.microprofile.openapi.annotations.Operation
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -176,7 +177,10 @@ class RuntimeBearerAuthenticationIntegrationTest {
 @Path("/v1/permissions/runtime/auth-probe")
 @Authenticated
 class RuntimeAuthenticationProbeResource(private val securityIdentity: SecurityIdentity) {
-    @GET @Produces(MediaType.TEXT_PLAIN) fun identity(): String = securityIdentity.principal.name
+    @GET
+    @Operation(hidden = true)
+    @Produces(MediaType.TEXT_PLAIN)
+    fun identity(): String = securityIdentity.principal.name
 }
 
 class RuntimeBearerAuthenticationTestProfile : QuarkusTestProfile {

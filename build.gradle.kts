@@ -1,4 +1,5 @@
 import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.Delete
 import org.gradle.api.tasks.compile.JavaCompile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
@@ -19,9 +20,19 @@ tasks.withType<JavaCompile>().configureEach { options.release.set(25) }
 
 tasks.withType<KotlinCompile>().configureEach { compilerOptions.jvmTarget.set(JvmTarget.JVM_25) }
 
+val cleanProductionOpenApi =
+    tasks.register<Delete>("cleanProductionOpenApi") {
+        delete(layout.buildDirectory.dir("generated/openapi"))
+        delete(layout.buildDirectory.dir("quarkus"))
+        delete(layout.buildDirectory.dir("quarkus-app"))
+        delete(layout.buildDirectory.dir("quarkus-build"))
+    }
+
+val quarkusBuild = tasks.named("quarkusBuild") { mustRunAfter(cleanProductionOpenApi) }
+
 tasks.register<Copy>("generateOpenApiSnapshot") {
     group = "documentation"
-    dependsOn(tasks.named("quarkusBuild"))
+    dependsOn(cleanProductionOpenApi, quarkusBuild)
     from(layout.buildDirectory.file("generated/openapi/openapi.json"))
     into(layout.buildDirectory.dir("api-reference"))
     rename { "openapi.json" }

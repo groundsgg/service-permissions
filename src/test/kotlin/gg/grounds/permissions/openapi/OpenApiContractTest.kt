@@ -254,7 +254,6 @@ class OpenApiContractTest {
 
     private fun operations(document: JsonNode): Map<OperationKey, JsonNode> = buildMap {
         document.path("paths").properties().forEach { (path, pathItem) ->
-            if (path == TEST_ONLY_AUTH_PROBE) return@forEach
             pathItem.properties().forEach { (method, operation) ->
                 if (method in HTTP_METHODS) put(OperationKey(path, method), operation)
             }
@@ -287,7 +286,6 @@ class OpenApiContractTest {
     private companion object {
         val COMMON_ERRORS = setOf("400", "401", "403", "500", "503")
         val HTTP_METHODS = setOf("get", "post", "put", "delete", "patch")
-        const val TEST_ONLY_AUTH_PROBE = "/v1/permissions/runtime/auth-probe"
         val PATH_PARAMETER = Regex("\\{([^}]+)}")
         val GRPC_DERIVED_SCHEMAS =
             setOf(
