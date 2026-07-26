@@ -20,6 +20,13 @@ class OpenApiContractTest {
     @Inject lateinit var objectMapper: ObjectMapper
 
     @Test
+    fun `serves health and OpenAPI over the HTTP runtime`() {
+        val healthStatus = given().get("/q/health").then().extract().statusCode()
+        assertThat(healthStatus).isIn(200, 503)
+        given().accept(ContentType.JSON).get("/q/openapi?format=json").then().statusCode(200)
+    }
+
+    @Test
     fun `exports the complete permissions REST contract`() {
         val document = openApiDocument()
 
