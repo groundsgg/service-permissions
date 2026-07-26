@@ -75,11 +75,13 @@ class PermissionsOpenApiFilter : OASFilter {
         operation.parameters.orEmpty().forEach { parameter ->
             parameter.description =
                 parameter.description?.takeIf(String::isNotBlank)
+                    ?: REQUIRED_QUERY_PARAMETER_DESCRIPTIONS[operationId]?.get(parameter.name)
                     ?: PARAMETER_DESCRIPTIONS[parameter.name]
                     ?: "Request parameter ${parameter.name}."
-            parameter.required =
-                parameter.`in` == Parameter.In.PATH ||
-                    REQUIRED_QUERY_PARAMETERS[operationId]?.contains(parameter.name) == true
+            val requiredQuery =
+                REQUIRED_QUERY_PARAMETERS[operationId]?.contains(parameter.name) == true
+            parameter.required = parameter.`in` == Parameter.In.PATH || requiredQuery
+            if (requiredQuery) parameter.schema?.removeType(SchemaType.NULL)
         }
         if (operationId == "createCustomCatalogEntry") requireCatalogCreateFields(operation)
         return operation
@@ -130,7 +132,13 @@ class PermissionsOpenApiFilter : OASFilter {
         val mediaType = operation.requestBody?.content?.getMediaType(APPLICATION_JSON) ?: return
         val inferredSchema = mediaType.schema ?: return
         mediaType.schema =
-            OASFactory.createSchema().addAllOf(inferredSchema).required(listOf("key", "label"))
+            OASFactory.createSchema()
+                .addAllOf(inferredSchema)
+                .addProperty(
+                    "key",
+                    stringSchema().description("Permission key for the new catalog entry."),
+                )
+                .required(listOf("key", "label"))
     }
 
     private fun successCode(operationId: String): String =
@@ -212,6 +220,21 @@ class PermissionsOpenApiFilter : OASFilter {
                 "searchPlayers" to setOf("query"),
                 "searchExternalPlayer" to setOf("query"),
                 "checkPlayerPermission" to setOf("permission"),
+            )
+
+        val REQUIRED_QUERY_PARAMETER_DESCRIPTIONS =
+            mapOf(
+                "searchPlayers" to
+                    mapOf(
+                        "query" to
+                            "Minecraft username fragment or complete player UUID to search for."
+                    ),
+                "searchExternalPlayer" to
+                    mapOf(
+                        "query" to
+                            "Exact Minecraft username to look up outside the local player index."
+                    ),
+                "checkPlayerPermission" to mapOf("permission" to "Permission key to evaluate."),
             )
 
         val PARAMETER_DESCRIPTIONS =

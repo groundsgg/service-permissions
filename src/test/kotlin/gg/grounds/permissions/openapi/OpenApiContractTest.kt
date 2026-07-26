@@ -98,14 +98,18 @@ class OpenApiContractTest {
         val operations =
             operations(openApiDocument()).values.associateBy { it.path("operationId").asText() }
 
-        REQUIRED_QUERY_PARAMETERS.forEach { (operationId, parameterName) ->
+        REQUIRED_QUERY_PARAMETERS.forEach { (operationId, expectation) ->
             val parameter =
                 operations.getValue(operationId).path("parameters").first {
-                    it.path("name").asText() == parameterName
+                    it.path("name").asText() == expectation.name
                 }
             assertThat(parameter.path("required").asBoolean())
-                .describedAs("required query parameter %s.%s", operationId, parameterName)
+                .describedAs("required query parameter %s.%s", operationId, expectation.name)
                 .isTrue()
+            assertThat(allowsNull(parameter.path("schema")))
+                .describedAs("nullability of query parameter %s.%s", operationId, expectation.name)
+                .isFalse()
+            assertThat(parameter.path("description").asText()).isEqualTo(expectation.description)
         }
     }
 
@@ -140,6 +144,28 @@ class OpenApiContractTest {
                 .path("schema")
         assertThat(createCatalogSchema.path("required").map(JsonNode::asText))
             .contains("key", "label")
+        assertThat(createCatalogSchema.path("properties").has("key")).isTrue()
+        assertThat(allowsNull(createCatalogSchema.path("properties").path("key"))).isFalse()
+
+        val updateCatalogSchema =
+            document
+                .path("paths")
+                .path("/v1/permissions/catalog/custom/{permissionKey}")
+                .path("put")
+                .path("requestBody")
+                .path("content")
+                .path("application/json")
+                .path("schema")
+        assertThat(updateCatalogSchema.path("\$ref").asText()).endsWith("/CatalogEntryRequest")
+        val updateCatalogComponent = schemas.path("CatalogEntryRequest")
+        assertThat(updateCatalogComponent.path("required").map(JsonNode::asText))
+            .doesNotContain("key")
+        val updateKey = updateCatalogComponent.path("properties").path("key")
+        assertThat(allowsNull(updateKey)).isTrue()
+        assertThat(updateKey.path("description").asText())
+            .isEqualTo(
+                "Ignored on update because the permissionKey path parameter is authoritative."
+            )
     }
 
     private fun allowsNull(schema: JsonNode): Boolean =
@@ -300,11 +326,23 @@ class OpenApiContractTest {
                 "RuntimeManifestRequest",
                 "RuntimeManifestPermissionRequest",
             )
+
+        data class RequiredQueryParameter(val name: String, val description: String)
+
         val REQUIRED_QUERY_PARAMETERS =
             mapOf(
-                "searchPlayers" to "query",
-                "searchExternalPlayer" to "query",
-                "checkPlayerPermission" to "permission",
+                "searchPlayers" to
+                    RequiredQueryParameter(
+                        "query",
+                        "Minecraft username fragment or complete player UUID to search for.",
+                    ),
+                "searchExternalPlayer" to
+                    RequiredQueryParameter(
+                        "query",
+                        "Exact Minecraft username to look up outside the local player index.",
+                    ),
+                "checkPlayerPermission" to
+                    RequiredQueryParameter("permission", "Permission key to evaluate."),
             )
         val REQUIRED_REQUEST_FIELDS =
             mapOf(
