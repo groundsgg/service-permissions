@@ -1,7 +1,12 @@
 package gg.grounds.permissions.auth
 
+import gg.grounds.permissions.metrics.RuntimeOperation
+import gg.grounds.permissions.metrics.RuntimePermissionMetrics
+import gg.grounds.permissions.metrics.RuntimeRequestStatus
 import io.fabric8.kubernetes.client.KubernetesClientException
 import jakarta.enterprise.context.ApplicationScoped
+import jakarta.inject.Inject
+import java.time.Duration
 import java.util.Locale
 
 interface RuntimeAccessAuthorizer {
@@ -40,38 +45,56 @@ class RuntimeAccessUnavailableException :
     )
 
 @ApplicationScoped
-class DefaultRuntimeAccessAuthorizer(private val client: KubernetesWorkloadAccessClient) :
-    RuntimeAccessAuthorizer {
+class DefaultRuntimeAccessAuthorizer
+@Inject
+constructor(
+    private val client: KubernetesWorkloadAccessClient,
+    private val metrics: RuntimePermissionMetrics,
+) : RuntimeAccessAuthorizer {
+    internal constructor(
+        client: KubernetesWorkloadAccessClient
+    ) : this(client, RuntimePermissionMetrics.noOp())
+
     override fun requireAccess(
         authorizationHeader: String?,
         verb: String,
         path: String,
     ): RuntimeWorkloadIdentity {
-        val token = bearerToken(authorizationHeader) ?: throw RuntimeAuthenticationException()
-        val identity =
-            try {
-                client.authenticate(token, RUNTIME_AUDIENCE)
-            } catch (_: RuntimeInvalidWorkloadCredentialException) {
-                throw RuntimeAuthenticationException()
-            } catch (_: RuntimeWorkloadReviewUnavailableException) {
-                throw RuntimeAccessUnavailableException()
-            } catch (_: KubernetesClientException) {
-                throw RuntimeAccessUnavailableException()
-            }
-        if (!identity.isConsistentServiceAccount()) throw RuntimeAuthenticationException()
+        val startedAt = System.nanoTime()
+        try {
+            val token = bearerToken(authorizationHeader) ?: throw RuntimeAuthenticationException()
+            val identity =
+                try {
+                    client.authenticate(token, RUNTIME_AUDIENCE)
+                } catch (_: RuntimeInvalidWorkloadCredentialException) {
+                    throw RuntimeAuthenticationException()
+                } catch (_: RuntimeWorkloadReviewUnavailableException) {
+                    throw RuntimeAccessUnavailableException()
+                } catch (_: KubernetesClientException) {
+                    throw RuntimeAccessUnavailableException()
+                }
+            if (!identity.isConsistentServiceAccount()) throw RuntimeAuthenticationException()
 
-        val normalizedVerb = verb.lowercase(Locale.ROOT)
-        val queryFreePath = path.substringBefore('?')
-        val allowed =
-            try {
-                client.isAllowed(identity, normalizedVerb, queryFreePath)
-            } catch (_: RuntimeWorkloadReviewUnavailableException) {
-                throw RuntimeAccessUnavailableException()
-            } catch (_: KubernetesClientException) {
-                throw RuntimeAccessUnavailableException()
-            }
-        if (!allowed) throw RuntimeAuthorizationException()
-        return identity
+            val normalizedVerb = verb.lowercase(Locale.ROOT)
+            val queryFreePath = path.substringBefore('?')
+            val allowed =
+                try {
+                    client.isAllowed(identity, normalizedVerb, queryFreePath)
+                } catch (_: RuntimeWorkloadReviewUnavailableException) {
+                    throw RuntimeAccessUnavailableException()
+                } catch (_: KubernetesClientException) {
+                    throw RuntimeAccessUnavailableException()
+                }
+            if (!allowed) throw RuntimeAuthorizationException()
+            return identity
+        } catch (exception: RuntimeAccessException) {
+            metrics.recordRuntimeRequest(
+                operationFor(path),
+                requestStatusFor(exception.statusCode),
+                Duration.ofNanos(System.nanoTime() - startedAt),
+            )
+            throw exception
+        }
     }
 
     private fun bearerToken(authorizationHeader: String?): String? {
@@ -89,8 +112,22 @@ class DefaultRuntimeAccessAuthorizer(private val client: KubernetesWorkloadAcces
             ':' !in namespace &&
             ':' !in serviceAccount
 
+    private fun operationFor(path: String): RuntimeOperation =
+        if (path.substringBefore('?').startsWith("$RUNTIME_ROOT/catalog/"))
+            RuntimeOperation.MANIFEST
+        else RuntimeOperation.SNAPSHOT
+
+    private fun requestStatusFor(statusCode: Int): RuntimeRequestStatus =
+        when (statusCode) {
+            401 -> RuntimeRequestStatus.UNAUTHORIZED
+            403 -> RuntimeRequestStatus.FORBIDDEN
+            503 -> RuntimeRequestStatus.UNAVAILABLE
+            else -> RuntimeRequestStatus.FAILURE
+        }
+
     private companion object {
         const val BEARER_PREFIX = "Bearer "
         const val RUNTIME_AUDIENCE = "service-permissions"
+        const val RUNTIME_ROOT = "/v1/permissions/runtime"
     }
 }
