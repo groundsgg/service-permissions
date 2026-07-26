@@ -10,6 +10,7 @@ import java.time.Instant
 import java.util.UUID
 import org.eclipse.microprofile.openapi.annotations.media.Schema
 
+@Schema(description = "Effective permission snapshot consumed by a runtime workload.")
 data class RuntimePermissionSnapshotResponse(
     val playerId: UUID,
     val policyVersion: Long,
@@ -22,6 +23,7 @@ data class RuntimePermissionSnapshotResponse(
     val roleMetadata: List<RuntimeRoleMetadataDto>,
 )
 
+@Schema(description = "Effective runtime permission grant.")
 data class RuntimePermissionGrantDto(
     val effect: PermissionEffect,
     val pattern: String,
@@ -30,8 +32,10 @@ data class RuntimePermissionGrantDto(
     val expiresAt: Instant?,
 )
 
+@Schema(description = "Scope that limits where a runtime permission grant applies.")
 data class PermissionScopeDto(val kind: PermissionScopeKind, val value: String?)
 
+@Schema(description = "Display metadata for an effective runtime role.")
 data class RuntimeRoleMetadataDto(
     val key: String,
     val name: String,
@@ -41,11 +45,15 @@ data class RuntimeRoleMetadataDto(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = false)
+@Schema(
+    description = "Complete permission catalog manifest published by one runtime source.",
+    requiredProperties = ["sourceVersion", "permissions"],
+)
 data class RuntimeManifestRequest(
-    val sourceVersion: String?,
-    val serverType: String?,
-    val serverId: String?,
-    val permissions: List<RuntimeManifestPermissionRequest>?,
+    @field:Schema(nullable = false) val sourceVersion: String?,
+    @field:Schema(required = false, nullable = true) val serverType: String?,
+    @field:Schema(required = false, nullable = true) val serverId: String?,
+    @field:Schema(nullable = false) val permissions: List<RuntimeManifestPermissionRequest>?,
 ) {
     @field:JsonIgnore @field:Schema(hidden = true) private var bodySourcePresent: Boolean = false
 
@@ -58,9 +66,13 @@ data class RuntimeManifestRequest(
 }
 
 @JsonIgnoreProperties(ignoreUnknown = false)
+@Schema(
+    description = "Permission catalog entry contained in a runtime manifest.",
+    requiredProperties = ["key", "label", "supportedScopes"],
+)
 data class RuntimeManifestPermissionRequest(
-    val key: String?,
-    val label: String?,
-    val description: String?,
-    val supportedScopes: List<PermissionScopeKind>?,
+    @field:Schema(nullable = false) val key: String?,
+    @field:Schema(nullable = false) val label: String?,
+    @field:Schema(required = false, nullable = true) val description: String?,
+    @field:Schema(nullable = false) val supportedScopes: List<PermissionScopeKind>?,
 )

@@ -25,12 +25,18 @@ import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import java.time.Instant
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 import org.jboss.logging.Logger
 
 @Path("/v1/permissions/runtime")
 @Authenticated
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
+@Tag(name = "Runtime")
+@SecurityRequirement(name = "workloadBearer")
 class PermissionRuntimeResource
 @Inject
 constructor(
@@ -40,6 +46,10 @@ constructor(
 ) {
     @GET
     @Path("/players/{playerId}/snapshot")
+    @Operation(
+        operationId = "getRuntimePermissionSnapshot",
+        summary = "Get a runtime player permission snapshot",
+    )
     fun snapshot(
         @PathParam("playerId") playerId: String,
         @QueryParam("serverType") serverType: String?,
@@ -79,6 +89,11 @@ constructor(
 
     @PUT
     @Path("/catalog/manifests/{source}")
+    @Operation(
+        operationId = "replaceRuntimePermissionManifest",
+        summary = "Replace a runtime permission manifest",
+    )
+    @APIResponse(responseCode = "204", description = "Runtime permission manifest replaced.")
     fun replaceManifest(
         @PathParam("source") source: String,
         request: RuntimeManifestRequest,

@@ -34,11 +34,19 @@ import java.time.Instant
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.health.Readiness
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.media.Content
+import org.eclipse.microprofile.openapi.annotations.media.Schema
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 
 @Path("/v1/permissions/players/{playerId}")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionPlayerResource
 @Inject
 constructor(
@@ -53,6 +61,7 @@ constructor(
 
     @GET
     @Path("/roles")
+    @Operation(operationId = "listPlayerRoleGrants", summary = "List direct player role grants")
     fun listPlayerRoles(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
@@ -64,6 +73,7 @@ constructor(
 
     @GET
     @Path("/roles/search")
+    @Operation(operationId = "searchPlayerRoles", summary = "Search effective player roles")
     fun searchPlayerRoles(
         @PathParam("playerId") playerId: String,
         @QueryParam("query") query: String?,
@@ -92,6 +102,18 @@ constructor(
 
     @POST
     @Path("/roles")
+    @Operation(operationId = "createPlayerRoleGrant", summary = "Create a player role grant")
+    @APIResponse(
+        responseCode = "201",
+        description = "Player role grant created.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = PlayerRoleGrantResponse::class),
+                )
+            ],
+    )
     fun createPlayerRole(
         @PathParam("playerId") playerId: String,
         request: PlayerRoleGrantRequest,
@@ -113,6 +135,7 @@ constructor(
 
     @PUT
     @Path("/roles/{grantId}")
+    @Operation(operationId = "updatePlayerRoleGrant", summary = "Update a player role grant")
     fun updatePlayerRole(
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
@@ -134,6 +157,8 @@ constructor(
 
     @DELETE
     @Path("/roles/{grantId}")
+    @Operation(operationId = "deletePlayerRoleGrant", summary = "Delete a player role grant")
+    @APIResponse(responseCode = "204", description = "Player role grant deleted.")
     fun deletePlayerRole(
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
@@ -150,6 +175,7 @@ constructor(
 
     @GET
     @Path("/grants")
+    @Operation(operationId = "listPlayerGrants", summary = "List direct player permission grants")
     fun listPlayerGrants(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
@@ -161,6 +187,10 @@ constructor(
 
     @GET
     @Path("/grants/search")
+    @Operation(
+        operationId = "searchPlayerGrants",
+        summary = "Search direct player permission grants",
+    )
     fun searchPlayerGrants(
         @PathParam("playerId") playerId: String,
         @QueryParam("query") query: String?,
@@ -200,6 +230,18 @@ constructor(
 
     @POST
     @Path("/grants")
+    @Operation(operationId = "createPlayerGrant", summary = "Create a player permission grant")
+    @APIResponse(
+        responseCode = "201",
+        description = "Player permission grant created.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = PlayerGrantResponse::class),
+                )
+            ],
+    )
     fun createPlayerGrant(
         @PathParam("playerId") playerId: String,
         request: GrantRequest,
@@ -215,6 +257,7 @@ constructor(
 
     @PUT
     @Path("/grants/{grantId}")
+    @Operation(operationId = "updatePlayerGrant", summary = "Update a player permission grant")
     fun updatePlayerGrant(
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
@@ -236,6 +279,8 @@ constructor(
 
     @DELETE
     @Path("/grants/{grantId}")
+    @Operation(operationId = "deletePlayerGrant", summary = "Delete a player permission grant")
+    @APIResponse(responseCode = "204", description = "Player permission grant deleted.")
     fun deletePlayerGrant(
         @PathParam("playerId") playerId: String,
         @PathParam("grantId") grantId: String,
@@ -252,6 +297,10 @@ constructor(
 
     @GET
     @Path("/effective")
+    @Operation(
+        operationId = "getEffectivePlayerPermissions",
+        summary = "Get effective player permissions",
+    )
     fun effectivePermissions(
         @PathParam("playerId") playerId: String,
         @QueryParam("serverType") serverType: String?,
@@ -287,6 +336,10 @@ constructor(
 
     @GET
     @Path("/effective/search")
+    @Operation(
+        operationId = "searchEffectivePlayerPermissions",
+        summary = "Search effective player permissions",
+    )
     fun searchEffectivePermissions(
         @PathParam("playerId") playerId: String,
         @QueryParam("query") query: String?,
@@ -332,6 +385,7 @@ constructor(
 
     @GET
     @Path("/identity")
+    @Operation(operationId = "getPlayerIdentity", summary = "Get projected player identity")
     fun identity(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
@@ -357,6 +411,7 @@ constructor(
 
     @GET
     @Path("/check")
+    @Operation(operationId = "checkPlayerPermission", summary = "Evaluate one player permission")
     fun checkPermission(
         @PathParam("playerId") playerId: String,
         @QueryParam("permission") permission: String?,

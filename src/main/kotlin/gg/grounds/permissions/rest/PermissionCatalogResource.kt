@@ -20,11 +20,19 @@ import jakarta.ws.rs.core.Context
 import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.media.Content
+import org.eclipse.microprofile.openapi.annotations.media.Schema
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 
 @Path("/v1/permissions/catalog")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionCatalogResource
 @Inject
 constructor(
@@ -34,6 +42,7 @@ constructor(
 ) {
 
     @GET
+    @Operation(operationId = "listPermissionCatalog", summary = "List permission catalog entries")
     fun listCatalog(@Context headers: HttpHeaders): List<CatalogEntryResponse> {
         requireView(headers)
         return repository.listCatalogEntries().map { it.toResponse() }
@@ -41,6 +50,10 @@ constructor(
 
     @GET
     @Path("/search")
+    @Operation(
+        operationId = "searchPermissionCatalog",
+        summary = "Search permission catalog entries",
+    )
     fun searchCatalog(
         @QueryParam("query") query: String?,
         @QueryParam("page") @DefaultValue("1") page: Int,
@@ -78,6 +91,18 @@ constructor(
 
     @POST
     @Path("/custom")
+    @Operation(operationId = "createCustomCatalogEntry", summary = "Create a custom catalog entry")
+    @APIResponse(
+        responseCode = "201",
+        description = "Custom catalog entry created.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = CatalogEntryResponse::class),
+                )
+            ],
+    )
     fun createCustomEntry(request: CatalogEntryRequest, @Context headers: HttpHeaders): Response {
         val actor = requireManage(headers)
         val entry = request.toRecord(custom = true)
@@ -88,6 +113,7 @@ constructor(
 
     @PUT
     @Path("/custom/{permissionKey}")
+    @Operation(operationId = "updateCustomCatalogEntry", summary = "Update a custom catalog entry")
     fun updateCustomEntry(
         @PathParam("permissionKey") permissionKey: String,
         request: CatalogEntryRequest,
@@ -101,6 +127,8 @@ constructor(
 
     @DELETE
     @Path("/custom/{permissionKey}")
+    @Operation(operationId = "deleteCustomCatalogEntry", summary = "Delete a custom catalog entry")
+    @APIResponse(responseCode = "204", description = "Custom catalog entry deleted.")
     fun deleteCustomEntry(
         @PathParam("permissionKey") permissionKey: String,
         @Context headers: HttpHeaders,

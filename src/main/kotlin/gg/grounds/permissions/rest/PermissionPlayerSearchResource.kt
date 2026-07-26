@@ -21,10 +21,15 @@ import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import java.util.Locale
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 
 @Path("/v1/permissions/players")
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionPlayerSearchResource
 @Inject
 constructor(
@@ -35,6 +40,7 @@ constructor(
 ) {
     @GET
     @Path("search")
+    @Operation(operationId = "searchPlayers", summary = "Search known players")
     fun search(
         @QueryParam("query") query: String?,
         @QueryParam("page") @DefaultValue("1") page: Int,
@@ -62,6 +68,7 @@ constructor(
 
     @GET
     @Path("external-search")
+    @Operation(operationId = "searchExternalPlayer", summary = "Find an external Minecraft player")
     fun externalSearch(
         @QueryParam("query") query: String?,
         @Context headers: HttpHeaders,

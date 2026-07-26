@@ -6,6 +6,7 @@ import gg.grounds.permissions.domain.PermissionGrantOriginKind
 import gg.grounds.permissions.domain.PermissionScopeKind
 import java.time.Instant
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.media.Schema
 
 data class PagedResponse<T>(val items: List<T>, val page: Int, val perPage: Int, val total: Long)
 
@@ -56,9 +57,13 @@ object PermissionSearchPaging {
     private val WHITESPACE = Regex("\\s+")
 }
 
+@Schema(
+    description = "Payload for creating or updating a permission role.",
+    requiredProperties = ["name"],
+)
 data class RoleRequest(
     var key: String? = null,
-    var name: String? = null,
+    @field:Schema(nullable = false) var name: String? = null,
     var description: String = "",
     var prefix: String? = null,
     var color: String? = null,
@@ -67,6 +72,7 @@ data class RoleRequest(
     var default: Boolean = false,
 )
 
+@Schema(description = "Permission role details.")
 data class RoleResponse(
     val key: String,
     val name: String,
@@ -78,6 +84,7 @@ data class RoleResponse(
     val default: Boolean,
 )
 
+@Schema(description = "Permission role summary with aggregate assignment counts.")
 data class RoleListResponse(
     val key: String,
     val name: String,
@@ -92,14 +99,19 @@ data class RoleListResponse(
     val parentRoleKeys: List<String>,
 )
 
+@Schema(
+    description = "Payload for creating or updating a permission grant.",
+    requiredProperties = ["effect", "permissionPattern"],
+)
 data class GrantRequest(
-    var effect: PermissionEffect? = null,
-    var permissionPattern: String? = null,
+    @field:Schema(nullable = false) var effect: PermissionEffect? = null,
+    @field:Schema(nullable = false) var permissionPattern: String? = null,
     var scopeKind: PermissionScopeKind = PermissionScopeKind.GLOBAL,
     var scopeValue: String? = null,
     var expiresAt: Instant? = null,
 )
 
+@Schema(description = "Permission grant assigned to a role.")
 data class RoleGrantResponse(
     val id: UUID,
     val roleKey: String,
@@ -110,8 +122,16 @@ data class RoleGrantResponse(
     val expiresAt: Instant?,
 )
 
-data class PlayerRoleGrantRequest(var roleKey: String? = null, var expiresAt: Instant? = null)
+@Schema(
+    description = "Payload for assigning a role directly to a player.",
+    requiredProperties = ["roleKey"],
+)
+data class PlayerRoleGrantRequest(
+    @field:Schema(nullable = false) var roleKey: String? = null,
+    var expiresAt: Instant? = null,
+)
 
+@Schema(description = "Direct role assignment for a player.")
 data class PlayerRoleGrantResponse(
     val id: UUID,
     val playerId: UUID,
@@ -119,6 +139,7 @@ data class PlayerRoleGrantResponse(
     val expiresAt: Instant?,
 )
 
+@Schema(description = "Effective player role and the assignments that contributed it.")
 data class PlayerEffectiveRoleResponse(
     val id: String,
     val roleKey: String,
@@ -131,6 +152,7 @@ data class PlayerEffectiveRoleResponse(
     val assignments: List<EffectiveRoleAssignmentResponse>,
 )
 
+@Schema(description = "Direct permission grant assigned to a player.")
 data class PlayerGrantResponse(
     val id: UUID,
     val playerId: UUID,
@@ -141,12 +163,17 @@ data class PlayerGrantResponse(
     val expiresAt: Instant?,
 )
 
+@Schema(
+    description = "Payload for mapping a Keycloak group to a permission role.",
+    requiredProperties = ["keycloakGroup", "roleKey"],
+)
 data class KeycloakGroupMappingRequest(
-    var keycloakGroup: String? = null,
-    var roleKey: String? = null,
+    @field:Schema(nullable = false) var keycloakGroup: String? = null,
+    @field:Schema(nullable = false) var roleKey: String? = null,
     var expiresAt: Instant? = null,
 )
 
+@Schema(description = "Mapping from a Keycloak group to a permission role.")
 data class KeycloakGroupMappingResponse(
     val id: UUID,
     val keycloakGroup: String,
@@ -154,15 +181,24 @@ data class KeycloakGroupMappingResponse(
     val expiresAt: Instant?,
 )
 
+@Schema(
+    description = "Payload for creating or updating a custom permission catalog entry.",
+    requiredProperties = ["label"],
+)
 data class CatalogEntryRequest(
+    @field:Schema(
+        nullable = false,
+        description = "Permission key. Required when creating; ignored when updating by path.",
+    )
     var key: String? = null,
-    var label: String? = null,
+    @field:Schema(nullable = false) var label: String? = null,
     var description: String = "",
     var source: String = "portal",
     var sourceVersion: String = "custom",
     var supportedScopes: List<PermissionScopeKind> = listOf(PermissionScopeKind.GLOBAL),
 )
 
+@Schema(description = "Permission catalog entry exposed to administrators.")
 data class CatalogEntryResponse(
     val key: String,
     val label: String,
@@ -174,6 +210,7 @@ data class CatalogEntryResponse(
     val lastSeenAt: Instant?,
 )
 
+@Schema(description = "Complete effective permission evaluation for a player.")
 data class EffectivePermissionResponse(
     val playerId: UUID,
     val policyVersion: Long,
@@ -185,6 +222,7 @@ data class EffectivePermissionResponse(
     val expiresAt: Instant,
 )
 
+@Schema(description = "Effective allow or deny grant and its origin.")
 data class EffectiveGrantResponse(
     val effect: PermissionEffect,
     val permissionPattern: String,
@@ -199,6 +237,7 @@ data class EffectiveGrantResponse(
     val editable: Boolean,
 )
 
+@Schema(description = "Role assignment that contributed to effective permissions.")
 data class EffectiveRoleAssignmentResponse(
     val roleKey: String,
     val source: PermissionGrantOriginKind,
@@ -208,6 +247,7 @@ data class EffectiveRoleAssignmentResponse(
     val editable: Boolean,
 )
 
+@Schema(description = "Decision for a single player permission check.")
 data class PermissionCheckResponse(
     val playerId: UUID,
     val permission: String,
@@ -215,6 +255,7 @@ data class PermissionCheckResponse(
     val winningGrant: EffectiveGrantResponse?,
 )
 
+@Schema(description = "Projected Minecraft identity and evaluation readiness for a player.")
 data class PlayerIdentityResponse(
     val playerId: UUID,
     val name: String?,
@@ -225,6 +266,7 @@ data class PlayerIdentityResponse(
     val evaluationSafe: Boolean,
 )
 
+@Schema(description = "Player search result with permission assignment counts.")
 data class PlayerSearchItemResponse(
     val playerId: UUID,
     val name: String,
@@ -235,6 +277,7 @@ data class PlayerSearchItemResponse(
     val effectivePermissionGrantCount: Long,
 )
 
+@Schema(description = "Paginated player search results.")
 data class PlayerSearchResponse(
     val items: List<PlayerSearchItemResponse>,
     val page: Int,
@@ -242,6 +285,7 @@ data class PlayerSearchResponse(
     val total: Long,
 )
 
+@Schema(description = "Current player identity synchronization status.")
 data class IdentitySyncStatusResponse(
     val status: String,
     val startedAt: Instant?,
@@ -253,6 +297,7 @@ data class IdentitySyncStatusResponse(
     val stale: Boolean,
 )
 
+@Schema(description = "One immutable permission administration audit event.")
 data class PermissionAuditEventResponse(
     val id: UUID,
     val actorUserId: String?,
@@ -262,6 +307,7 @@ data class PermissionAuditEventResponse(
     val createdAt: Instant,
 )
 
+@Schema(description = "Paginated permission administration audit events.")
 data class PermissionAuditPageResponse(
     val items: List<PermissionAuditEventResponse>,
     val page: Int,
