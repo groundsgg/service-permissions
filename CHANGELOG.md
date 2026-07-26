@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/groundsgg/service-permissions/compare/v0.12.0...v1.0.0) (2026-07-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace permissions gRPC runtime with REST ([#59](https://github.com/groundsgg/service-permissions/issues/59))
+
+### Features
+
+* **auth:** secure environment permission transfers ([#56](https://github.com/groundsgg/service-permissions/issues/56)) ([ed5e0c9](https://github.com/groundsgg/service-permissions/commit/ed5e0c9e6741237cd564110f4751a088a4e50390))
+* replace permissions gRPC runtime with REST ([#59](https://github.com/groundsgg/service-permissions/issues/59)) ([b7fe991](https://github.com/groundsgg/service-permissions/commit/b7fe991456a90b3729a84c40b878cbef220b862a))
+
 ## [0.12.0](https://github.com/groundsgg/service-permissions/compare/v0.11.1...v0.12.0) (2026-07-24)
 
 
