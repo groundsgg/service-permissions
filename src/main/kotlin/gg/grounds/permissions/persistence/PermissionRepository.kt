@@ -42,6 +42,7 @@ import java.time.Instant
 import java.util.UUID
 import javax.sql.DataSource
 import org.eclipse.microprofile.health.Readiness
+import org.eclipse.microprofile.openapi.annotations.media.Schema
 import org.postgresql.util.PGobject
 import org.postgresql.util.PSQLException
 
@@ -106,6 +107,7 @@ data class CatalogEntryRecord(
     val lastSeenAt: Instant? = null,
 )
 
+@Schema(description = "Metadata recorded after a permission environment import.")
 data class PermissionSyncMetadataRecord(
     val snapshotId: String,
     val actorUserId: String,

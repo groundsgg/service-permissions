@@ -11,9 +11,13 @@ import io.fabric8.kubernetes.client.V1AuthorizationAPIGroupDSL
 import io.fabric8.kubernetes.client.dsl.AuthenticationAPIGroupDSL
 import io.fabric8.kubernetes.client.dsl.AuthorizationAPIGroupDSL
 import io.fabric8.kubernetes.client.dsl.InOutCreateable
+import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Duration
+import java.time.Instant
+import java.util.Base64
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -234,6 +238,23 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
     }
 
     @Test
+    fun tokenReviewReportedErrorFailsClosedAsSafeServiceUnavailable() {
+        val upstreamError = "sensitive review backend diagnostic"
+        whenever(tokenReviews.create(any<TokenReview>()))
+            .thenReturn(authenticatedReview(error = upstreamError))
+        val authorizer = DefaultRuntimeAccessAuthorizer(client)
+
+        val failure =
+            assertThrows(RuntimeAccessUnavailableException::class.java) {
+                authorizer.requireAccess("Bearer runtime-token", "GET", RUNTIME_PATH)
+            }
+
+        assertEquals(503, failure.statusCode)
+        assertFalse(failure.message.orEmpty().contains(upstreamError))
+        verify(subjectAccessReviews, never()).create(any<SubjectAccessReview>())
+    }
+
+    @Test
     fun subjectAccessReviewUsesReviewedIdentityLowercaseVerbAndExactPath() {
         whenever(subjectAccessReviews.create(any<SubjectAccessReview>()))
             .thenReturn(
@@ -295,8 +316,9 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
                 SubjectAccessReviewBuilder().withNewStatus().withAllowed(false).endStatus().build(),
             )
 
-        val firstIdentity = client.authenticate("runtime-token", RUNTIME_AUDIENCE)
-        val secondIdentity = client.authenticate("runtime-token", RUNTIME_AUDIENCE)
+        val token = projectedToken(Instant.now().plusSeconds(3_600))
+        val firstIdentity = client.authenticate(token, RUNTIME_AUDIENCE)
+        val secondIdentity = client.authenticate(token, RUNTIME_AUDIENCE)
         assertEquals(firstIdentity, secondIdentity)
         assertTrue(client.isAllowed(firstIdentity, "get", RUNTIME_PATH))
         assertTrue(client.isAllowed(firstIdentity, "get", RUNTIME_PATH))
@@ -310,22 +332,64 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
     @Test
     fun positiveReviewCacheExpiresAtConfiguredTtl() {
         whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
+        val token = projectedToken(Instant.now().plusSeconds(3_600))
 
-        client.authenticate("runtime-token", RUNTIME_AUDIENCE)
+        client.authenticate(token, RUNTIME_AUDIENCE)
         nowNanos = Duration.ofSeconds(61).toNanos()
-        client.authenticate("runtime-token", RUNTIME_AUDIENCE)
+        client.authenticate(token, RUNTIME_AUDIENCE)
 
         verify(tokenReviews, times(2)).create(any<TokenReview>())
+    }
+
+    @Test
+    fun tokenReviewCacheExpiresAtJwtExpiryBeforeConfiguredTtl() {
+        whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
+        val token = projectedToken(Instant.now().plusSeconds(10))
+
+        client.authenticate(token, RUNTIME_AUDIENCE)
+        nowNanos = Duration.ofSeconds(5).toNanos()
+        client.authenticate(token, RUNTIME_AUDIENCE)
+        verify(tokenReviews, times(1)).create(any<TokenReview>())
+
+        nowNanos = Duration.ofSeconds(11).toNanos()
+        client.authenticate(token, RUNTIME_AUDIENCE)
+        verify(tokenReviews, times(2)).create(any<TokenReview>())
+    }
+
+    @Test
+    fun authenticatedExpiredJwtIsNeverCached() {
+        whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
+        val token = projectedToken(Instant.now().minusSeconds(1))
+
+        client.authenticate(token, RUNTIME_AUDIENCE)
+        client.authenticate(token, RUNTIME_AUDIENCE)
+
+        verify(tokenReviews, times(2)).create(any<TokenReview>())
+    }
+
+    @Test
+    fun authenticatedJwtWithoutUsableExpiryIsNeverCached() {
+        whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
+
+        listOf(projectedTokenPayload("{}"), projectedTokenPayload("{\"exp\":\"invalid\"}"))
+            .forEach { token ->
+                client.authenticate(token, RUNTIME_AUDIENCE)
+                client.authenticate(token, RUNTIME_AUDIENCE)
+            }
+
+        verify(tokenReviews, times(4)).create(any<TokenReview>())
     }
 
     private fun authenticatedReview(
         audiences: List<String> = listOf(RUNTIME_AUDIENCE),
         username: String = "system:serviceaccount:runtime:workload-a",
+        error: String? = null,
     ): TokenReview =
         TokenReviewBuilder()
             .withNewStatus()
             .withAuthenticated(true)
             .withAudiences(audiences)
+            .withError(error)
             .withNewUser()
             .withUsername(username)
             .withGroups("system:serviceaccounts", "system:serviceaccounts:runtime")
@@ -341,8 +405,75 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
             groups = setOf("system:serviceaccounts", "system:serviceaccounts:runtime"),
         )
 
+    private fun projectedToken(expiresAt: Instant): String =
+        projectedTokenPayload("{\"exp\":${expiresAt.epochSecond}}")
+
+    private fun projectedTokenPayload(payload: String): String {
+        val encoder = Base64.getUrlEncoder().withoutPadding()
+        return "${encoder.encodeToString("{}".toByteArray(UTF_8))}." +
+            "${encoder.encodeToString(payload.toByteArray(UTF_8))}.signature"
+    }
+
     private companion object {
         const val RUNTIME_AUDIENCE = "service-permissions"
         const val RUNTIME_PATH = "/v1/permissions/runtime/manifests"
     }
+}
+
+class RuntimeReviewCacheTest {
+    private var nowNanos = 0L
+    private val cache =
+        RuntimeReviewCache(
+            positiveTtl = Duration.ofSeconds(60),
+            maximumEntries = 2,
+            ticker = { nowNanos },
+        )
+
+    @Test
+    fun positiveAccessCacheStaysBoundedAndEvictsBeforeInsertion() {
+        val identity = workloadIdentity(setOf("group-a"))
+
+        cache.cacheAllowed(identity, "get", "/first")
+        cache.cacheAllowed(identity, "get", "/second")
+        cache.cacheAllowed(identity, "get", "/third")
+
+        assertEquals(
+            1,
+            listOf("/first", "/second").count { cache.allowed(identity, "get", it) == true },
+        )
+        assertEquals(true, cache.allowed(identity, "get", "/third"))
+    }
+
+    @Test
+    fun accessCacheSeparatesSameUsernameWithDifferentReviewedGroups() {
+        val firstIdentity = workloadIdentity(setOf("group-a"))
+        val secondIdentity = workloadIdentity(setOf("group-b"))
+
+        cache.cacheAllowed(firstIdentity, "get", "/v1/permissions/runtime/players/*")
+
+        assertEquals(true, cache.allowed(firstIdentity, "get", "/v1/permissions/runtime/players/*"))
+        assertNull(cache.allowed(secondIdentity, "get", "/v1/permissions/runtime/players/*"))
+    }
+
+    @Test
+    fun accessCacheSeparatesVerbAndExactPath() {
+        val identity = workloadIdentity(setOf("group-a"))
+
+        cache.cacheAllowed(identity, "get", "/v1/permissions/runtime/players/one/snapshot")
+
+        assertEquals(
+            true,
+            cache.allowed(identity, "get", "/v1/permissions/runtime/players/one/snapshot"),
+        )
+        assertNull(cache.allowed(identity, "put", "/v1/permissions/runtime/players/one/snapshot"))
+        assertNull(cache.allowed(identity, "get", "/v1/permissions/runtime/players/two/snapshot"))
+    }
+
+    private fun workloadIdentity(groups: Set<String>) =
+        RuntimeWorkloadIdentity(
+            username = "system:serviceaccount:runtime:workload-a",
+            namespace = "runtime",
+            serviceAccount = "workload-a",
+            groups = groups,
+        )
 }

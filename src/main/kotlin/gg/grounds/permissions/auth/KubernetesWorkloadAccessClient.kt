@@ -1,5 +1,6 @@
 package gg.grounds.permissions.auth
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.permissions.metrics.RuntimePermissionMetrics
 import gg.grounds.permissions.metrics.RuntimeReviewOutcome
 import gg.grounds.permissions.metrics.RuntimeReviewType
@@ -10,6 +11,9 @@ import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.KubernetesClientException
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import java.time.Duration
+import java.time.Instant
+import java.util.Base64
 import java.util.Locale
 
 interface KubernetesWorkloadAccessClient {
@@ -31,11 +35,12 @@ constructor(
     private val kubernetesClient: KubernetesClient,
     private val cache: RuntimeReviewCache,
     private val metrics: RuntimePermissionMetrics,
+    private val objectMapper: ObjectMapper,
 ) : KubernetesWorkloadAccessClient {
     internal constructor(
         kubernetesClient: KubernetesClient,
         cache: RuntimeReviewCache,
-    ) : this(kubernetesClient, cache, RuntimePermissionMetrics.noOp())
+    ) : this(kubernetesClient, cache, RuntimePermissionMetrics.noOp(), ObjectMapper())
 
     override fun authenticate(token: String, audience: String): RuntimeWorkloadIdentity {
         if (audience != RUNTIME_AUDIENCE) throw RuntimeInvalidWorkloadCredentialException()
@@ -60,6 +65,9 @@ constructor(
                     throw RuntimeWorkloadReviewUnavailableException()
                 }
             val status = result.status ?: throw RuntimeWorkloadReviewUnavailableException()
+            if (!status.error.isNullOrBlank()) {
+                throw RuntimeWorkloadReviewUnavailableException()
+            }
             if (status.authenticated != true || status.audiences?.toSet() != setOf(audience)) {
                 outcome = RuntimeReviewOutcome.INVALID
                 throw RuntimeInvalidWorkloadCredentialException()
@@ -83,7 +91,7 @@ constructor(
                     serviceAccount = match.groupValues[2],
                     groups = status.user?.groups.orEmpty().toSet(),
                 )
-            cache.cacheAuthenticatedIdentity(token, identity)
+            cache.cacheAuthenticatedIdentity(token, identity, tokenCacheLifetime(token))
             outcome = RuntimeReviewOutcome.SUCCESS
             return identity
         } finally {
@@ -138,5 +146,29 @@ constructor(
         val SERVICE_ACCOUNT_USERNAME = Regex("^system:serviceaccount:([^:]+):([^:]+)$")
 
         fun elapsed(startedAt: Long) = java.time.Duration.ofNanos(System.nanoTime() - startedAt)
+    }
+
+    private fun tokenCacheLifetime(token: String): Duration? {
+        val payload = token.split('.', limit = 4).takeIf { it.size == 3 }?.get(1) ?: return null
+        val decodedPayload =
+            try {
+                Base64.getUrlDecoder().decode(payload)
+            } catch (_: IllegalArgumentException) {
+                return null
+            }
+        val expiry =
+            try {
+                objectMapper.readTree(decodedPayload).path("exp")
+            } catch (_: Exception) {
+                return null
+            }
+        if (!expiry.isIntegralNumber || !expiry.canConvertToLong()) return null
+        val expiresAt =
+            try {
+                Instant.ofEpochSecond(expiry.longValue())
+            } catch (_: RuntimeException) {
+                return null
+            }
+        return Duration.between(Instant.now(), expiresAt).takeUnless { it.isZero || it.isNegative }
     }
 }

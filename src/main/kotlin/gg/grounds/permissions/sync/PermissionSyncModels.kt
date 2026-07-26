@@ -5,7 +5,9 @@ import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionScopeKind
 import java.time.Instant
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.media.Schema
 
+@Schema(description = "Permission role contained in an environment snapshot.")
 data class SyncRole(
     val key: String,
     val name: String,
@@ -17,6 +19,7 @@ data class SyncRole(
     @get:JsonProperty("default") @param:JsonProperty("default") val isDefault: Boolean = false,
 )
 
+@Schema(description = "Role permission grant contained in an environment snapshot.")
 data class SyncRoleGrant(
     val id: UUID,
     val roleKey: String,
@@ -27,8 +30,10 @@ data class SyncRoleGrant(
     val expiresAt: Instant? = null,
 )
 
+@Schema(description = "Parent-child role inheritance edge contained in an environment snapshot.")
 data class SyncInheritance(val parentRoleKey: String, val childRoleKey: String)
 
+@Schema(description = "Permission catalog entry contained in an environment snapshot.")
 data class SyncCatalogEntry(
     val permissionKey: String,
     val label: String,
@@ -40,6 +45,7 @@ data class SyncCatalogEntry(
     val lastSeenAt: Instant? = null,
 )
 
+@Schema(description = "Keycloak group-to-role mapping contained in an environment snapshot.")
 data class SyncKeycloakMapping(
     val id: UUID,
     val keycloakGroup: String,
@@ -47,20 +53,25 @@ data class SyncKeycloakMapping(
     val expiresAt: Instant? = null,
 )
 
+@Schema(description = "Rejected player-specific grant marker in a global environment snapshot.")
 data class SyncPlayerGrant(val technicalKey: String)
 
+@Schema(
+    description =
+        "Transferable global permission snapshot. Player-specific grant arrays must be absent or empty."
+)
 data class GlobalPermissionSnapshot(
-    val schemaVersion: Int = 0,
-    val sourceEnvironment: String = "",
+    @field:Schema(constValue = "1") val schemaVersion: Int = 0,
+    @field:Schema(enumeration = ["project", "stage", "prod"]) val sourceEnvironment: String = "",
     val sourceServiceVersion: String = "",
-    val snapshotId: String,
+    @field:Schema(minLength = 1, pattern = "\\S") val snapshotId: String,
     val roles: List<SyncRole>,
     val roleGrants: List<SyncRoleGrant>,
     val inheritance: List<SyncInheritance>,
     val catalogEntries: List<SyncCatalogEntry>,
     val keycloakMappings: List<SyncKeycloakMapping>? = emptyList(),
-    val playerGrants: List<SyncPlayerGrant>? = emptyList(),
-    val playerRoleGrants: List<SyncPlayerGrant>? = emptyList(),
+    @field:Schema(maxItems = 0) val playerGrants: List<SyncPlayerGrant>? = emptyList(),
+    @field:Schema(maxItems = 0) val playerRoleGrants: List<SyncPlayerGrant>? = emptyList(),
     val createdAt: Instant? = null,
 ) {
     init {
@@ -70,6 +81,7 @@ data class GlobalPermissionSnapshot(
     }
 }
 
+@Schema(description = "Current project permission state used for environment comparison.")
 data class PermissionProjectSnapshot(
     val roles: List<SyncRole>,
     val roleGrants: List<SyncRoleGrant>,
@@ -78,6 +90,7 @@ data class PermissionProjectSnapshot(
     val keycloakMappings: List<SyncKeycloakMapping>,
 )
 
+@Schema(description = "Permission entity category used by environment synchronization.")
 enum class SyncEntityType {
     ROLE,
     ROLE_GRANT,
@@ -86,18 +99,21 @@ enum class SyncEntityType {
     KEYCLOAK_MAPPING,
 }
 
+@Schema(description = "Kind of difference between target and imported permission state.")
 enum class SyncChangeKind {
     IMPORT,
     CONFLICT,
     PROJECT_ONLY,
 }
 
+@Schema(description = "One permission entity difference in an environment-sync preview.")
 data class SyncChange(
     val entityType: SyncEntityType,
     val technicalKey: String,
     val kind: SyncChangeKind,
 )
 
+@Schema(description = "Calculated differences between project and global permission state.")
 data class PermissionSyncDiff(
     val changes: List<SyncChange>,
     val projectOnlyEntries: Set<SyncChange>,
@@ -168,6 +184,7 @@ data class PermissionSyncDiff(
     }
 }
 
+@Schema(description = "Resolution action applied to an environment-sync change.")
 enum class SyncAction {
     IMPORT,
     KEEP_PROJECT,
@@ -175,15 +192,20 @@ enum class SyncAction {
     REMOVE_PROJECT_ENTRY,
 }
 
+@Schema(description = "Selected resolution for one environment-sync entity change.")
 data class PermissionSyncAction(
     val entityType: SyncEntityType,
     val technicalKey: String,
     val action: SyncAction,
 )
 
+@Schema(
+    description =
+        "Environment import request. Each entityType and technicalKey pair must be unique, and every action must match the previewed change and its allowed resolution."
+)
 data class PermissionSyncImportRequest(
     val snapshot: GlobalPermissionSnapshot,
-    val expectedTargetFingerprint: String,
+    @field:Schema(minLength = 1, pattern = "\\S") val expectedTargetFingerprint: String,
     val actions: List<PermissionSyncAction> = emptyList(),
 ) {
     init {
@@ -235,6 +257,7 @@ data class PermissionSyncImportRequest(
     }
 }
 
+@Schema(description = "Preview of permission changes produced by an environment snapshot.")
 data class PermissionSyncPreviewResponse(
     val snapshotId: String,
     val targetFingerprint: String,

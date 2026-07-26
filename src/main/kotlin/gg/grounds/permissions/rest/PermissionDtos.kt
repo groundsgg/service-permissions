@@ -8,6 +8,7 @@ import java.time.Instant
 import java.util.UUID
 import org.eclipse.microprofile.openapi.annotations.media.Schema
 
+@Schema(description = "Paginated result page with total matching records.")
 data class PagedResponse<T>(val items: List<T>, val page: Int, val perPage: Int, val total: Long)
 
 data class PermissionSearchParameters(
@@ -63,7 +64,7 @@ object PermissionSearchPaging {
 )
 data class RoleRequest(
     var key: String? = null,
-    @field:Schema(nullable = false) var name: String? = null,
+    @field:Schema(nullable = false, minLength = 1, pattern = "\\S") var name: String? = null,
     var description: String = "",
     var prefix: String? = null,
     var color: String? = null,
@@ -100,13 +101,25 @@ data class RoleListResponse(
 )
 
 @Schema(
-    description = "Payload for creating or updating a permission grant.",
+    description =
+        "Payload for creating or updating a permission grant. scopeValue must be absent for GLOBAL and is required for all other scopes.",
     requiredProperties = ["effect", "permissionPattern"],
 )
 data class GrantRequest(
     @field:Schema(nullable = false) var effect: PermissionEffect? = null,
-    @field:Schema(nullable = false) var permissionPattern: String? = null,
+    @field:Schema(
+        nullable = false,
+        minLength = 1,
+        pattern = "^(?:\\*|[a-z0-9._-]+|[a-z0-9._-]+\\.\\*)$",
+    )
+    var permissionPattern: String? = null,
     var scopeKind: PermissionScopeKind = PermissionScopeKind.GLOBAL,
+    @field:Schema(
+        nullable = true,
+        minLength = 1,
+        pattern = "\\S",
+        description = "Absent for GLOBAL; a nonblank value is required for other scope kinds.",
+    )
     var scopeValue: String? = null,
     var expiresAt: Instant? = null,
 )
@@ -127,7 +140,8 @@ data class RoleGrantResponse(
     requiredProperties = ["roleKey"],
 )
 data class PlayerRoleGrantRequest(
-    @field:Schema(nullable = false) var roleKey: String? = null,
+    @field:Schema(nullable = false, minLength = 1, pattern = "^[a-z0-9._-]+$")
+    var roleKey: String? = null,
     var expiresAt: Instant? = null,
 )
 
@@ -168,8 +182,10 @@ data class PlayerGrantResponse(
     requiredProperties = ["keycloakGroup", "roleKey"],
 )
 data class KeycloakGroupMappingRequest(
-    @field:Schema(nullable = false) var keycloakGroup: String? = null,
-    @field:Schema(nullable = false) var roleKey: String? = null,
+    @field:Schema(nullable = false, minLength = 1, pattern = "\\S")
+    var keycloakGroup: String? = null,
+    @field:Schema(nullable = false, minLength = 1, pattern = "^[a-z0-9._-]+$")
+    var roleKey: String? = null,
     var expiresAt: Instant? = null,
 )
 
@@ -191,10 +207,11 @@ data class CatalogEntryRequest(
         description = "Ignored on update because the permissionKey path parameter is authoritative.",
     )
     var key: String? = null,
-    @field:Schema(nullable = false) var label: String? = null,
+    @field:Schema(nullable = false, minLength = 1, pattern = "\\S") var label: String? = null,
     var description: String = "",
     var source: String = "portal",
     var sourceVersion: String = "custom",
+    @field:Schema(minItems = 1)
     var supportedScopes: List<PermissionScopeKind> = listOf(PermissionScopeKind.GLOBAL),
 )
 

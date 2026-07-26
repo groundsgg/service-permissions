@@ -18,6 +18,7 @@ import io.restassured.RestAssured.given
 import io.restassured.response.Response
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
+import org.hamcrest.Matchers.equalTo
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
@@ -63,7 +64,19 @@ class PermissionRestAuthorizationTest {
 
     @Test
     fun rejectsAnonymousRequests() {
-        given().get("/v1/permissions/roles").then().statusCode(401)
+        given()
+            .header("X-Request-ID", "anonymous-request-123")
+            .get("/v1/permissions/roles")
+            .then()
+            .statusCode(401)
+            .contentType("application/problem+json")
+            .body("type", equalTo("about:blank"))
+            .body("title", equalTo("Unauthorized"))
+            .body("status", equalTo(401))
+            .body("detail", equalTo("Authentication is required."))
+            .body("instance", equalTo("/v1/permissions/roles"))
+            .body("requestId", equalTo("anonymous-request-123"))
+            .body("error", equalTo("authentication_required"))
         given().get("/v1/permissions/players/search?query=ab").then().statusCode(401)
         given().post("/v1/permissions/identity-sync").then().statusCode(401)
     }
@@ -71,7 +84,19 @@ class PermissionRestAuthorizationTest {
     @Test
     @TestSecurity(user = "user-alpha")
     fun rejectsAuthenticatedUsersWithoutMinecraftPermissionsAccess() {
-        given().get("/v1/permissions/roles").then().statusCode(403)
+        given()
+            .header("X-Request-ID", "denied-request-123")
+            .get("/v1/permissions/roles")
+            .then()
+            .statusCode(403)
+            .contentType("application/problem+json")
+            .body("type", equalTo("about:blank"))
+            .body("title", equalTo("Forbidden"))
+            .body("status", equalTo(403))
+            .body("detail", equalTo("The authenticated user lacks the required permission."))
+            .body("instance", equalTo("/v1/permissions/roles"))
+            .body("requestId", equalTo("denied-request-123"))
+            .body("error", equalTo("missing_permission"))
         given().get("/v1/permissions/players/search?query=ab").then().statusCode(403)
         given().post("/v1/permissions/identity-sync").then().statusCode(403)
     }

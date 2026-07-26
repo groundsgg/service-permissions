@@ -46,14 +46,18 @@ data class RuntimeRoleMetadataDto(
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 @Schema(
-    description = "Complete permission catalog manifest published by one runtime source.",
+    description =
+        "Complete permission catalog manifest published by one runtime source; permission keys must be unique and source must not appear in the body.",
     requiredProperties = ["sourceVersion", "permissions"],
 )
 data class RuntimeManifestRequest(
-    @field:Schema(nullable = false) val sourceVersion: String?,
-    @field:Schema(required = false, nullable = true) val serverType: String?,
-    @field:Schema(required = false, nullable = true) val serverId: String?,
-    @field:Schema(nullable = false) val permissions: List<RuntimeManifestPermissionRequest>?,
+    @field:Schema(nullable = false, minLength = 1, pattern = "\\S") val sourceVersion: String?,
+    @field:Schema(required = false, nullable = true, minLength = 1, pattern = "\\S")
+    val serverType: String?,
+    @field:Schema(required = false, nullable = true, minLength = 1, pattern = "\\S")
+    val serverId: String?,
+    @field:Schema(nullable = false, minItems = 1)
+    val permissions: List<RuntimeManifestPermissionRequest>?,
 ) {
     @field:JsonIgnore @field:Schema(hidden = true) private var bodySourcePresent: Boolean = false
 
@@ -71,8 +75,8 @@ data class RuntimeManifestRequest(
     requiredProperties = ["key", "label", "supportedScopes"],
 )
 data class RuntimeManifestPermissionRequest(
-    @field:Schema(nullable = false) val key: String?,
-    @field:Schema(nullable = false) val label: String?,
+    @field:Schema(nullable = false, minLength = 1, pattern = "^[a-z0-9._-]+$") val key: String?,
+    @field:Schema(nullable = false, minLength = 1, pattern = "\\S") val label: String?,
     @field:Schema(required = false, nullable = true) val description: String?,
-    @field:Schema(nullable = false) val supportedScopes: List<PermissionScopeKind>?,
+    @field:Schema(nullable = false, minItems = 1) val supportedScopes: List<PermissionScopeKind>?,
 )

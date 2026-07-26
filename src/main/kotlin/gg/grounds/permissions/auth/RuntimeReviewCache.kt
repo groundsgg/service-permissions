@@ -34,15 +34,21 @@ constructor(
     fun authenticatedIdentity(token: String): RuntimeWorkloadIdentity? =
         getUnexpired(tokenReviews, tokenDigest(token))
 
-    fun cacheAuthenticatedIdentity(token: String, identity: RuntimeWorkloadIdentity) {
-        putBounded(tokenReviews, tokenDigest(token), identity)
+    fun cacheAuthenticatedIdentity(
+        token: String,
+        identity: RuntimeWorkloadIdentity,
+        tokenLifetime: Duration?,
+    ) {
+        val entryTtlNanos = boundedTtlNanos(tokenLifetime ?: return)
+        if (entryTtlNanos == 0L) return
+        putBounded(tokenReviews, tokenDigest(token), identity, entryTtlNanos)
     }
 
     fun allowed(identity: RuntimeWorkloadIdentity, verb: String, path: String): Boolean? =
         getUnexpired(accessReviews, SubjectAccessKey(identity, verb, path))
 
     fun cacheAllowed(identity: RuntimeWorkloadIdentity, verb: String, path: String) {
-        putBounded(accessReviews, SubjectAccessKey(identity, verb, path), true)
+        putBounded(accessReviews, SubjectAccessKey(identity, verb, path), true, ttlNanos)
     }
 
     private fun tokenDigest(token: String): String =
@@ -51,7 +57,7 @@ constructor(
 
     private fun <K, V> getUnexpired(cache: ConcurrentHashMap<K, CacheEntry<V>>, key: K): V? {
         val entry = cache[key] ?: return null
-        if (ticker() - entry.createdAtNanos >= ttlNanos) {
+        if (ticker() - entry.expiresAtNanos >= 0L) {
             cache.remove(key, entry)
             return null
         }
@@ -59,21 +65,31 @@ constructor(
     }
 
     @Synchronized
-    private fun <K, V> putBounded(cache: ConcurrentHashMap<K, CacheEntry<V>>, key: K, value: V) {
-        if (ttlNanos == 0L) return
+    private fun <K, V> putBounded(
+        cache: ConcurrentHashMap<K, CacheEntry<V>>,
+        key: K,
+        value: V,
+        entryTtlNanos: Long,
+    ) {
+        if (entryTtlNanos == 0L) return
         pruneExpired(cache)
         if (cache.size >= maximumEntries && !cache.containsKey(key)) {
             cache.keys.firstOrNull()?.let(cache::remove)
         }
-        cache[key] = CacheEntry(value, ticker())
+        cache[key] = CacheEntry(value, ticker() + entryTtlNanos)
     }
 
     private fun <K, V> pruneExpired(cache: ConcurrentHashMap<K, CacheEntry<V>>) {
         val now = ticker()
-        cache.entries.removeIf { now - it.value.createdAtNanos >= ttlNanos }
+        cache.entries.removeIf { now - it.value.expiresAtNanos >= 0L }
     }
 
-    private data class CacheEntry<V>(val value: V, val createdAtNanos: Long)
+    private fun boundedTtlNanos(lifetime: Duration): Long {
+        if (lifetime.isZero || lifetime.isNegative || ttlNanos == 0L) return 0L
+        return lifetime.coerceAtMost(Duration.ofNanos(ttlNanos)).toNanos()
+    }
+
+    private data class CacheEntry<V>(val value: V, val expiresAtNanos: Long)
 
     private data class SubjectAccessKey(
         val identity: RuntimeWorkloadIdentity,

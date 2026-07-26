@@ -8,6 +8,7 @@ import io.quarkus.test.junit.QuarkusTest
 import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
 import jakarta.inject.Inject
+import java.util.ArrayDeque
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
@@ -87,17 +88,280 @@ class OpenApiContractTest {
     }
 
     @Test
-    fun `describes every public REST payload schema`() {
-        val schemas = openApiDocument().path("components").path("schemas")
+    fun `describes every schema and enum reachable from public REST operations`() {
+        val document = openApiDocument()
+        val schemas = document.path("components").path("schemas")
+        val reachableSchemas = reachableSchemaNames(document)
 
-        PUBLIC_REST_SCHEMAS.forEach { schemaName ->
+        assertThat(reachableSchemas)
+            .contains(
+                "GlobalPermissionSnapshot",
+                "PermissionSyncImportRequest",
+                "PermissionSyncMetadataRecord",
+                "PermissionSyncPreviewResponse",
+                "SyncAction",
+                "SyncCatalogEntry",
+                "SyncChange",
+                "SyncChangeKind",
+                "SyncEntityType",
+                "SyncInheritance",
+                "SyncKeycloakMapping",
+                "SyncPlayerGrant",
+                "SyncRole",
+                "SyncRoleGrant",
+            )
+        reachableSchemas.forEach { schemaName ->
             assertThat(schemas.path(schemaName).isMissingNode)
-                .describedAs("public schema %s", schemaName)
+                .describedAs("reachable schema %s", schemaName)
                 .isFalse()
             assertThat(schemas.path(schemaName).path("description").asText())
-                .describedAs("description for public schema %s", schemaName)
+                .describedAs("description for reachable schema %s", schemaName)
                 .isNotBlank()
         }
+    }
+
+    @Test
+    fun `documents runtime and administration validation constraints`() {
+        val document = openApiDocument()
+        val schemas = document.path("components").path("schemas")
+
+        assertStringConstraint(schemas, "RoleRequest", "name", minLength = 1, pattern = "\\S")
+        assertStringConstraint(
+            schemas,
+            "GrantRequest",
+            "permissionPattern",
+            minLength = 1,
+            pattern = PERMISSION_PATTERN,
+        )
+        assertStringConstraint(
+            schemas,
+            "PlayerRoleGrantRequest",
+            "roleKey",
+            minLength = 1,
+            pattern = KEY_PATTERN,
+        )
+        assertStringConstraint(
+            schemas,
+            "KeycloakGroupMappingRequest",
+            "keycloakGroup",
+            minLength = 1,
+            pattern = "\\S",
+        )
+        assertStringConstraint(
+            schemas,
+            "KeycloakGroupMappingRequest",
+            "roleKey",
+            minLength = 1,
+            pattern = KEY_PATTERN,
+        )
+        assertStringConstraint(
+            schemas,
+            "CatalogEntryRequest",
+            "label",
+            minLength = 1,
+            pattern = "\\S",
+        )
+        assertThat(
+                schemas
+                    .path("CatalogEntryRequest")
+                    .path("properties")
+                    .path("supportedScopes")
+                    .path("minItems")
+                    .asInt()
+            )
+            .isEqualTo(1)
+
+        assertStringConstraint(
+            schemas,
+            "RuntimeManifestRequest",
+            "sourceVersion",
+            minLength = 1,
+            pattern = "\\S",
+        )
+        listOf("serverType", "serverId").forEach { field ->
+            assertStringConstraint(
+                schemas,
+                "RuntimeManifestRequest",
+                field,
+                minLength = 1,
+                pattern = "\\S",
+            )
+            assertThat(
+                    allowsNull(
+                        schemas.path("RuntimeManifestRequest").path("properties").path(field)
+                    )
+                )
+                .isTrue()
+        }
+        assertThat(
+                schemas
+                    .path("RuntimeManifestRequest")
+                    .path("properties")
+                    .path("permissions")
+                    .path("minItems")
+                    .asInt()
+            )
+            .isEqualTo(1)
+        assertStringConstraint(
+            schemas,
+            "RuntimeManifestPermissionRequest",
+            "key",
+            minLength = 1,
+            pattern = KEY_PATTERN,
+        )
+        assertStringConstraint(
+            schemas,
+            "RuntimeManifestPermissionRequest",
+            "label",
+            minLength = 1,
+            pattern = "\\S",
+        )
+        assertThat(
+                schemas
+                    .path("RuntimeManifestPermissionRequest")
+                    .path("properties")
+                    .path("supportedScopes")
+                    .path("minItems")
+                    .asInt()
+            )
+            .isEqualTo(1)
+
+        assertStringConstraint(
+            schemas,
+            "GlobalPermissionSnapshot",
+            "snapshotId",
+            minLength = 1,
+            pattern = "\\S",
+        )
+        listOf("playerGrants", "playerRoleGrants").forEach { field ->
+            assertThat(
+                    schemas
+                        .path("GlobalPermissionSnapshot")
+                        .path("properties")
+                        .path(field)
+                        .path("maxItems")
+                        .asInt(-1)
+                )
+                .isZero()
+        }
+        assertStringConstraint(
+            schemas,
+            "PermissionSyncImportRequest",
+            "expectedTargetFingerprint",
+            minLength = 1,
+            pattern = "\\S",
+        )
+
+        assertThat(schemas.path("RuntimeManifestRequest").path("description").asText())
+            .contains("permission keys must be unique", "source must not appear in the body")
+        assertThat(schemas.path("GrantRequest").path("description").asText())
+            .contains("scopeValue must be absent for GLOBAL", "required for all other scopes")
+        assertThat(schemas.path("PermissionSyncImportRequest").path("description").asText())
+            .contains(
+                "entityType and technicalKey pair must be unique",
+                "match the previewed change",
+            )
+    }
+
+    @Test
+    fun `documents validated parameter bounds patterns and enums`() {
+        val operationById =
+            operations(openApiDocument()).values.associateBy { it.path("operationId").asText() }
+
+        operationById.values
+            .flatMap { it.path("parameters").toList() }
+            .forEach { parameter ->
+                val schema = parameter.path("schema")
+                when (parameter.path("name").asText()) {
+                    "page" -> assertThat(schema.path("minimum").asInt()).isEqualTo(1)
+                    "perPage" -> {
+                        assertThat(schema.path("minimum").asInt()).isEqualTo(1)
+                        assertThat(schema.path("maximum").asInt()).isEqualTo(100)
+                    }
+                    "sortDirection" ->
+                        assertThat(schema.path("enum").map(JsonNode::asText))
+                            .containsExactly("asc", "desc")
+                }
+            }
+
+        SORT_BY_VALUES.forEach { (operationId, values) ->
+            assertThat(
+                    parameter(operationById, operationId, "sortBy")
+                        .path("schema")
+                        .path("enum")
+                        .map(JsonNode::asText)
+                )
+                .containsExactlyElementsOf(values)
+        }
+        assertThat(
+                parameter(operationById, "searchEffectivePlayerPermissions", "effect")
+                    .path("schema")
+                    .path("enum")
+                    .map(JsonNode::asText)
+            )
+            .containsExactly("ALL", "ALLOW", "DENY")
+
+        assertThat(
+                parameter(operationById, "searchPlayers", "query")
+                    .path("schema")
+                    .path("minLength")
+                    .asInt()
+            )
+            .isEqualTo(2)
+        assertThat(
+                parameter(operationById, "searchExternalPlayer", "query")
+                    .path("schema")
+                    .path("pattern")
+                    .asText()
+            )
+            .isEqualTo(MINECRAFT_USERNAME_PATTERN)
+        assertThat(
+                parameter(operationById, "checkPlayerPermission", "permission")
+                    .path("schema")
+                    .path("pattern")
+                    .asText()
+            )
+            .isEqualTo(KEY_PATTERN)
+
+        operationById.values
+            .flatMap { it.path("parameters").toList() }
+            .forEach { parameter ->
+                val name = parameter.path("name").asText()
+                val schema = parameter.path("schema")
+                when (name) {
+                    "playerId",
+                    "grantId",
+                    "mappingId" ->
+                        assertThat(schema.path("format").asText())
+                            .describedAs("UUID format for parameter %s", name)
+                            .isEqualTo("uuid")
+                    "roleKey",
+                    "parentRoleKey",
+                    "permissionKey" ->
+                        assertThat(schema.path("pattern").asText())
+                            .describedAs("key pattern for parameter %s", name)
+                            .isEqualTo(KEY_PATTERN)
+                }
+            }
+        val source = parameter(operationById, "replaceRuntimePermissionManifest", "source")
+        assertThat(source.path("schema").path("minLength").asInt()).isEqualTo(1)
+        assertThat(source.path("schema").path("pattern").asText()).isEqualTo("\\S")
+    }
+
+    @Test
+    fun `uses enum and URI reference schemas with accurate nullability`() {
+        val schemas = openApiDocument().path("components").path("schemas")
+
+        ENUM_VALUES.forEach { (schemaName, values) ->
+            val schema = schemas.path(schemaName)
+            assertThat(schema.path("type").asText()).isEqualTo("string")
+            assertThat(schema.path("enum").map(JsonNode::asText)).containsExactlyElementsOf(values)
+            assertThat(allowsNull(schema)).isFalse()
+        }
+
+        val problem = schemas.path("ProblemDetails").path("properties")
+        assertThat(problem.path("type").path("format").asText()).isEqualTo("uri-reference")
+        assertThat(problem.path("instance").path("format").asText()).isEqualTo("uri-reference")
     }
 
     @Test
@@ -182,6 +446,63 @@ class OpenApiContractTest {
         } ||
             schema.path("anyOf").any { it.path("type").asText() == "null" } ||
             schema.path("oneOf").any { it.path("type").asText() == "null" }
+
+    private fun assertStringConstraint(
+        schemas: JsonNode,
+        schemaName: String,
+        field: String,
+        minLength: Int,
+        pattern: String,
+    ) {
+        val property = schemas.path(schemaName).path("properties").path(field)
+        assertThat(property.path("minLength").asInt())
+            .describedAs("minLength of %s.%s", schemaName, field)
+            .isEqualTo(minLength)
+        assertThat(property.path("pattern").asText())
+            .describedAs("pattern of %s.%s", schemaName, field)
+            .isEqualTo(pattern)
+    }
+
+    private fun parameter(
+        operations: Map<String, JsonNode>,
+        operationId: String,
+        parameterName: String,
+    ): JsonNode =
+        operations.getValue(operationId).path("parameters").first {
+            it.path("name").asText() == parameterName
+        }
+
+    private fun reachableSchemaNames(document: JsonNode): Set<String> {
+        val schemas = document.path("components").path("schemas")
+        val reachable = linkedSetOf<String>()
+        val pending = ArrayDeque<String>()
+        operations(document).values.forEach { operation ->
+            referencedSchemaNames(operation).forEach(pending::addLast)
+        }
+        while (pending.isNotEmpty()) {
+            val schemaName = pending.removeFirst()
+            if (!reachable.add(schemaName)) continue
+            referencedSchemaNames(schemas.path(schemaName)).forEach(pending::addLast)
+        }
+        return reachable
+    }
+
+    private fun referencedSchemaNames(node: JsonNode): Set<String> = buildSet {
+        fun visit(current: JsonNode) {
+            if (current.isObject) {
+                current
+                    .path("\$ref")
+                    .asText()
+                    .takeIf { it.startsWith(SCHEMA_REFERENCE_PREFIX) }
+                    ?.removePrefix(SCHEMA_REFERENCE_PREFIX)
+                    ?.let(::add)
+                current.properties().forEach { (_, child) -> visit(child) }
+            } else if (current.isArray) {
+                current.forEach(::visit)
+            }
+        }
+        visit(node)
+    }
 
     private fun assertParameters(path: String, operation: JsonNode) {
         val parameters = operation.path("parameters")
@@ -298,38 +619,34 @@ class OpenApiContractTest {
                 "PermissionManifestEntry",
                 "RegisterPermissionManifestReply",
             )
-        val PUBLIC_REST_SCHEMAS =
-            setOf(
-                "RoleRequest",
-                "RoleResponse",
-                "RoleListResponse",
-                "GrantRequest",
-                "RoleGrantResponse",
-                "PlayerRoleGrantRequest",
-                "PlayerRoleGrantResponse",
-                "PlayerEffectiveRoleResponse",
-                "PlayerGrantResponse",
-                "KeycloakGroupMappingRequest",
-                "KeycloakGroupMappingResponse",
-                "CatalogEntryRequest",
-                "CatalogEntryResponse",
-                "EffectivePermissionResponse",
-                "EffectiveGrantResponse",
-                "EffectiveRoleAssignmentResponse",
-                "PermissionCheckResponse",
-                "PlayerIdentityResponse",
-                "PlayerSearchItemResponse",
-                "PlayerSearchResponse",
-                "IdentitySyncStatusResponse",
-                "PermissionAuditEventResponse",
-                "PermissionAuditPageResponse",
-                "SyncDispatchResponse",
-                "RuntimePermissionSnapshotResponse",
-                "RuntimePermissionGrantDto",
-                "PermissionScopeDto",
-                "RuntimeRoleMetadataDto",
-                "RuntimeManifestRequest",
-                "RuntimeManifestPermissionRequest",
+        const val SCHEMA_REFERENCE_PREFIX = "#/components/schemas/"
+        const val KEY_PATTERN = "^[a-z0-9._-]+$"
+        const val PERMISSION_PATTERN = "^(?:\\*|[a-z0-9._-]+|[a-z0-9._-]+\\.\\*)$"
+        const val MINECRAFT_USERNAME_PATTERN = "^[A-Za-z0-9_]{3,16}$"
+
+        val SORT_BY_VALUES =
+            mapOf(
+                "searchRoleGrants" to listOf("permission", "effect", "scope", "expiration"),
+                "searchPlayerRoles" to listOf("role", "source", "expiration"),
+                "searchPlayerGrants" to listOf("permission", "effect", "scope", "expiration"),
+                "searchEffectivePlayerPermissions" to
+                    listOf("permission", "effect", "scope", "source", "expiration"),
+                "searchPermissionCatalog" to listOf("permission", "label", "source", "lastseen"),
+                "searchKeycloakGroupMappings" to listOf("group", "role", "expiration"),
+            )
+
+        val ENUM_VALUES =
+            mapOf(
+                "PermissionEffect" to listOf("ALLOW", "DENY"),
+                "PermissionGrantOriginKind" to
+                    listOf("DEFAULT_ROLE", "DIRECT_ROLE", "GROUP_MAPPING", "DIRECT_PERMISSION"),
+                "PermissionGrantSource" to listOf("ROLE", "PLAYER"),
+                "PermissionScopeKind" to listOf("GLOBAL", "ENVIRONMENT", "SERVER_TYPE", "SERVER"),
+                "SyncAction" to
+                    listOf("IMPORT", "KEEP_PROJECT", "USE_GLOBAL", "REMOVE_PROJECT_ENTRY"),
+                "SyncChangeKind" to listOf("IMPORT", "CONFLICT", "PROJECT_ONLY"),
+                "SyncEntityType" to
+                    listOf("ROLE", "ROLE_GRANT", "INHERITANCE", "CATALOG_ENTRY", "KEYCLOAK_MAPPING"),
             )
 
         data class RequiredQueryParameter(val name: String, val description: String)

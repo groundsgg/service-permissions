@@ -4,8 +4,17 @@ import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.persistence.CatalogSourceConflictException
 import gg.grounds.permissions.persistence.DuplicateRoleKeyException
 import gg.grounds.permissions.sync.PermissionSyncConflictException
+import io.quarkus.security.AuthenticationFailedException
+import jakarta.annotation.Priority
+import jakarta.ws.rs.BadRequestException
+import jakarta.ws.rs.ForbiddenException
+import jakarta.ws.rs.NotAllowedException
+import jakarta.ws.rs.NotAuthorizedException
 import jakarta.ws.rs.NotFoundException
+import jakarta.ws.rs.NotSupportedException
+import jakarta.ws.rs.Priorities
 import jakarta.ws.rs.ServiceUnavailableException
+import jakarta.ws.rs.WebApplicationException
 import jakarta.ws.rs.core.Context
 import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
@@ -14,6 +23,7 @@ import jakarta.ws.rs.core.UriInfo
 import jakarta.ws.rs.ext.ExceptionMapper
 import jakarta.ws.rs.ext.Provider
 import java.net.URI
+import org.jboss.logging.Logger
 
 private const val PROBLEM_JSON = "application/problem+json"
 
@@ -22,7 +32,7 @@ abstract class PermissionExceptionMapperSupport {
     @Context lateinit var uriInfo: UriInfo
 
     fun problem(
-        status: Response.Status,
+        status: Response.StatusType,
         detail: String,
         error: String? = null,
         reason: String? = null,
@@ -172,3 +182,174 @@ class PermissionServiceUnavailableExceptionMapper :
         return problem(Response.Status.SERVICE_UNAVAILABLE, safeProblem.detail, safeProblem.error)
     }
 }
+
+@Provider
+class PermissionBadRequestExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<BadRequestException> {
+    override fun toResponse(exception: BadRequestException): Response =
+        problem(Response.Status.BAD_REQUEST, "The request is invalid.", "invalid_request")
+}
+
+@Provider
+@Priority(Priorities.USER)
+class PermissionNotAuthorizedExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<NotAuthorizedException> {
+    override fun toResponse(exception: NotAuthorizedException): Response =
+        unauthorizedProblem("authentication_required", "Authentication is required.")
+}
+
+@Provider
+@Priority(Priorities.USER)
+class PermissionUnauthorizedExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<io.quarkus.security.UnauthorizedException> {
+    override fun toResponse(exception: io.quarkus.security.UnauthorizedException): Response =
+        unauthorizedProblem("authentication_required", "Authentication is required.")
+}
+
+@Provider
+@Priority(Priorities.USER)
+class PermissionAuthenticationFailedExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<AuthenticationFailedException> {
+    override fun toResponse(exception: AuthenticationFailedException): Response =
+        unauthorizedProblem("authentication_failed", "Authentication failed.")
+}
+
+@Provider
+class PermissionForbiddenExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<ForbiddenException> {
+    override fun toResponse(exception: ForbiddenException): Response =
+        problem(
+            Response.Status.FORBIDDEN,
+            "The authenticated user lacks the required permission.",
+            if (exception.message == "missing_permission") "missing_permission" else "access_denied",
+        )
+}
+
+@Provider
+@Priority(Priorities.USER)
+class PermissionSecurityForbiddenExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<io.quarkus.security.ForbiddenException> {
+    override fun toResponse(exception: io.quarkus.security.ForbiddenException): Response =
+        problem(
+            Response.Status.FORBIDDEN,
+            "The authenticated user lacks the required permission.",
+            "access_denied",
+        )
+}
+
+@Provider
+class PermissionNotAllowedExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<NotAllowedException> {
+    override fun toResponse(exception: NotAllowedException): Response =
+        problem(
+            Response.Status.METHOD_NOT_ALLOWED,
+            "The HTTP method is not supported for this resource.",
+            "method_not_allowed",
+        )
+}
+
+@Provider
+class PermissionNotSupportedExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<NotSupportedException> {
+    override fun toResponse(exception: NotSupportedException): Response =
+        problem(
+            Response.Status.UNSUPPORTED_MEDIA_TYPE,
+            "The request media type is not supported.",
+            "unsupported_media_type",
+        )
+}
+
+@Provider
+class PermissionWebApplicationExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<WebApplicationException> {
+    override fun toResponse(exception: WebApplicationException): Response {
+        val status = exception.response.statusInfo
+        return when (Response.Status.fromStatusCode(status.statusCode)) {
+            Response.Status.BAD_REQUEST ->
+                problem(status, "The request is invalid.", "invalid_request")
+            Response.Status.UNAUTHORIZED ->
+                unauthorizedProblem("authentication_required", "Authentication is required.")
+            Response.Status.FORBIDDEN ->
+                problem(
+                    status,
+                    "The authenticated user lacks the required permission.",
+                    "access_denied",
+                )
+            Response.Status.NOT_FOUND ->
+                problem(status, "The requested resource was not found.", "not_found")
+            Response.Status.METHOD_NOT_ALLOWED ->
+                problem(
+                    status,
+                    "The HTTP method is not supported for this resource.",
+                    "method_not_allowed",
+                )
+            Response.Status.NOT_ACCEPTABLE ->
+                problem(
+                    status,
+                    "The requested response media type is not supported.",
+                    "not_acceptable",
+                )
+            Response.Status.CONFLICT ->
+                problem(
+                    status,
+                    "The request conflicts with the current resource state.",
+                    "conflict",
+                )
+            Response.Status.UNSUPPORTED_MEDIA_TYPE ->
+                problem(
+                    status,
+                    "The request media type is not supported.",
+                    "unsupported_media_type",
+                )
+            Response.Status.SERVICE_UNAVAILABLE ->
+                problem(status, "The service is unavailable.", "service_unavailable")
+            else -> {
+                val safeProblem =
+                    when (status.family) {
+                        Response.Status.Family.CLIENT_ERROR ->
+                            SafeProblem("request_rejected", "The request was rejected.")
+                        Response.Status.Family.SERVER_ERROR ->
+                            SafeProblem(
+                                "internal_server_error",
+                                "The request failed because of an internal service error.",
+                            )
+                        else -> SafeProblem("request_failed", "The request could not be completed.")
+                    }
+                problem(status, safeProblem.detail, safeProblem.error)
+            }
+        }
+    }
+}
+
+@Provider
+class PermissionUnexpectedExceptionMapper :
+    PermissionExceptionMapperSupport(), ExceptionMapper<Throwable> {
+    override fun toResponse(exception: Throwable): Response {
+        val response =
+            problem(
+                Response.Status.INTERNAL_SERVER_ERROR,
+                "The request failed because of an internal service error.",
+                "internal_server_error",
+            )
+        val details = response.entity as ProblemDetails
+        LOG.errorf(
+            "REST request failed (requestId=%s, instance=%s, exceptionType=%s)",
+            details.requestId,
+            details.instance,
+            exception.javaClass.name,
+        )
+        return response
+    }
+
+    private companion object {
+        val LOG: Logger = Logger.getLogger(PermissionUnexpectedExceptionMapper::class.java)
+    }
+}
+
+private fun PermissionExceptionMapperSupport.unauthorizedProblem(
+    error: String,
+    detail: String,
+): Response =
+    Response.fromResponse(problem(Response.Status.UNAUTHORIZED, detail, error))
+        .header(HttpHeaders.WWW_AUTHENTICATE, "Bearer")
+        .build()

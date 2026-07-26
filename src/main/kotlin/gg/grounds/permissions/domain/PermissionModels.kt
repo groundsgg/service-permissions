@@ -2,12 +2,15 @@ package gg.grounds.permissions.domain
 
 import java.time.Instant
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.media.Schema
 
+@Schema(description = "Whether a permission grant allows or denies access.")
 enum class PermissionEffect {
     ALLOW,
     DENY,
 }
 
+@Schema(description = "Scope dimension in which a permission grant applies.")
 enum class PermissionScopeKind {
     GLOBAL,
     ENVIRONMENT,
@@ -46,11 +49,13 @@ data class PermissionGrantSpec(
     val permissionGrantId: UUID? = null,
 )
 
+@Schema(description = "Policy source that produced an effective runtime permission grant.")
 enum class PermissionGrantSource {
     ROLE,
     PLAYER,
 }
 
+@Schema(description = "Origin of a role assignment or effective permission grant.")
 enum class PermissionGrantOriginKind {
     DEFAULT_ROLE,
     DIRECT_ROLE,

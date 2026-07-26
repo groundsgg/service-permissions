@@ -51,6 +51,20 @@ constructor(
     override fun getChallenge(context: RoutingContext): Uni<ChallengeData> =
         Uni.createFrom().item(ChallengeData(401, HttpHeaderNames.WWW_AUTHENTICATE, BEARER_SCHEME))
 
+    override fun sendChallenge(context: RoutingContext): Uni<Boolean> {
+        val path = context.request().path()
+        if (path == null || !isPermissionsPath(path)) return Uni.createFrom().item(false)
+        context.response().putHeader(HttpHeaderNames.WWW_AUTHENTICATE, BEARER_SCHEME)
+        writeProblem(
+            context = context,
+            path = path,
+            statusCode = 401,
+            detail = "Authentication is required.",
+            error = "authentication_required",
+        )
+        return Uni.createFrom().item(true)
+    }
+
     override fun getCredentialTransport(context: RoutingContext): Uni<HttpCredentialTransport> =
         Uni.createFrom()
             .item(
@@ -67,23 +81,33 @@ constructor(
         path: String,
         failure: RuntimeAccessException,
     ): Uni<SecurityIdentity> {
+        writeProblem(context, path, failure.statusCode, failure.publicDetail, failure.error)
+        return Uni.createFrom().failure(AuthenticationCompletionException())
+    }
+
+    private fun writeProblem(
+        context: RoutingContext,
+        path: String,
+        statusCode: Int,
+        detail: String,
+        error: String,
+    ) {
         val problem =
             ProblemDetails(
                 type = URI.create("about:blank"),
-                title = statusTitle(failure.statusCode),
-                status = failure.statusCode,
-                detail = failure.publicDetail,
+                title = statusTitle(statusCode),
+                status = statusCode,
+                detail = detail,
                 instance = URI.create(path),
                 requestId =
                     RequestIdResolver.resolve(context.request().getHeader(REQUEST_ID_HEADER)),
-                error = failure.error,
+                error = error,
             )
         context
             .response()
-            .setStatusCode(failure.statusCode)
+            .setStatusCode(statusCode)
             .putHeader(HttpHeaderNames.CONTENT_TYPE, PROBLEM_JSON)
             .end(objectMapper.writeValueAsString(problem))
-        return Uni.createFrom().failure(AuthenticationCompletionException())
     }
 
     private fun statusTitle(statusCode: Int): String =
@@ -97,10 +121,15 @@ constructor(
     private fun isRuntimePath(path: String): Boolean =
         path == RUNTIME_ROOT || path.startsWith(RUNTIME_PREFIX)
 
+    private fun isPermissionsPath(path: String): Boolean =
+        path == PERMISSIONS_ROOT || path.startsWith(PERMISSIONS_PREFIX)
+
     private companion object {
         const val BEARER_SCHEME = "Bearer"
         const val PROBLEM_JSON = "application/problem+json"
         const val REQUEST_ID_HEADER = "X-Request-ID"
+        const val PERMISSIONS_ROOT = "/v1/permissions"
+        const val PERMISSIONS_PREFIX = "$PERMISSIONS_ROOT/"
         const val RUNTIME_ROOT = "/v1/permissions/runtime"
         const val RUNTIME_PREFIX = "$RUNTIME_ROOT/"
     }
