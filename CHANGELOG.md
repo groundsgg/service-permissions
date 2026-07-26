@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/groundsgg/service-permissions/compare/v1.0.0...v1.0.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* **ci:** isolate OpenAPI snapshot generation ([#60](https://github.com/groundsgg/service-permissions/issues/60)) ([c6db1a6](https://github.com/groundsgg/service-permissions/commit/c6db1a6a906ed5af476af15e1fe99f62969f3c34))
+
 ## [1.0.0](https://github.com/groundsgg/service-permissions/compare/v0.12.0...v1.0.0) (2026-07-26)
 
 
