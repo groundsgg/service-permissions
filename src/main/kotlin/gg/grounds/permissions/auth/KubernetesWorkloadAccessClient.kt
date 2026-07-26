@@ -11,7 +11,6 @@ import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.KubernetesClientException
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
-import java.time.Duration
 import java.time.Instant
 import java.util.Base64
 import java.util.Locale
@@ -91,7 +90,7 @@ constructor(
                     serviceAccount = match.groupValues[2],
                     groups = status.user?.groups.orEmpty().toSet(),
                 )
-            cache.cacheAuthenticatedIdentity(token, identity, tokenCacheLifetime(token))
+            cache.cacheAuthenticatedIdentity(token, identity, tokenExpiry(token))
             outcome = RuntimeReviewOutcome.SUCCESS
             return identity
         } finally {
@@ -148,7 +147,7 @@ constructor(
         fun elapsed(startedAt: Long) = java.time.Duration.ofNanos(System.nanoTime() - startedAt)
     }
 
-    private fun tokenCacheLifetime(token: String): Duration? {
+    private fun tokenExpiry(token: String): Instant? {
         val payload = token.split('.', limit = 4).takeIf { it.size == 3 }?.get(1) ?: return null
         val decodedPayload =
             try {
@@ -163,12 +162,10 @@ constructor(
                 return null
             }
         if (!expiry.isIntegralNumber || !expiry.canConvertToLong()) return null
-        val expiresAt =
-            try {
-                Instant.ofEpochSecond(expiry.longValue())
-            } catch (_: RuntimeException) {
-                return null
-            }
-        return Duration.between(Instant.now(), expiresAt).takeUnless { it.isZero || it.isNegative }
+        return try {
+            Instant.ofEpochSecond(expiry.longValue())
+        } catch (_: RuntimeException) {
+            null
+        }
     }
 }

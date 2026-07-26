@@ -12,8 +12,11 @@ import io.fabric8.kubernetes.client.dsl.AuthenticationAPIGroupDSL
 import io.fabric8.kubernetes.client.dsl.AuthorizationAPIGroupDSL
 import io.fabric8.kubernetes.client.dsl.InOutCreateable
 import java.nio.charset.StandardCharsets.UTF_8
+import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.Base64
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -170,11 +173,13 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
     private val subjectAccessReviews =
         mock<InOutCreateable<SubjectAccessReview, SubjectAccessReview>>()
     private var nowNanos = 0L
+    private val clock = MutableClock(Instant.parse("2026-07-26T12:00:00Z"))
     private val cache =
         RuntimeReviewCache(
             positiveTtl = Duration.ofSeconds(60),
             maximumEntries = 32,
             ticker = { nowNanos },
+            clock = clock,
         )
     private val client = Fabric8KubernetesWorkloadAccessClient(kubernetesClient, cache)
 
@@ -316,7 +321,7 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
                 SubjectAccessReviewBuilder().withNewStatus().withAllowed(false).endStatus().build(),
             )
 
-        val token = projectedToken(Instant.now().plusSeconds(3_600))
+        val token = projectedToken(clock.instant().plusSeconds(3_600))
         val firstIdentity = client.authenticate(token, RUNTIME_AUDIENCE)
         val secondIdentity = client.authenticate(token, RUNTIME_AUDIENCE)
         assertEquals(firstIdentity, secondIdentity)
@@ -332,10 +337,10 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
     @Test
     fun positiveReviewCacheExpiresAtConfiguredTtl() {
         whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
-        val token = projectedToken(Instant.now().plusSeconds(3_600))
+        val token = projectedToken(clock.instant().plusSeconds(3_600))
 
         client.authenticate(token, RUNTIME_AUDIENCE)
-        nowNanos = Duration.ofSeconds(61).toNanos()
+        advanceTime(Duration.ofSeconds(61))
         client.authenticate(token, RUNTIME_AUDIENCE)
 
         verify(tokenReviews, times(2)).create(any<TokenReview>())
@@ -344,14 +349,14 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
     @Test
     fun tokenReviewCacheExpiresAtJwtExpiryBeforeConfiguredTtl() {
         whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
-        val token = projectedToken(Instant.now().plusSeconds(10))
+        val token = projectedToken(clock.instant().plusSeconds(10))
 
         client.authenticate(token, RUNTIME_AUDIENCE)
-        nowNanos = Duration.ofSeconds(5).toNanos()
+        advanceTime(Duration.ofSeconds(5))
         client.authenticate(token, RUNTIME_AUDIENCE)
         verify(tokenReviews, times(1)).create(any<TokenReview>())
 
-        nowNanos = Duration.ofSeconds(11).toNanos()
+        advanceTime(Duration.ofSeconds(5))
         client.authenticate(token, RUNTIME_AUDIENCE)
         verify(tokenReviews, times(2)).create(any<TokenReview>())
     }
@@ -359,7 +364,7 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
     @Test
     fun authenticatedExpiredJwtIsNeverCached() {
         whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
-        val token = projectedToken(Instant.now().minusSeconds(1))
+        val token = projectedToken(clock.instant().minusSeconds(1))
 
         client.authenticate(token, RUNTIME_AUDIENCE)
         client.authenticate(token, RUNTIME_AUDIENCE)
@@ -414,6 +419,11 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
             "${encoder.encodeToString(payload.toByteArray(UTF_8))}.signature"
     }
 
+    private fun advanceTime(duration: Duration) {
+        clock.advance(duration)
+        nowNanos += duration.toNanos()
+    }
+
     private companion object {
         const val RUNTIME_AUDIENCE = "service-permissions"
         const val RUNTIME_PATH = "/v1/permissions/runtime/manifests"
@@ -428,6 +438,38 @@ class RuntimeReviewCacheTest {
             maximumEntries = 2,
             ticker = { nowNanos },
         )
+
+    @Test
+    fun tokenCacheMissesAtAbsoluteJwtExpiryDespiteDelayedInsertion() {
+        val clock = MutableClock(Instant.parse("2026-07-26T12:00:00Z"))
+        var tickerNanos = 0L
+        val delayedCache =
+            RuntimeReviewCache(
+                positiveTtl = Duration.ofSeconds(60),
+                maximumEntries = 2,
+                ticker = { tickerNanos },
+                clock = clock,
+            )
+        val identity = workloadIdentity(setOf("group-a"))
+        val token = "projected-token"
+        val expiresAt = clock.instant().plusSeconds(10)
+
+        clock.advance(Duration.ofSeconds(5))
+        tickerNanos += Duration.ofSeconds(5).toNanos()
+        delayedCache.cacheAuthenticatedIdentity(token, identity, expiresAt)
+
+        clock.advance(Duration.ofSeconds(4))
+        tickerNanos += Duration.ofSeconds(4).toNanos()
+        assertEquals(identity, delayedCache.authenticatedIdentity(token))
+
+        clock.advance(Duration.ofSeconds(1))
+        tickerNanos += Duration.ofSeconds(1).toNanos()
+        assertNull(delayedCache.authenticatedIdentity(token))
+
+        clock.advance(Duration.ofSeconds(1))
+        tickerNanos += Duration.ofSeconds(1).toNanos()
+        assertNull(delayedCache.authenticatedIdentity(token))
+    }
 
     @Test
     fun positiveAccessCacheStaysBoundedAndEvictsBeforeInsertion() {
@@ -476,4 +518,19 @@ class RuntimeReviewCacheTest {
             serviceAccount = "workload-a",
             groups = groups,
         )
+}
+
+private class MutableClock(
+    private var current: Instant,
+    private val zoneId: ZoneId = ZoneOffset.UTC,
+) : Clock() {
+    override fun instant(): Instant = current
+
+    override fun getZone(): ZoneId = zoneId
+
+    override fun withZone(zone: ZoneId): Clock = MutableClock(current, zone)
+
+    fun advance(duration: Duration) {
+        current = current.plus(duration)
+    }
 }
