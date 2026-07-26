@@ -17,10 +17,15 @@ import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import java.time.Instant
 import java.time.format.DateTimeParseException
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 
 @Path("/v1/permissions/audit")
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionAuditResource
 @Inject
 constructor(
@@ -30,6 +35,7 @@ constructor(
 ) {
 
     @GET
+    @Operation(operationId = "listPermissionAuditEvents", summary = "List permission audit events")
     fun list(
         @QueryParam("q") q: String?,
         @QueryParam("action") actions: List<String>?,
@@ -64,7 +70,7 @@ constructor(
         try {
             Instant.parse(value)
         } catch (error: DateTimeParseException) {
-            throw IllegalArgumentException("invalid timestamp (value=$value)", error)
+            throw IllegalArgumentException("invalid_timestamp", error)
         }
 }
 

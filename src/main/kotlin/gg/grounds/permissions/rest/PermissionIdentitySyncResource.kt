@@ -25,10 +25,18 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import org.eclipse.microprofile.health.Readiness
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.media.Content
+import org.eclipse.microprofile.openapi.annotations.media.Schema
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 
 @Path("/v1/permissions/identity-sync")
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionIdentitySyncResource
 @Inject
 constructor(
@@ -40,6 +48,10 @@ constructor(
 ) {
     @GET
     @Path("/status")
+    @Operation(
+        operationId = "getPlayerIdentitySyncStatus",
+        summary = "Get player identity sync status",
+    )
     fun status(@Context headers: HttpHeaders): IdentitySyncStatusResponse {
         authorization.requireMinecraftPermissionsView(identity, headers)
         val state = identityRepository.currentSyncState()
@@ -56,6 +68,21 @@ constructor(
     }
 
     @POST
+    @Operation(
+        operationId = "synchronizePlayerIdentities",
+        summary = "Synchronize all player identities",
+    )
+    @APIResponse(
+        responseCode = "202",
+        description = "Player identity synchronization accepted.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = SyncDispatchResponse::class),
+                )
+            ],
+    )
     fun synchronize(@Context headers: HttpHeaders): Response {
         authorization.requireMinecraftPermissionsManage(identity, headers)
         dispatcher.dispatchAll()
@@ -66,6 +93,8 @@ constructor(
 @Path("/v1/permissions/players/{playerId}/identity-sync")
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionPlayerIdentitySyncResource
 @Inject
 constructor(
@@ -75,6 +104,21 @@ constructor(
     private val identity: SecurityIdentity,
 ) {
     @POST
+    @Operation(
+        operationId = "synchronizePlayerIdentity",
+        summary = "Synchronize one player identity",
+    )
+    @APIResponse(
+        responseCode = "202",
+        description = "Player identity synchronization accepted.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = SyncDispatchResponse::class),
+                )
+            ],
+    )
     fun synchronizePlayer(
         @PathParam("playerId") playerId: String,
         @Context headers: HttpHeaders,
@@ -89,6 +133,7 @@ constructor(
     }
 }
 
+@Schema(description = "Acknowledgement for an asynchronously dispatched synchronization.")
 data class SyncDispatchResponse(val status: String)
 
 @ApplicationScoped

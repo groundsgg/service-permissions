@@ -21,11 +21,19 @@ import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.media.Content
+import org.eclipse.microprofile.openapi.annotations.media.Schema
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 
 @Path("/v1/permissions/keycloak-groups")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionGroupMappingResource
 @Inject
 constructor(
@@ -35,6 +43,7 @@ constructor(
 ) {
 
     @GET
+    @Operation(operationId = "listKeycloakGroupMappings", summary = "List Keycloak group mappings")
     fun listMappings(@Context headers: HttpHeaders): List<KeycloakGroupMappingResponse> {
         requireView(headers)
         return repository.listKeycloakGroupMappings().map { it.toResponse() }
@@ -42,6 +51,10 @@ constructor(
 
     @GET
     @Path("/search")
+    @Operation(
+        operationId = "searchKeycloakGroupMappings",
+        summary = "Search Keycloak group mappings",
+    )
     fun searchMappings(
         @QueryParam("query") query: String?,
         @QueryParam("page") @DefaultValue("1") page: Int,
@@ -78,6 +91,21 @@ constructor(
     }
 
     @POST
+    @Operation(
+        operationId = "createKeycloakGroupMapping",
+        summary = "Create a Keycloak group mapping",
+    )
+    @APIResponse(
+        responseCode = "201",
+        description = "Keycloak group mapping created.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = KeycloakGroupMappingResponse::class),
+                )
+            ],
+    )
     fun createMapping(
         request: KeycloakGroupMappingRequest,
         @Context headers: HttpHeaders,
@@ -91,6 +119,10 @@ constructor(
 
     @PUT
     @Path("/{mappingId}")
+    @Operation(
+        operationId = "updateKeycloakGroupMapping",
+        summary = "Update a Keycloak group mapping",
+    )
     fun updateMapping(
         @PathParam("mappingId") mappingId: String,
         request: KeycloakGroupMappingRequest,
@@ -103,6 +135,11 @@ constructor(
 
     @DELETE
     @Path("/{mappingId}")
+    @Operation(
+        operationId = "deleteKeycloakGroupMapping",
+        summary = "Delete a Keycloak group mapping",
+    )
+    @APIResponse(responseCode = "204", description = "Keycloak group mapping deleted.")
     fun deleteMapping(
         @PathParam("mappingId") mappingId: String,
         @Context headers: HttpHeaders,

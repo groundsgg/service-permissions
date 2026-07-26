@@ -25,11 +25,19 @@ import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.media.Content
+import org.eclipse.microprofile.openapi.annotations.media.Schema
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 
 @Path("/v1/permissions/roles")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
+@Tag(name = "Administration")
+@SecurityRequirement(name = "portalBearer")
 class PermissionRoleResource
 @Inject
 constructor(
@@ -39,12 +47,25 @@ constructor(
 ) {
 
     @GET
+    @Operation(operationId = "listRoles", summary = "List permission roles")
     fun listRoles(@Context headers: HttpHeaders): List<RoleListResponse> {
         requireView(headers)
         return repository.listRolesWithAggregateCounts().map { it.toListResponse() }
     }
 
     @POST
+    @Operation(operationId = "createRole", summary = "Create a permission role")
+    @APIResponse(
+        responseCode = "201",
+        description = "Permission role created.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = RoleResponse::class),
+                )
+            ],
+    )
     fun createRole(request: RoleRequest, @Context headers: HttpHeaders): Response {
         val actor = requireManage(headers)
         val name = PermissionValidation.displayName(request.name)
@@ -66,6 +87,7 @@ constructor(
 
     @GET
     @Path("/{roleKey}")
+    @Operation(operationId = "getRole", summary = "Get a permission role")
     fun getRole(
         @PathParam("roleKey") roleKey: String,
         @Context headers: HttpHeaders,
@@ -77,6 +99,7 @@ constructor(
 
     @PUT
     @Path("/{roleKey}")
+    @Operation(operationId = "updateRole", summary = "Update a permission role")
     fun updateRole(
         @PathParam("roleKey") roleKey: String,
         request: RoleRequest,
@@ -106,6 +129,8 @@ constructor(
 
     @DELETE
     @Path("/{roleKey}")
+    @Operation(operationId = "deleteRole", summary = "Delete a permission role")
+    @APIResponse(responseCode = "204", description = "Permission role deleted.")
     fun deleteRole(@PathParam("roleKey") roleKey: String, @Context headers: HttpHeaders): Response {
         val actor = requireManage(headers)
         repository.deleteRole(actor, PermissionValidation.roleKey(roleKey))
@@ -114,6 +139,8 @@ constructor(
 
     @PUT
     @Path("/{roleKey}/inherits/{parentRoleKey}")
+    @Operation(operationId = "addRoleInheritance", summary = "Add role inheritance")
+    @APIResponse(responseCode = "204", description = "Role inheritance added.")
     fun addInheritance(
         @PathParam("roleKey") roleKey: String,
         @PathParam("parentRoleKey") parentRoleKey: String,
@@ -130,6 +157,8 @@ constructor(
 
     @DELETE
     @Path("/{roleKey}/inherits/{parentRoleKey}")
+    @Operation(operationId = "removeRoleInheritance", summary = "Remove role inheritance")
+    @APIResponse(responseCode = "204", description = "Role inheritance removed.")
     fun removeInheritance(
         @PathParam("roleKey") roleKey: String,
         @PathParam("parentRoleKey") parentRoleKey: String,
@@ -146,6 +175,7 @@ constructor(
 
     @GET
     @Path("/{roleKey}/grants")
+    @Operation(operationId = "listRoleGrants", summary = "List grants assigned to a role")
     fun listRoleGrants(
         @PathParam("roleKey") roleKey: String,
         @Context headers: HttpHeaders,
@@ -158,6 +188,7 @@ constructor(
 
     @GET
     @Path("/{roleKey}/grants/search")
+    @Operation(operationId = "searchRoleGrants", summary = "Search grants assigned to a role")
     fun searchRoleGrants(
         @PathParam("roleKey") roleKey: String,
         @QueryParam("query") query: String?,
@@ -197,6 +228,18 @@ constructor(
 
     @POST
     @Path("/{roleKey}/grants")
+    @Operation(operationId = "createRoleGrant", summary = "Create a role grant")
+    @APIResponse(
+        responseCode = "201",
+        description = "Role grant created.",
+        content =
+            [
+                Content(
+                    mediaType = MediaType.APPLICATION_JSON,
+                    schema = Schema(implementation = RoleGrantResponse::class),
+                )
+            ],
+    )
     fun createRoleGrant(
         @PathParam("roleKey") roleKey: String,
         request: GrantRequest,
@@ -212,6 +255,7 @@ constructor(
 
     @PUT
     @Path("/{roleKey}/grants/{grantId}")
+    @Operation(operationId = "updateRoleGrant", summary = "Update a role grant")
     fun updateRoleGrant(
         @PathParam("roleKey") roleKey: String,
         @PathParam("grantId") grantId: String,
@@ -228,6 +272,8 @@ constructor(
 
     @DELETE
     @Path("/{roleKey}/grants/{grantId}")
+    @Operation(operationId = "deleteRoleGrant", summary = "Delete a role grant")
+    @APIResponse(responseCode = "204", description = "Role grant deleted.")
     fun deleteRoleGrant(
         @PathParam("roleKey") roleKey: String,
         @PathParam("grantId") grantId: String,

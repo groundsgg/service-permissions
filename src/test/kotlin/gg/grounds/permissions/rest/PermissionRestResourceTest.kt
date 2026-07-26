@@ -1551,12 +1551,7 @@ class PermissionRestResourceTest {
             .post("/v1/permissions/sync/import")
             .then()
             .statusCode(400)
-            .body(
-                "error",
-                equalTo(
-                    "Permission sync would leave multiple default roles (roleKeys=a-incoming-default,z-current-default)"
-                ),
-            )
+            .body("error", equalTo("invalid_request"))
 
         assertEquals(
             mapOf("a-incoming-default" to false, "z-current-default" to true),

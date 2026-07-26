@@ -633,6 +633,156 @@ class PermissionRepositoryTest {
     }
 
     @Test
+    fun `runtime manifest replacement removes stale entries from the same source`() {
+        repository.replaceRuntimeManifest(
+            runtimeManifest(
+                source = "plugin-runtime",
+                registeredAt = Instant.parse("2030-01-01T00:00:00Z"),
+                permissions =
+                    listOf(
+                        runtimeCatalogEntry("grounds.command.fly", "Fly"),
+                        runtimeCatalogEntry("grounds.command.kick", "Kick"),
+                    ),
+            )
+        )
+
+        repository.replaceRuntimeManifest(
+            runtimeManifest(
+                source = "plugin-runtime",
+                registeredAt = Instant.parse("2030-01-02T00:00:00Z"),
+                permissions = listOf(runtimeCatalogEntry("grounds.command.fly", "Flight")),
+            )
+        )
+
+        assertEquals(
+            listOf(
+                CatalogEntryRecord(
+                    key = "grounds.command.fly",
+                    label = "Flight",
+                    source = "plugin-runtime",
+                    sourceVersion = "1.0.0",
+                    supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                    custom = false,
+                    lastSeenAt = Instant.parse("2030-01-02T00:00:00Z"),
+                )
+            ),
+            repository.listCatalogEntries(),
+        )
+    }
+
+    @Test
+    fun `runtime manifest replacement removes all stale entries for an empty list`() {
+        repository.replaceRuntimeManifest(
+            runtimeManifest(
+                source = "plugin-runtime",
+                permissions = listOf(runtimeCatalogEntry("grounds.command.fly", "Fly")),
+            )
+        )
+
+        repository.replaceRuntimeManifest(
+            runtimeManifest(source = "plugin-runtime", permissions = emptyList())
+        )
+
+        assertEquals(emptyList<CatalogEntryRecord>(), repository.listCatalogEntries())
+    }
+
+    @Test
+    fun `runtime manifest replacement rejects a key owned by another source without partial writes`() {
+        repository.replaceRuntimeManifest(
+            runtimeManifest(
+                source = "first-plugin",
+                permissions = listOf(runtimeCatalogEntry("grounds.command.fly", "Fly")),
+            )
+        )
+
+        val error =
+            assertThrows(CatalogSourceConflictException::class.java) {
+                repository.replaceRuntimeManifest(
+                    runtimeManifest(
+                        source = "second-plugin",
+                        permissions =
+                            listOf(
+                                runtimeCatalogEntry("grounds.command.kick", "Kick"),
+                                runtimeCatalogEntry("grounds.command.fly", "Flight"),
+                            ),
+                    )
+                )
+            }
+
+        assertEquals("grounds.command.fly", error.permissionKey)
+        assertEquals("first-plugin", error.existingSource)
+        assertEquals("second-plugin", error.requestedSource)
+        assertEquals(
+            listOf(
+                CatalogEntryRecord(
+                    key = "grounds.command.fly",
+                    label = "Fly",
+                    source = "first-plugin",
+                    sourceVersion = "1.0.0",
+                    supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                    custom = false,
+                    lastSeenAt = Instant.parse("2030-01-01T00:00:00Z"),
+                )
+            ),
+            repository.listCatalogEntries(),
+        )
+    }
+
+    @Test
+    fun `runtime manifest replacement preserves custom entries`() {
+        repository.upsertCatalogEntry(
+            CatalogEntryRecord(
+                key = "grounds.command.fly",
+                label = "Custom fly",
+                source = "portal",
+                sourceVersion = "custom",
+                supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                custom = true,
+            )
+        )
+
+        assertThrows(CatalogSourceConflictException::class.java) {
+            repository.replaceRuntimeManifest(
+                runtimeManifest(
+                    source = "plugin-runtime",
+                    permissions = listOf(runtimeCatalogEntry("grounds.command.fly", "Fly")),
+                )
+            )
+        }
+
+        assertEquals("Custom fly", repository.listCatalogEntries().single().label)
+        assertTrue(repository.listCatalogEntries().single().custom)
+    }
+
+    @Test
+    fun `repeating the same runtime manifest is idempotent`() {
+        val registration =
+            runtimeManifest(
+                source = "plugin-runtime",
+                registeredAt = Instant.parse("2030-01-01T00:00:00Z"),
+                permissions = listOf(runtimeCatalogEntry("grounds.command.fly", "Fly")),
+            )
+
+        repository.replaceRuntimeManifest(registration)
+        repository.replaceRuntimeManifest(registration)
+
+        assertEquals(
+            listOf(
+                CatalogEntryRecord(
+                    key = "grounds.command.fly",
+                    label = "Fly",
+                    source = "plugin-runtime",
+                    sourceVersion = "1.0.0",
+                    supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                    custom = false,
+                    lastSeenAt = Instant.parse("2030-01-01T00:00:00Z"),
+                )
+            ),
+            repository.listCatalogEntries(),
+        )
+    }
+
+    @Test
     fun rollsBackAllSnapshotChangesWhenOneEntityFails() {
         val snapshot =
             GlobalPermissionSnapshot(
@@ -1506,4 +1656,29 @@ class PermissionRepositoryTest {
                 throw error.targetException
             }
     }
+
+    private fun runtimeManifest(
+        source: String,
+        registeredAt: Instant = Instant.parse("2030-01-01T00:00:00Z"),
+        permissions: List<CatalogEntryRecord>,
+    ) =
+        RuntimeManifestRegistration(
+            source = source,
+            sourceVersion = "1.0.0",
+            serverType = "paper",
+            serverId = "lobby-1",
+            permissions = permissions,
+            registeredAt = registeredAt,
+        )
+
+    private fun runtimeCatalogEntry(key: String, label: String) =
+        CatalogEntryRecord(
+            key = key,
+            label = label,
+            source = "ignored-by-registration",
+            sourceVersion = "ignored-by-registration",
+            supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+            custom = true,
+            lastSeenAt = null,
+        )
 }
