@@ -6,6 +6,7 @@ import gg.grounds.permissions.auth.RuntimeAuthorizationException
 import gg.grounds.permissions.auth.RuntimeWorkloadIdentity
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
+import io.micrometer.core.instrument.MeterRegistry
 import io.quarkus.test.InjectMock
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
@@ -15,6 +16,7 @@ import io.restassured.RestAssured.given
 import java.util.UUID
 import org.hamcrest.Matchers.empty
 import org.hamcrest.Matchers.equalTo
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
@@ -30,6 +32,7 @@ import org.mockito.kotlin.whenever
 class PermissionRuntimeResourceTest {
     @InjectMock lateinit var authorizer: RuntimeAccessAuthorizer
     @jakarta.inject.Inject lateinit var repository: PermissionRepository
+    @jakarta.inject.Inject lateinit var meterRegistry: MeterRegistry
 
     @BeforeEach
     fun resetRuntimeState() {
@@ -124,6 +127,9 @@ class PermissionRuntimeResourceTest {
 
     @Test
     fun `replaces a runtime manifest for the authorized source`() {
+        val requestCountBefore = runtimeRequestCount("success")
+        val manifestCountBefore = manifestCount("success")
+
         given()
             .header("Authorization", "Bearer runtime-token")
             .contentType("application/json")
@@ -131,6 +137,9 @@ class PermissionRuntimeResourceTest {
             .put(MANIFEST_PATH)
             .then()
             .statusCode(204)
+
+        assertEquals(requestCountBefore + 1, runtimeRequestCount("success"))
+        assertEquals(manifestCountBefore + 1, manifestCount("success"))
     }
 
     @Test
@@ -159,15 +168,52 @@ class PermissionRuntimeResourceTest {
 
     @Test
     fun `rejects a manifest source duplicated in the request body`() {
+        val requestCountBefore = runtimeRequestCount("invalid")
+        val manifestCountBefore = manifestCount("failure")
+
         given()
             .header("Authorization", "Bearer runtime-token")
             .contentType("application/json")
-            .body("""{"source":"plugin-chat","sourceVersion":"1.4.0","permissions":[]}""")
+            .body("""{"source":"plugin-chat",${VALID_MANIFEST.removePrefix("{")}""")
             .put(MANIFEST_PATH)
             .then()
             .statusCode(400)
             .contentType("application/problem+json")
+
+        assertEquals(requestCountBefore + 1, runtimeRequestCount("invalid"))
+        assertEquals(manifestCountBefore + 1, manifestCount("failure"))
     }
+
+    @Test
+    fun `records a malformed manifest binding failure once`() {
+        val requestCountBefore = runtimeRequestCount("invalid")
+        val manifestCountBefore = manifestCount("failure")
+
+        given()
+            .header("Authorization", "Bearer runtime-token")
+            .contentType("application/json")
+            .body("{\"sourceVersion\":")
+            .put(MANIFEST_PATH)
+            .then()
+            .statusCode(400)
+
+        assertEquals(requestCountBefore + 1, runtimeRequestCount("invalid"))
+        assertEquals(manifestCountBefore + 1, manifestCount("failure"))
+    }
+
+    private fun runtimeRequestCount(status: String): Double =
+        meterRegistry
+            .find("permissions.runtime.request.count")
+            .tags("operation", "manifest", "status", status)
+            .counter()
+            ?.count() ?: 0.0
+
+    private fun manifestCount(outcome: String): Double =
+        meterRegistry
+            .find("permissions.runtime.manifest")
+            .tag("outcome", outcome)
+            .counter()
+            ?.count() ?: 0.0
 
     private companion object {
         const val SNAPSHOT_PATH_TEMPLATE = "/v1/permissions/runtime/players"

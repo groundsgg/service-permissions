@@ -1,6 +1,7 @@
 package gg.grounds.permissions.rest.runtime
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantSource
 import gg.grounds.permissions.domain.PermissionScopeKind
@@ -39,6 +40,7 @@ data class RuntimeRoleMetadataDto(
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 data class RuntimeManifestRequest(
+    @param:JsonProperty(access = JsonProperty.Access.WRITE_ONLY) val source: String? = null,
     val sourceVersion: String?,
     val serverType: String?,
     val serverId: String?,

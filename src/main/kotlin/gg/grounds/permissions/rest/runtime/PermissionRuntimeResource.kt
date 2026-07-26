@@ -5,12 +5,8 @@ import gg.grounds.permissions.api.PermissionPolicyRequest
 import gg.grounds.permissions.domain.EffectivePermissionSnapshot
 import gg.grounds.permissions.domain.PermissionGrant
 import gg.grounds.permissions.domain.RoleMetadata
-import gg.grounds.permissions.metrics.RuntimeManifestOutcome
-import gg.grounds.permissions.metrics.RuntimeOperation
 import gg.grounds.permissions.metrics.RuntimePermissionMetrics
-import gg.grounds.permissions.metrics.RuntimeRequestStatus
 import gg.grounds.permissions.persistence.CatalogEntryRecord
-import gg.grounds.permissions.persistence.CatalogSourceConflictException
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.RuntimeManifestRegistration
 import gg.grounds.permissions.policy.PolicyEngine
@@ -28,7 +24,6 @@ import jakarta.ws.rs.core.Context
 import jakarta.ws.rs.core.HttpHeaders
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
-import java.time.Duration
 import java.time.Instant
 import org.jboss.logging.Logger
 
@@ -51,55 +46,35 @@ constructor(
         @QueryParam("serverId") serverId: String?,
         @Context headers: HttpHeaders,
     ): RuntimePermissionSnapshotResponse {
-        val startedAt = System.nanoTime()
-        try {
-            val id = PermissionValidation.uuid(playerId, "playerId")
-            val normalizedServerType = normalizedOptional(serverType, "serverType")
-            val normalizedServerId = normalizedOptional(serverId, "serverId")
-            val computationStartedAt = System.nanoTime()
-            val snapshot =
-                PolicyEngine.createSnapshot(
-                    playerId = id,
-                    input =
-                        policyProvider.policyFor(
-                            PermissionPolicyRequest(
-                                playerId = id,
-                                serverType = normalizedServerType,
-                                serverId = normalizedServerId,
-                            )
-                        ),
-                )
-            metrics.recordSnapshotComputation(elapsed(computationStartedAt))
-            metrics.recordRuntimeRequest(
-                RuntimeOperation.SNAPSHOT,
-                RuntimeRequestStatus.SUCCESS,
-                elapsed(startedAt),
+        val id = PermissionValidation.uuid(playerId, "playerId")
+        val normalizedServerType = normalizedOptional(serverType, "serverType")
+        val normalizedServerId = normalizedOptional(serverId, "serverId")
+        val computationStartedAt = System.nanoTime()
+        val snapshot =
+            PolicyEngine.createSnapshot(
+                playerId = id,
+                input =
+                    policyProvider.policyFor(
+                        PermissionPolicyRequest(
+                            playerId = id,
+                            serverType = normalizedServerType,
+                            serverId = normalizedServerId,
+                        )
+                    ),
             )
-            LOG.infof(
-                "Permission runtime snapshot computed successfully (requestId=%s, playerId=%s, serverType=%s, serverId=%s, policyVersion=%d, roleCount=%d)",
-                gg.grounds.permissions.rest.RequestIdResolver.resolve(headers),
-                id,
-                normalizedServerType,
-                normalizedServerId,
-                snapshot.policyVersion,
-                snapshot.roleKeys.size,
-            )
-            return snapshot.toResponse()
-        } catch (exception: IllegalArgumentException) {
-            metrics.recordRuntimeRequest(
-                RuntimeOperation.SNAPSHOT,
-                RuntimeRequestStatus.INVALID,
-                elapsed(startedAt),
-            )
-            throw exception
-        } catch (exception: RuntimeException) {
-            metrics.recordRuntimeRequest(
-                RuntimeOperation.SNAPSHOT,
-                RuntimeRequestStatus.FAILURE,
-                elapsed(startedAt),
-            )
-            throw exception
-        }
+        metrics.recordSnapshotComputation(
+            java.time.Duration.ofNanos(System.nanoTime() - computationStartedAt)
+        )
+        LOG.infof(
+            "Permission runtime snapshot computed successfully (requestId=%s, playerId=%s, serverType=%s, serverId=%s, policyVersion=%d, roleCount=%d)",
+            gg.grounds.permissions.rest.RequestIdResolver.resolve(headers),
+            id,
+            normalizedServerType,
+            normalizedServerId,
+            snapshot.policyVersion,
+            snapshot.roleKeys.size,
+        )
+        return snapshot.toResponse()
     }
 
     @PUT
@@ -108,47 +83,15 @@ constructor(
         @PathParam("source") source: String,
         request: RuntimeManifestRequest,
     ): Response {
-        val startedAt = System.nanoTime()
-        try {
-            val registration = request.toRegistration(source)
-            repository.replaceRuntimeManifest(registration)
-            metrics.recordManifest(RuntimeManifestOutcome.SUCCESS)
-            metrics.recordRuntimeRequest(
-                RuntimeOperation.MANIFEST,
-                RuntimeRequestStatus.SUCCESS,
-                elapsed(startedAt),
-            )
-            return Response.noContent().build()
-        } catch (exception: CatalogSourceConflictException) {
-            metrics.recordManifest(RuntimeManifestOutcome.CONFLICT)
-            metrics.recordRuntimeRequest(
-                RuntimeOperation.MANIFEST,
-                RuntimeRequestStatus.CONFLICT,
-                elapsed(startedAt),
-            )
-            throw exception
-        } catch (exception: IllegalArgumentException) {
-            metrics.recordManifest(RuntimeManifestOutcome.FAILURE)
-            metrics.recordRuntimeRequest(
-                RuntimeOperation.MANIFEST,
-                RuntimeRequestStatus.INVALID,
-                elapsed(startedAt),
-            )
-            throw exception
-        } catch (exception: RuntimeException) {
-            metrics.recordManifest(RuntimeManifestOutcome.FAILURE)
-            metrics.recordRuntimeRequest(
-                RuntimeOperation.MANIFEST,
-                RuntimeRequestStatus.FAILURE,
-                elapsed(startedAt),
-            )
-            throw exception
-        }
+        val registration = request.toRegistration(source)
+        repository.replaceRuntimeManifest(registration)
+        return Response.noContent().build()
     }
 
     private fun RuntimeManifestRequest.toRegistration(
         pathSource: String
     ): RuntimeManifestRegistration {
+        require(source == null) { "source must not be provided in the request body" }
         val normalizedSource = required(pathSource, "source")
         val normalizedSourceVersion = required(sourceVersion, "sourceVersion")
         val catalogEntries =
@@ -233,8 +176,6 @@ constructor(
     private fun required(value: String?, fieldName: String): String =
         value?.trim().takeIf { !it.isNullOrEmpty() }
             ?: throw IllegalArgumentException("$fieldName must not be blank")
-
-    private fun elapsed(startedAt: Long): Duration = Duration.ofNanos(System.nanoTime() - startedAt)
 
     private companion object {
         val LOG = Logger.getLogger(PermissionRuntimeResource::class.java)
