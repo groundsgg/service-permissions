@@ -271,6 +271,21 @@ class KubernetesWorkloadRuntimeAccessAuthorizerTest {
     }
 
     @Test
+    fun subjectAccessReviewWithoutAllowedFailsClosedAsSafeServiceUnavailable() {
+        whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
+        whenever(subjectAccessReviews.create(any<SubjectAccessReview>()))
+            .thenReturn(SubjectAccessReviewBuilder().withNewStatus().endStatus().build())
+        val authorizer = DefaultRuntimeAccessAuthorizer(client)
+
+        val failure =
+            assertThrows(RuntimeAccessUnavailableException::class.java) {
+                authorizer.requireAccess("Bearer runtime-token", "GET", RUNTIME_PATH)
+            }
+
+        assertEquals(503, failure.statusCode)
+    }
+
+    @Test
     fun cachesPositiveTokenAndAccessReviewsWithoutCachingDenials() {
         whenever(tokenReviews.create(any<TokenReview>())).thenReturn(authenticatedReview())
         whenever(subjectAccessReviews.create(any<SubjectAccessReview>()))

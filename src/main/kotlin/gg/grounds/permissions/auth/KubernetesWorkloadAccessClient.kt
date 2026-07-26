@@ -90,7 +90,7 @@ class Fabric8KubernetesWorkloadAccessClient(
         if (!status.evaluationError.isNullOrBlank()) {
             throw RuntimeWorkloadReviewUnavailableException()
         }
-        val allowed = status.allowed == true
+        val allowed = status.allowed ?: throw RuntimeWorkloadReviewUnavailableException()
         if (allowed) cache.cacheAllowed(identity, normalizedVerb, queryFreePath)
         return allowed
     }
