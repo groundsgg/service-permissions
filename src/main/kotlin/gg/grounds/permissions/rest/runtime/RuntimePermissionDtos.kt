@@ -1,12 +1,14 @@
 package gg.grounds.permissions.rest.runtime
 
+import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.annotation.JsonSetter
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantSource
 import gg.grounds.permissions.domain.PermissionScopeKind
 import java.time.Instant
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.media.Schema
 
 data class RuntimePermissionSnapshotResponse(
     val playerId: UUID,
@@ -40,12 +42,20 @@ data class RuntimeRoleMetadataDto(
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 data class RuntimeManifestRequest(
-    @param:JsonProperty(access = JsonProperty.Access.WRITE_ONLY) val source: String? = null,
     val sourceVersion: String?,
     val serverType: String?,
     val serverId: String?,
     val permissions: List<RuntimeManifestPermissionRequest>?,
-)
+) {
+    @field:JsonIgnore @field:Schema(hidden = true) private var bodySourcePresent: Boolean = false
+
+    @JsonSetter("source")
+    private fun recordBodySource(@Suppress("UNUSED_PARAMETER") value: Any?) {
+        bodySourcePresent = true
+    }
+
+    @JsonIgnore fun containsBodySource(): Boolean = bodySourcePresent
+}
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 data class RuntimeManifestPermissionRequest(

@@ -91,7 +91,7 @@ constructor(
     private fun RuntimeManifestRequest.toRegistration(
         pathSource: String
     ): RuntimeManifestRegistration {
-        require(source == null) { "source must not be provided in the request body" }
+        require(!containsBodySource()) { "source must not be provided in the request body" }
         val normalizedSource = required(pathSource, "source")
         val normalizedSourceVersion = required(sourceVersion, "sourceVersion")
         val catalogEntries =

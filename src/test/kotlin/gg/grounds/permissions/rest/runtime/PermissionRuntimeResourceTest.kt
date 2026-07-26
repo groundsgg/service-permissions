@@ -186,6 +186,24 @@ class PermissionRuntimeResourceTest {
     }
 
     @Test
+    fun `rejects a null manifest source in the request body`() {
+        val requestCountBefore = runtimeRequestCount("invalid")
+        val manifestCountBefore = manifestCount("failure")
+
+        given()
+            .header("Authorization", "Bearer runtime-token")
+            .contentType("application/json")
+            .body("""{"source":null,${VALID_MANIFEST.removePrefix("{")}""")
+            .put(MANIFEST_PATH)
+            .then()
+            .statusCode(400)
+            .contentType("application/problem+json")
+
+        assertEquals(requestCountBefore + 1, runtimeRequestCount("invalid"))
+        assertEquals(manifestCountBefore + 1, manifestCount("failure"))
+    }
+
+    @Test
     fun `returns a safe problem response for a malformed manifest binding failure`() {
         val requestCountBefore = runtimeRequestCount("invalid")
         val manifestCountBefore = manifestCount("failure")
