@@ -147,11 +147,18 @@ class AdminAuthorizationServiceTest {
     }
 
     @Test
-    fun rejectsForgeProjectViewersInProjectMode() {
+    fun allowsForgeProjectViewersToReadButNotManageInProjectMode() {
         val server = forgeServer(projectRole = "viewer")
         try {
             val service = service(forgeBaseUrl = server.baseUrl)
 
+            assertEquals(
+                "direct-user",
+                service.requireMinecraftPermissionsView(
+                    securityIdentity(),
+                    headers(projectId = "project-a"),
+                ),
+            )
             assertThrows(ForbiddenException::class.java) {
                 service.requireMinecraftPermissionsManage(
                     securityIdentity(),
@@ -160,6 +167,20 @@ class AdminAuthorizationServiceTest {
             }
         } finally {
             server.stop()
+        }
+    }
+
+    @Test
+    fun allowsTrustedForgeProjectViewerHeaderToReadButNotManageInProjectMode() {
+        val service = service(trustForgeProjectRoleHeader = true)
+        val requestHeaders = headers(projectId = "project-a", projectRole = "viewer")
+
+        assertEquals(
+            "direct-user",
+            service.requireMinecraftPermissionsView(securityIdentity(), requestHeaders),
+        )
+        assertThrows(ForbiddenException::class.java) {
+            service.requireMinecraftPermissionsManage(securityIdentity(), requestHeaders)
         }
     }
 
