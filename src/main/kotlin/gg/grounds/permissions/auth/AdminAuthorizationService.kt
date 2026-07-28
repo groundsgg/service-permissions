@@ -88,10 +88,10 @@ class AdminAuthorizationService(
         if (hasAccess(resolution.permissions, access)) {
             return userId
         }
-        if (resolution.trustedProjectRole in PROJECT_ADMIN_ROLES) {
+        if (projectRoleAllowsAccess(resolution.trustedProjectRole, access, projectMode)) {
             return userId
         }
-        if (resolution.forgeProjectRole in PROJECT_ADMIN_ROLES) {
+        if (projectRoleAllowsAccess(resolution.forgeProjectRole, access, projectMode)) {
             return userId
         }
         throw ForbiddenException("missing_permission")
@@ -113,14 +113,17 @@ class AdminAuthorizationService(
         val trustedProjectRole =
             if (allowTrustedProjectRole) trustedForgeProjectRole(headers, projectId) else null
 
-        if (!hasAccess(permissions, access) && trustedProjectRole !in PROJECT_ADMIN_ROLES) {
+        if (
+            !hasAccess(permissions, access) &&
+                !projectRoleAllowsAccess(trustedProjectRole, access, projectMode = true)
+        ) {
             permissions += forgeEffectiveAccessPermissions(headers)
         }
 
         val forgeProjectRole =
             if (
                 !hasAccess(permissions, access) &&
-                    trustedProjectRole !in PROJECT_ADMIN_ROLES &&
+                    !projectRoleAllowsAccess(trustedProjectRole, access, projectMode = true) &&
                     allowForgeProjectRole
             ) {
                 forgeProjectRole(headers, projectId)
@@ -130,6 +133,14 @@ class AdminAuthorizationService(
 
         return AccessResolution(permissions, trustedProjectRole, forgeProjectRole)
     }
+
+    private fun projectRoleAllowsAccess(
+        role: String?,
+        access: PermissionAccess,
+        projectMode: Boolean,
+    ): Boolean =
+        role in PROJECT_ADMIN_ROLES ||
+            (projectMode && access == PermissionAccess.VIEW && role == PROJECT_VIEWER_ROLE)
 
     private fun hasAccess(permissions: Set<String>, access: PermissionAccess): Boolean =
         when (instanceEnvironment) {
@@ -288,6 +299,7 @@ class AdminAuthorizationService(
         private const val PRODUCTION_MANAGE_PERMISSION = "MINECRAFT_PERMISSIONS_PRODUCTION_MANAGE"
         private const val PROJECT_ID_HEADER = "X-Grounds-Project-Id"
         private const val PROJECT_ROLE_HEADER = "X-Grounds-Project-Role"
+        private const val PROJECT_VIEWER_ROLE = "viewer"
         private val PROJECT_ADMIN_ROLES = setOf("owner", "editor")
         private val JWT_PERMISSION_CLAIMS = listOf("permissions", "platform_permissions", "groups")
     }
