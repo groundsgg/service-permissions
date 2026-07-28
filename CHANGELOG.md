@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/groundsgg/service-permissions/compare/v1.0.1...v1.0.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* authorize project viewer reads ([#62](https://github.com/groundsgg/service-permissions/issues/62)) ([5372087](https://github.com/groundsgg/service-permissions/commit/5372087eb7514d66c947aa1f436526d4537f8586))
+
 ## [1.0.1](https://github.com/groundsgg/service-permissions/compare/v1.0.0...v1.0.1) (2026-07-26)
 
 
