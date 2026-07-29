@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/groundsgg/service-permissions/compare/v1.0.2...v1.1.0) (2026-07-29)
+
+
+### Features
+
+* **permissions:** publish live snapshot invalidations ([#65](https://github.com/groundsgg/service-permissions/issues/65)) ([05672ca](https://github.com/groundsgg/service-permissions/commit/05672caf371cb2b5f0a325fd4b95a4929d6562c6))
+
 ## [1.0.2](https://github.com/groundsgg/service-permissions/compare/v1.0.1...v1.0.2) (2026-07-28)
 
 
