@@ -83,6 +83,22 @@ class IdentityChangeConsumerTest {
     }
 
     @Test
+    fun acknowledgesRemovedRefreshes() {
+        whenever(coordinator.refreshPlayer("user-1"))
+            .thenReturn(
+                IdentityRefreshResult(
+                    outcome = IdentityRefreshOutcome.REMOVED,
+                    playerId = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001"),
+                )
+            )
+        val delivery = RecordingDelivery(validPayload())
+
+        consumer.process(delivery)
+
+        assertEquals(DeliveryOutcome.ACKNOWLEDGED, delivery.outcome)
+    }
+
+    @Test
     fun acknowledgesAndIgnoresEventsForAnotherRealm() {
         val delivery = RecordingDelivery(validPayload(realmId = "other"))
 
