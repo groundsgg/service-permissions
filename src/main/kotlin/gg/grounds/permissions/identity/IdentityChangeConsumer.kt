@@ -54,7 +54,7 @@ interface IdentityEventTransport : AutoCloseable {
 class IdentityChangeConsumer(
     private val objectMapper: ObjectMapper,
     private val coordinator: IdentitySyncCoordinator,
-    private val realmId: String,
+    private val configuredRealm: String,
     private val transport: IdentityEventTransport? = null,
     private val config: IdentityEventConsumerConfig? = null,
     private val executor: ExecutorService? = null,
@@ -90,7 +90,7 @@ class IdentityChangeConsumer(
     ) : this(
         objectMapper = objectMapper,
         coordinator = coordinator,
-        realmId = realmId,
+        configuredRealm = realmId,
         transport = NatsIdentityEventTransport(natsUrl, tokenFile.orElse(null)),
         config =
             IdentityEventConsumerConfig(
@@ -138,7 +138,7 @@ class IdentityChangeConsumer(
                 return
             }
 
-        if (event.realmId != realmId) {
+        if (event.realmId != configuredRealm && event.realmName != configuredRealm) {
             delivery.acknowledge()
             return
         }
@@ -202,6 +202,7 @@ class IdentityChangeConsumer(
 
     private fun validate(event: MinecraftIdentityChangedEvent) {
         require(event.realmId.isNotBlank())
+        require(event.realmName == null || event.realmName.isNotBlank())
         require(event.keycloakUserId.isNotBlank())
         require(event.reason.isNotBlank())
     }
