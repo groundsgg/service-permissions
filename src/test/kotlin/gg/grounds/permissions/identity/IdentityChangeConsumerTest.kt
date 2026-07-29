@@ -23,10 +23,23 @@ class IdentityChangeConsumerTest {
     private val consumer = IdentityChangeConsumer(jacksonObjectMapper(), coordinator, "grounds")
 
     @Test
-    fun acknowledgesOnlyAfterSuccessfulCurrentStateRefresh() {
+    fun acknowledgesLegacyIdOnlyEventsAfterSuccessfulCurrentStateRefresh() {
         whenever(coordinator.refreshPlayer("user-1"))
             .thenReturn(IdentityRefreshResult(IdentityRefreshOutcome.UPDATED))
-        val delivery = RecordingDelivery(validPayload())
+        val delivery = RecordingDelivery(legacyPayload())
+
+        consumer.process(delivery)
+
+        assertEquals(DeliveryOutcome.ACKNOWLEDGED, delivery.outcome)
+        verify(coordinator).refreshPlayer("user-1")
+    }
+
+    @Test
+    fun acceptsEventsWhenConfiguredRealmMatchesRealmName() {
+        whenever(coordinator.refreshPlayer("user-1"))
+            .thenReturn(IdentityRefreshResult(IdentityRefreshOutcome.UPDATED))
+        val delivery =
+            RecordingDelivery(validPayload(realmId = "realm-uuid", realmName = "grounds"))
 
         consumer.process(delivery)
 
@@ -100,11 +113,22 @@ class IdentityChangeConsumerTest {
 
     @Test
     fun acknowledgesAndIgnoresEventsForAnotherRealm() {
-        val delivery = RecordingDelivery(validPayload(realmId = "other"))
+        val delivery =
+            RecordingDelivery(validPayload(realmId = "other-id", realmName = "other-name"))
 
         consumer.process(delivery)
 
         assertEquals(DeliveryOutcome.ACKNOWLEDGED, delivery.outcome)
+        verify(coordinator, never()).refreshPlayer(org.mockito.kotlin.any())
+    }
+
+    @Test
+    fun terminatesEventsWithBlankRealmName() {
+        val delivery = RecordingDelivery(validPayload(realmName = " "))
+
+        consumer.process(delivery)
+
+        assertEquals(DeliveryOutcome.TERMINATED, delivery.outcome)
         verify(coordinator, never()).refreshPlayer(org.mockito.kotlin.any())
     }
 
@@ -192,15 +216,24 @@ class IdentityChangeConsumerTest {
         assertEquals("NATS authentication token file path must not be blank", exception.message)
     }
 
-    private fun validPayload(realmId: String = "grounds", reason: String = "identity_updated") =
+    private fun validPayload(
+        realmId: String = "grounds",
+        realmName: String? = null,
+        reason: String = "identity_updated",
+    ) =
         jacksonObjectMapper()
             .writeValueAsBytes(
                 MinecraftIdentityChangedEvent(
                     realmId = realmId,
+                    realmName = realmName,
                     keycloakUserId = "user-1",
                     reason = reason,
                 )
             )
+
+    private fun legacyPayload() =
+        """{"realmId":"grounds","keycloakUserId":"user-1","reason":"identity_updated"}"""
+            .toByteArray()
 }
 
 private enum class DeliveryOutcome {
