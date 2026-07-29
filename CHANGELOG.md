@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/groundsgg/service-permissions/compare/v1.1.0...v1.1.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **identity:** match events by realm name ([#67](https://github.com/groundsgg/service-permissions/issues/67)) ([732abbe](https://github.com/groundsgg/service-permissions/commit/732abbed97edbea71907d3df04ae434a48ad2a01))
+
 ## [1.1.0](https://github.com/groundsgg/service-permissions/compare/v1.0.2...v1.1.0) (2026-07-29)
 
 
