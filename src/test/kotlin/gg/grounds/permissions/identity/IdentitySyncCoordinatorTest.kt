@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.logging.Handler
+import java.util.logging.Level
 import java.util.logging.LogRecord
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -73,6 +74,40 @@ class IdentitySyncCoordinatorTest {
 
         assertEquals(IdentitySyncOutcome.COMPLETED, result.outcome)
         verify(publisher).publish(identity.playerId)
+    }
+
+    @Test
+    fun releasesTheFullSyncLockBeforePublishingInvalidations() {
+        val identity = identity()
+        var lockReleased = false
+        var publishedWhileLockHeld = false
+        val publisher =
+            object : PermissionSnapshotInvalidationPublisher {
+                override fun publish(playerId: UUID) {
+                    publishedWhileLockHeld = !lockReleased
+                }
+            }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                syncLock =
+                    object : IdentitySyncLock {
+                        override fun <T> tryRun(operation: () -> T): IdentitySyncLockResult<T> {
+                            val result = operation()
+                            lockReleased = true
+                            return IdentitySyncLockResult.Acquired(result)
+                        }
+                    },
+                invalidationPublisher = publisher,
+            )
+
+        val result = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, result.outcome)
+        assertTrue(lockReleased)
+        assertFalse(publishedWhileLockHeld)
     }
 
     @Test
@@ -646,6 +681,41 @@ class IdentitySyncCoordinatorTest {
     }
 
     @Test
+    fun logsOnlyTheInvalidationWarningWhenTargetedPublicationFails() {
+        val identity = identity()
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        doThrow(
+                PermissionSnapshotInvalidationPublishException(
+                    IllegalStateException("nats unavailable")
+                )
+            )
+            .whenever(publisher)
+            .publish(identity.playerId)
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        val (result, records) =
+            captureLogRecords { coordinator.refreshPlayer(identity.keycloakUserId) }
+
+        assertEquals(IdentityRefreshOutcome.FAILED, result.outcome)
+        assertEquals(
+            1,
+            records.count {
+                it.level == Level.WARNING &&
+                    it.message ==
+                        "Permission snapshot invalidation publish failed " +
+                            "(playerId=${identity.playerId}, reason=nats_publish_failed)"
+            },
+        )
+        assertFalse(records.any { it.level.intValue() >= Level.SEVERE.intValue() })
+    }
+
+    @Test
     fun returnsUnchangedWhenTargetedRefreshDoesNotAlterTheProjection() {
         val identity = identity()
         val store = RecordingIdentityStore().apply { identities = listOf(identity) }
@@ -724,9 +794,12 @@ class IdentitySyncCoordinatorTest {
             override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? = null
         }
 
-    private fun captureLogs(
-        operation: () -> IdentitySyncResult
-    ): Pair<IdentitySyncResult, List<String>> {
+    private fun <T> captureLogs(operation: () -> T): Pair<T, List<String>> {
+        val (result, records) = captureLogRecords(operation)
+        return result to records.map(LogRecord::getMessage)
+    }
+
+    private fun <T> captureLogRecords(operation: () -> T): Pair<T, List<LogRecord>> {
         val records = mutableListOf<LogRecord>()
         val handler =
             object : Handler() {
@@ -743,7 +816,7 @@ class IdentitySyncCoordinatorTest {
                 addHandler(handler)
             }
         return try {
-            operation() to records.map(LogRecord::getMessage)
+            operation() to records
         } finally {
             logger.removeHandler(handler)
         }

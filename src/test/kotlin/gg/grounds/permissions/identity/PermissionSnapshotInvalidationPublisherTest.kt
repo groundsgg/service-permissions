@@ -11,7 +11,9 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.doThrow
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
@@ -27,13 +29,12 @@ class PermissionSnapshotInvalidationPublisherTest {
 
         publisher.publish(playerId)
 
-        verify(transport)
-            .publish(
-                "permissions.snapshot.invalidated",
-                objectMapper.writeValueAsBytes(
-                    PermissionSnapshotInvalidationEvent(schemaVersion = 1, playerId = playerId)
-                ),
-            )
+        val payload = argumentCaptor<ByteArray>()
+        verify(transport).publish(eq("permissions.snapshot.invalidated"), payload.capture())
+        val event = objectMapper.readTree(payload.firstValue)
+        assertEquals(setOf("schemaVersion", "playerId"), event.fieldNames().asSequence().toSet())
+        assertEquals(1, event["schemaVersion"].intValue())
+        assertEquals(playerId.toString(), event["playerId"].textValue())
     }
 
     @Test

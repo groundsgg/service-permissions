@@ -162,21 +162,26 @@ class IdentitySyncCoordinator(
 
     fun synchronizeAll(): IdentitySyncResult {
         val startedAt = clock.instant()
-        return try {
-            when (val result = syncLock.tryRun { synchronizeLocked(startedAt) }) {
-                is IdentitySyncLockResult.Acquired -> result.value
-                IdentitySyncLockResult.AlreadyLocked ->
-                    IdentitySyncResult(IdentitySyncOutcome.ALREADY_RUNNING)
+        val result =
+            try {
+                when (val lockedResult = syncLock.tryRun { synchronizeLocked(startedAt) }) {
+                    is IdentitySyncLockResult.Acquired -> lockedResult.value
+                    IdentitySyncLockResult.AlreadyLocked ->
+                        IdentitySyncResult(IdentitySyncOutcome.ALREADY_RUNNING)
+                }
+            } catch (_: Exception) {
+                val completedAt = clock.instant()
+                LOG.errorf(
+                    "Player identity sync failed (durationMs=%d, reason=%s)",
+                    elapsedMilliseconds(startedAt, completedAt),
+                    SYNC_FAILURE_REASON,
+                )
+                IdentitySyncResult(IdentitySyncOutcome.FAILED)
             }
-        } catch (_: Exception) {
-            val completedAt = clock.instant()
-            LOG.errorf(
-                "Player identity sync failed (durationMs=%d, reason=%s)",
-                elapsedMilliseconds(startedAt, completedAt),
-                SYNC_FAILURE_REASON,
-            )
-            IdentitySyncResult(IdentitySyncOutcome.FAILED)
+        if (result.outcome == IdentitySyncOutcome.COMPLETED) {
+            publishFullInvalidations(result.changedPlayerIds)
         }
+        return result
     }
 
     private fun synchronizeLocked(startedAt: java.time.Instant): IdentitySyncResult {
@@ -206,9 +211,6 @@ class IdentitySyncCoordinator(
                 )
                 IdentitySyncResult(IdentitySyncOutcome.FAILED)
             }
-        if (result.outcome == IdentitySyncOutcome.COMPLETED) {
-            publishFullInvalidations(result.changedPlayerIds)
-        }
         return result
     }
 
@@ -281,6 +283,8 @@ class IdentitySyncCoordinator(
                 elapsedMilliseconds(startedAt, completedAt),
             )
             result
+        } catch (_: PermissionSnapshotInvalidationPublishException) {
+            IdentityRefreshResult(IdentityRefreshOutcome.FAILED)
         } catch (_: Exception) {
             val completedAt = clock.instant()
             LOG.errorf(
