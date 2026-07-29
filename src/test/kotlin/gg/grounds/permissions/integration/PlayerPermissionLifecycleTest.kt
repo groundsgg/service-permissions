@@ -82,7 +82,7 @@ class PlayerPermissionLifecycleTest {
         val consumer = IdentityChangeConsumer(objectMapper, coordinator, "grounds")
         val lifecycle = IdentitySyncLifecycle(coordinator, Executor(Runnable::run))
 
-        assertEquals(IdentitySyncOutcome.COMPLETED, coordinator.synchronizeAll())
+        assertEquals(IdentitySyncOutcome.COMPLETED, coordinator.synchronizeAll().outcome)
         assertEquals(setOf("/builders"), identityRepository.findByPlayerId(playerId)?.groupPaths)
 
         createPolicy()

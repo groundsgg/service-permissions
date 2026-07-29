@@ -15,6 +15,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
+import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -40,6 +41,83 @@ class PlayerIdentityRepositoryTest {
     @BeforeEach
     fun resetDatabase() {
         permissionRepository.deleteAllPermissionData()
+    }
+
+    @Test
+    fun reportsOnlyEffectiveProjectionChangesDuringFullReconciliation() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        val player =
+            identity(
+                "00000000-0000-0000-0000-000000000001",
+                "keycloak-change-detection",
+                "ChangeDetection",
+                setOf("/dev"),
+            )
+
+        startSync(now)
+        val first = identityRepository.replaceAll(listOf(player), now)
+
+        assertThat(first.playerIds).containsExactly(player.playerId)
+
+        val syncedAgain = player.copy(syncedAt = now.plusSeconds(30))
+        startSync(now.plusSeconds(30))
+        val unchanged = identityRepository.replaceAll(listOf(syncedAgain), now.plusSeconds(30))
+
+        assertThat(unchanged.playerIds).isEmpty()
+
+        val changed = syncedAgain.copy(groupPaths = setOf("/dev", "/builder"))
+        startSync(now.plusSeconds(60))
+        val groupChange = identityRepository.replaceAll(listOf(changed), now.plusSeconds(60))
+
+        assertThat(groupChange.playerIds).containsExactly(player.playerId)
+
+        val renamed =
+            changed.copy(minecraftUsername = "ChangedName", normalizedUsername = "changedname")
+        startSync(now.plusSeconds(90))
+        val usernameChange = identityRepository.replaceAll(listOf(renamed), now.plusSeconds(90))
+
+        assertThat(usernameChange.playerIds).containsExactly(player.playerId)
+
+        startSync(now.plusSeconds(120))
+        val deleted = identityRepository.replaceAll(emptyList(), now.plusSeconds(120))
+
+        assertThat(deleted.playerIds).containsExactly(player.playerId)
+    }
+
+    @Test
+    fun reportsBothPlayersWhenAKeycloakIdentityIsRelinked() {
+        val oldIdentity =
+            identity("00000000-0000-0000-0000-000000000002", "keycloak-relinked", "Relinked")
+        val newIdentity =
+            oldIdentity.copy(playerId = UUID.fromString("00000000-0000-0000-0000-000000000003"))
+
+        identityRepository.replacePlayer(oldIdentity)
+
+        val relinked = identityRepository.replacePlayer(newIdentity)
+
+        assertThat(relinked.playerIds)
+            .containsExactlyInAnyOrder(oldIdentity.playerId, newIdentity.playerId)
+    }
+
+    @Test
+    fun reportsDeletedPlayerFromARepeatedTargetedDeletion() {
+        val identity =
+            identity("00000000-0000-0000-0000-000000000004", "keycloak-deleted", "Deleted")
+        identityRepository.replacePlayer(identity)
+
+        val firstDeletion =
+            identityRepository.deleteByKeycloakUserId(
+                identity.keycloakUserId,
+                Instant.parse("2030-01-01T00:00:00Z"),
+            )
+        val repeatedDeletion =
+            identityRepository.deleteByKeycloakUserId(
+                identity.keycloakUserId,
+                Instant.parse("2030-01-01T00:01:00Z"),
+            )
+
+        assertThat(firstDeletion.playerIds).containsExactly(identity.playerId)
+        assertThat(repeatedDeletion.playerIds).containsExactly(identity.playerId)
     }
 
     @Test

@@ -143,9 +143,10 @@ class IdentityChangeConsumer(
             return
         }
 
-        when (coordinator.refreshPlayer(event.keycloakUserId)) {
+        when (coordinator.refreshPlayer(event.keycloakUserId).outcome) {
             IdentityRefreshOutcome.UPDATED,
-            IdentityRefreshOutcome.REMOVED -> delivery.acknowledge()
+            IdentityRefreshOutcome.REMOVED,
+            IdentityRefreshOutcome.UNCHANGED -> delivery.acknowledge()
             IdentityRefreshOutcome.FAILED -> delivery.negativelyAcknowledge(retryDelay)
         }
     }

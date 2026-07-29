@@ -5,6 +5,7 @@ import jakarta.inject.Inject
 import java.sql.Connection
 import java.time.Clock
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.Executor
 import javax.sql.DataSource
 import org.eclipse.microprofile.config.inject.ConfigProperty
@@ -18,9 +19,17 @@ enum class IdentitySyncOutcome {
 
 enum class IdentityRefreshOutcome {
     UPDATED,
+    UNCHANGED,
     REMOVED,
     FAILED,
 }
+
+data class IdentitySyncResult(
+    val outcome: IdentitySyncOutcome,
+    val changedPlayerIds: Set<UUID> = emptySet(),
+)
+
+data class IdentityRefreshResult(val outcome: IdentityRefreshOutcome, val playerId: UUID? = null)
 
 sealed interface IdentitySyncLockResult<out T> {
     data class Acquired<T>(val value: T) : IdentitySyncLockResult<T>
@@ -139,6 +148,8 @@ class IdentitySyncCoordinator(
     private val clock: Clock,
     private val maxStaleness: Duration = DEFAULT_MAX_STALENESS,
     private val syncLock: IdentitySyncLock = UnlockedIdentitySyncLock,
+    private val invalidationPublisher: PermissionSnapshotInvalidationPublisher =
+        NoopPermissionSnapshotInvalidationPublisher,
 ) {
     @Inject
     constructor(
@@ -146,52 +157,61 @@ class IdentitySyncCoordinator(
         source: PlayerIdentitySynchronizer,
         syncLock: PostgresIdentitySyncLock,
         @ConfigProperty(name = "permissions.identity-sync.max-staleness") maxStaleness: Duration,
-    ) : this(store, source, Clock.systemUTC(), maxStaleness, syncLock)
+        invalidationPublisher: PermissionSnapshotInvalidationPublisher,
+    ) : this(store, source, Clock.systemUTC(), maxStaleness, syncLock, invalidationPublisher)
 
-    fun synchronizeAll(): IdentitySyncOutcome {
+    fun synchronizeAll(): IdentitySyncResult {
         val startedAt = clock.instant()
-        return try {
-            when (val result = syncLock.tryRun { synchronizeLocked(startedAt) }) {
-                is IdentitySyncLockResult.Acquired -> result.value
-                IdentitySyncLockResult.AlreadyLocked -> IdentitySyncOutcome.ALREADY_RUNNING
+        val result =
+            try {
+                when (val lockedResult = syncLock.tryRun { synchronizeLocked(startedAt) }) {
+                    is IdentitySyncLockResult.Acquired -> lockedResult.value
+                    IdentitySyncLockResult.AlreadyLocked ->
+                        IdentitySyncResult(IdentitySyncOutcome.ALREADY_RUNNING)
+                }
+            } catch (_: Exception) {
+                val completedAt = clock.instant()
+                LOG.errorf(
+                    "Player identity sync failed (durationMs=%d, reason=%s)",
+                    elapsedMilliseconds(startedAt, completedAt),
+                    SYNC_FAILURE_REASON,
+                )
+                IdentitySyncResult(IdentitySyncOutcome.FAILED)
             }
-        } catch (_: Exception) {
-            val completedAt = clock.instant()
-            LOG.errorf(
-                "Player identity sync failed (durationMs=%d, reason=%s)",
-                elapsedMilliseconds(startedAt, completedAt),
-                SYNC_FAILURE_REASON,
-            )
-            IdentitySyncOutcome.FAILED
+        if (result.outcome == IdentitySyncOutcome.COMPLETED) {
+            publishFullInvalidations(result.changedPlayerIds)
         }
+        return result
     }
 
-    private fun synchronizeLocked(startedAt: java.time.Instant): IdentitySyncOutcome {
+    private fun synchronizeLocked(startedAt: java.time.Instant): IdentitySyncResult {
         val staleBefore = startedAt.minus(maxStaleness)
         if (!store.tryMarkSyncRunning(startedAt, staleBefore)) {
-            return IdentitySyncOutcome.ALREADY_RUNNING
+            return IdentitySyncResult(IdentitySyncOutcome.ALREADY_RUNNING)
         }
 
-        return try {
-            val identities = reconcileOmittedExistingIdentities(source.loadAll())
-            val completedAt = clock.instant()
-            store.replaceAll(identities, completedAt)
-            LOG.infof(
-                "Player identity sync completed successfully (durationMs=%d, playerCount=%d)",
-                elapsedMilliseconds(startedAt, completedAt),
-                identities.size,
-            )
-            IdentitySyncOutcome.COMPLETED
-        } catch (_: Exception) {
-            val completedAt = clock.instant()
-            markSyncFailed(startedAt, completedAt)
-            LOG.errorf(
-                "Player identity sync failed (durationMs=%d, reason=%s)",
-                elapsedMilliseconds(startedAt, completedAt),
-                SYNC_FAILURE_REASON,
-            )
-            IdentitySyncOutcome.FAILED
-        }
+        val result =
+            try {
+                val identities = reconcileOmittedExistingIdentities(source.loadAll())
+                val completedAt = clock.instant()
+                val changes = store.replaceAll(identities, completedAt)
+                LOG.infof(
+                    "Player identity sync completed successfully (durationMs=%d, playerCount=%d)",
+                    elapsedMilliseconds(startedAt, completedAt),
+                    identities.size,
+                )
+                IdentitySyncResult(IdentitySyncOutcome.COMPLETED, changes.playerIds)
+            } catch (_: Exception) {
+                val completedAt = clock.instant()
+                markSyncFailed(startedAt, completedAt)
+                LOG.errorf(
+                    "Player identity sync failed (durationMs=%d, reason=%s)",
+                    elapsedMilliseconds(startedAt, completedAt),
+                    SYNC_FAILURE_REASON,
+                )
+                IdentitySyncResult(IdentitySyncOutcome.FAILED)
+            }
+        return result
     }
 
     private fun reconcileOmittedExistingIdentities(
@@ -226,35 +246,53 @@ class IdentitySyncCoordinator(
         )
     }
 
-    fun refreshPlayer(keycloakUserId: String): IdentityRefreshOutcome {
+    fun refreshPlayer(keycloakUserId: String): IdentityRefreshResult {
         val startedAt = clock.instant()
         return try {
             val identity = source.loadPlayer(keycloakUserId)
-            val outcome =
+            val result =
                 if (identity == null) {
-                    store.deleteByKeycloakUserId(keycloakUserId, clock.instant())
-                    IdentityRefreshOutcome.REMOVED
+                    val changes = store.deleteByKeycloakUserId(keycloakUserId, clock.instant())
+                    val playerId = changes.playerIds.singleOrNull()
+                    IdentityRefreshResult(
+                        outcome =
+                            if (playerId == null) {
+                                IdentityRefreshOutcome.UNCHANGED
+                            } else {
+                                IdentityRefreshOutcome.REMOVED
+                            },
+                        playerId = playerId,
+                    )
                 } else {
-                    store.replacePlayer(identity)
-                    IdentityRefreshOutcome.UPDATED
+                    val changes = store.replacePlayer(identity)
+                    IdentityRefreshResult(
+                        outcome =
+                            if (identity.playerId in changes.playerIds) {
+                                IdentityRefreshOutcome.UPDATED
+                            } else {
+                                IdentityRefreshOutcome.UNCHANGED
+                            },
+                        playerId = identity.playerId,
+                    )
                 }
+            result.playerId?.let(::publishTargetedInvalidation)
             val completedAt = clock.instant()
             LOG.infof(
-                "Player identity refresh completed successfully (keycloakUserId=%s, reason=%s, durationMs=%d)",
-                keycloakUserId,
-                outcome.name.lowercase(),
+                "Player identity refresh completed successfully (outcome=%s, durationMs=%d)",
+                result.outcome.name.lowercase(),
                 elapsedMilliseconds(startedAt, completedAt),
             )
-            outcome
+            result
+        } catch (_: PermissionSnapshotInvalidationPublishException) {
+            IdentityRefreshResult(IdentityRefreshOutcome.FAILED)
         } catch (_: Exception) {
             val completedAt = clock.instant()
             LOG.errorf(
-                "Player identity refresh failed (keycloakUserId=%s, reason=%s, durationMs=%d)",
-                keycloakUserId,
+                "Player identity refresh failed (reason=%s, durationMs=%d)",
                 REFRESH_FAILURE_REASON,
                 elapsedMilliseconds(startedAt, completedAt),
             )
-            IdentityRefreshOutcome.FAILED
+            IdentityRefreshResult(IdentityRefreshOutcome.FAILED)
         }
     }
 
@@ -263,11 +301,49 @@ class IdentitySyncCoordinator(
         completedAt: java.time.Instant,
     ): Long = Duration.between(startedAt, completedAt).toMillis().coerceAtLeast(0)
 
+    private fun publishTargetedInvalidation(playerId: UUID) {
+        try {
+            invalidationPublisher.publish(playerId)
+            LOG.debugf(
+                "Permission snapshot invalidation published successfully (playerId=%s)",
+                playerId,
+            )
+        } catch (_: Exception) {
+            LOG.warnf(
+                "Permission snapshot invalidation publish failed (playerId=%s, reason=%s)",
+                playerId,
+                SNAPSHOT_INVALIDATION_PUBLISH_FAILURE_REASON,
+            )
+            throw PermissionSnapshotInvalidationPublishException(
+                IllegalStateException(SNAPSHOT_INVALIDATION_PUBLISH_FAILURE_REASON)
+            )
+        }
+    }
+
+    private fun publishFullInvalidations(playerIds: Set<UUID>) {
+        playerIds.forEach { playerId ->
+            try {
+                invalidationPublisher.publish(playerId)
+                LOG.debugf(
+                    "Permission snapshot invalidation published successfully (playerId=%s)",
+                    playerId,
+                )
+            } catch (_: Exception) {
+                LOG.warnf(
+                    "Permission snapshot invalidation publish failed (playerId=%s, reason=%s)",
+                    playerId,
+                    SNAPSHOT_INVALIDATION_PUBLISH_FAILURE_REASON,
+                )
+            }
+        }
+    }
+
     private companion object {
         private const val SYNC_FAILURE_REASON = "identity_sync_failed"
         private const val SYNC_STATE_UPDATE_FAILURE_REASON = "identity_sync_state_update_failed"
         private const val SYNC_STATE_UPDATE_ATTEMPTS = 2
         private const val REFRESH_FAILURE_REASON = "identity_refresh_failed"
+        private const val SNAPSHOT_INVALIDATION_PUBLISH_FAILURE_REASON = "nats_publish_failed"
         private val DEFAULT_MAX_STALENESS = Duration.ofHours(6)
         private val LOG = Logger.getLogger(IdentitySyncCoordinator::class.java)
     }

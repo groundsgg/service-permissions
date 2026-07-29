@@ -10,11 +10,19 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.logging.Handler
+import java.util.logging.Level
 import java.util.logging.LogRecord
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doThrow
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.times
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
 
 class IdentitySyncCoordinatorTest {
     @Test
@@ -40,13 +48,117 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.COMPLETED, outcome)
+        assertEquals(IdentitySyncOutcome.COMPLETED, outcome.outcome)
+        assertEquals(setOf(identity.playerId), outcome.changedPlayerIds)
         assertEquals(listOf(identity), store.identities)
         assertEquals(IdentitySyncStatus.IDLE, store.state.status)
         assertEquals(Instant.parse("2030-01-01T00:00:00Z"), store.state.startedAt)
         assertEquals(Instant.parse("2030-01-01T00:00:03Z"), store.state.completedAt)
         assertEquals(3_000, store.state.durationMs)
         assertEquals(1, store.state.playerCount)
+    }
+
+    @Test
+    fun publishesEveryChangedPlayerAfterTheFullProjectionCommits() {
+        val identity = identity()
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        val result = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, result.outcome)
+        verify(publisher).publish(identity.playerId)
+    }
+
+    @Test
+    fun releasesTheFullSyncLockBeforePublishingInvalidations() {
+        val identity = identity()
+        var lockReleased = false
+        var publishedWhileLockHeld = false
+        val publisher =
+            object : PermissionSnapshotInvalidationPublisher {
+                override fun publish(playerId: UUID) {
+                    publishedWhileLockHeld = !lockReleased
+                }
+            }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                syncLock =
+                    object : IdentitySyncLock {
+                        override fun <T> tryRun(operation: () -> T): IdentitySyncLockResult<T> {
+                            val result = operation()
+                            lockReleased = true
+                            return IdentitySyncLockResult.Acquired(result)
+                        }
+                    },
+                invalidationPublisher = publisher,
+            )
+
+        val result = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, result.outcome)
+        assertTrue(lockReleased)
+        assertFalse(publishedWhileLockHeld)
+    }
+
+    @Test
+    fun keepsACompletedFullSyncWhenOneInvalidationPublishFails() {
+        val identity = identity()
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        doThrow(
+                PermissionSnapshotInvalidationPublishException(
+                    IllegalStateException("nats unavailable")
+                )
+            )
+            .whenever(publisher)
+            .publish(identity.playerId)
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        val (result, messages) = captureLogs(coordinator::synchronizeAll)
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, result.outcome)
+        assertEquals(
+            1,
+            messages.count {
+                it ==
+                    "Permission snapshot invalidation publish failed " +
+                        "(playerId=${identity.playerId}, reason=nats_publish_failed)"
+            },
+        )
+    }
+
+    @Test
+    fun doesNotPublishUnchangedFullReconciliations() {
+        val identity = identity()
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        val store = RecordingIdentityStore().apply { identities = listOf(identity) }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        val result = coordinator.synchronizeAll()
+
+        assertEquals(IdentitySyncOutcome.COMPLETED, result.outcome)
+        verify(publisher, never()).publish(any())
     }
 
     @Test
@@ -71,7 +183,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.COMPLETED, outcome)
+        assertEquals(IdentitySyncOutcome.COMPLETED, outcome.outcome)
         assertEquals(listOf(existingIdentity.keycloakUserId), loadedPlayers)
         assertEquals(listOf(existingIdentity), store.identities)
     }
@@ -96,7 +208,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.FAILED, outcome)
+        assertEquals(IdentitySyncOutcome.FAILED, outcome.outcome)
         assertEquals(listOf(existingIdentity), store.identities)
         assertEquals(IdentitySyncStatus.FAILED, store.state.status)
     }
@@ -114,7 +226,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.COMPLETED, outcome)
+        assertEquals(IdentitySyncOutcome.COMPLETED, outcome.outcome)
         assertTrue(store.identities.isEmpty())
     }
 
@@ -142,14 +254,14 @@ class IdentitySyncCoordinatorTest {
         val executor = Executors.newSingleThreadExecutor()
 
         try {
-            val first = executor.submit<IdentitySyncOutcome> { coordinator.synchronizeAll() }
+            val first = executor.submit<IdentitySyncResult> { coordinator.synchronizeAll() }
             assertTrue(enteredSource.await(5, TimeUnit.SECONDS))
 
             val second = coordinator.synchronizeAll()
 
-            assertEquals(IdentitySyncOutcome.ALREADY_RUNNING, second)
+            assertEquals(IdentitySyncOutcome.ALREADY_RUNNING, second.outcome)
             releaseSource.countDown()
-            assertEquals(IdentitySyncOutcome.COMPLETED, first.get(5, TimeUnit.SECONDS))
+            assertEquals(IdentitySyncOutcome.COMPLETED, first.get(5, TimeUnit.SECONDS).outcome)
         } finally {
             releaseSource.countDown()
             executor.shutdownNow()
@@ -201,16 +313,16 @@ class IdentitySyncCoordinatorTest {
         val executor = Executors.newSingleThreadExecutor()
 
         try {
-            val fullSync = executor.submit<IdentitySyncOutcome> { coordinator.synchronizeAll() }
+            val fullSync = executor.submit<IdentitySyncResult> { coordinator.synchronizeAll() }
             assertTrue(snapshotLoaded.await(5, TimeUnit.SECONDS))
 
             assertEquals(
                 IdentityRefreshOutcome.UPDATED,
-                coordinator.refreshPlayer(newIdentity.keycloakUserId),
+                coordinator.refreshPlayer(newIdentity.keycloakUserId).outcome,
             )
             releaseFullSync.countDown()
 
-            assertEquals(IdentitySyncOutcome.COMPLETED, fullSync.get(5, TimeUnit.SECONDS))
+            assertEquals(IdentitySyncOutcome.COMPLETED, fullSync.get(5, TimeUnit.SECONDS).outcome)
             assertEquals(listOf(newIdentity), store.identities)
             assertEquals(IdentitySyncStatus.IDLE, store.state.status)
             assertEquals(1, store.state.playerCount)
@@ -256,16 +368,16 @@ class IdentitySyncCoordinatorTest {
         val executor = Executors.newSingleThreadExecutor()
 
         try {
-            val fullSync = executor.submit<IdentitySyncOutcome> { coordinator.synchronizeAll() }
+            val fullSync = executor.submit<IdentitySyncResult> { coordinator.synchronizeAll() }
             assertTrue(snapshotLoaded.await(5, TimeUnit.SECONDS))
 
             assertEquals(
                 IdentityRefreshOutcome.REMOVED,
-                coordinator.refreshPlayer(staleIdentity.keycloakUserId),
+                coordinator.refreshPlayer(staleIdentity.keycloakUserId).outcome,
             )
             releaseFullSync.countDown()
 
-            assertEquals(IdentitySyncOutcome.COMPLETED, fullSync.get(5, TimeUnit.SECONDS))
+            assertEquals(IdentitySyncOutcome.COMPLETED, fullSync.get(5, TimeUnit.SECONDS).outcome)
             assertTrue(store.identities.isEmpty())
             assertEquals(Instant.parse("2030-01-01T00:00:03Z"), store.deletionTimestamps.single())
             assertEquals(IdentitySyncStatus.IDLE, store.state.status)
@@ -303,7 +415,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.ALREADY_RUNNING, outcome)
+        assertEquals(IdentitySyncOutcome.ALREADY_RUNNING, outcome.outcome)
         assertFalse(sourceRead)
         assertEquals(IdentitySyncStatus.IDLE, store.state.status)
     }
@@ -335,7 +447,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.ALREADY_RUNNING, outcome)
+        assertEquals(IdentitySyncOutcome.ALREADY_RUNNING, outcome.outcome)
         assertFalse(sourceRead)
         assertEquals(persistedStartedAt, store.state.startedAt)
     }
@@ -360,7 +472,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.COMPLETED, outcome)
+        assertEquals(IdentitySyncOutcome.COMPLETED, outcome.outcome)
         assertEquals(IdentitySyncStatus.IDLE, store.state.status)
         assertEquals(now, store.state.startedAt)
         assertEquals(completedAt, store.state.completedAt)
@@ -395,7 +507,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.FAILED, outcome)
+        assertEquals(IdentitySyncOutcome.FAILED, outcome.outcome)
         assertEquals(IdentitySyncStatus.FAILED, store.state.status)
         assertEquals(now, store.state.startedAt)
         assertEquals(failedAt, store.state.completedAt)
@@ -419,7 +531,7 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.synchronizeAll()
 
-        assertEquals(IdentitySyncOutcome.FAILED, outcome)
+        assertEquals(IdentitySyncOutcome.FAILED, outcome.outcome)
         assertEquals(2, store.markSyncFailedAttempts)
         assertEquals(IdentitySyncStatus.FAILED, store.state.status)
         assertEquals("identity_sync_failed", store.state.failureReason)
@@ -439,7 +551,7 @@ class IdentitySyncCoordinatorTest {
 
         val (failedOutcome, messages) = captureLogs(failedCoordinator::synchronizeAll)
 
-        assertEquals(IdentitySyncOutcome.FAILED, failedOutcome)
+        assertEquals(IdentitySyncOutcome.FAILED, failedOutcome.outcome)
         assertEquals(2, failedStore.markSyncFailedAttempts)
         assertEquals(IdentitySyncStatus.RUNNING, failedStore.state.status)
         assertEquals(
@@ -456,7 +568,8 @@ class IdentitySyncCoordinatorTest {
 
     @Test
     fun removesDeletedOrUnlinkedPlayerDuringSingleUserRefresh() {
-        val store = RecordingIdentityStore()
+        val deletedIdentity = identity().copy(keycloakUserId = "deleted-user")
+        val store = RecordingIdentityStore().apply { identities = listOf(deletedIdentity) }
         val coordinator =
             IdentitySyncCoordinator(
                 store = store,
@@ -472,7 +585,8 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.refreshPlayer("deleted-user")
 
-        assertEquals(IdentityRefreshOutcome.REMOVED, outcome)
+        assertEquals(IdentityRefreshOutcome.REMOVED, outcome.outcome)
+        assertEquals(deletedIdentity.playerId, outcome.playerId)
         assertEquals(listOf("deleted-user"), store.deletedKeycloakUserIds)
         assertEquals(Instant.parse("2030-01-01T00:00:00Z"), store.deletionTimestamps.single())
     }
@@ -496,9 +610,154 @@ class IdentitySyncCoordinatorTest {
 
         val outcome = coordinator.refreshPlayer(identity.keycloakUserId)
 
-        assertEquals(IdentityRefreshOutcome.UPDATED, outcome)
+        assertEquals(IdentityRefreshOutcome.UPDATED, outcome.outcome)
+        assertEquals(identity.playerId, outcome.playerId)
         assertEquals(listOf(identity), store.identities)
         assertTrue(store.deletedKeycloakUserIds.isEmpty())
+    }
+
+    @Test
+    fun publishesTargetedRefreshesIncludingIdempotentRedelivery() {
+        val identity = identity()
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        val first = coordinator.refreshPlayer(identity.keycloakUserId)
+        val redelivery = coordinator.refreshPlayer(identity.keycloakUserId)
+
+        assertEquals(IdentityRefreshOutcome.UPDATED, first.outcome)
+        assertEquals(IdentityRefreshOutcome.UNCHANGED, redelivery.outcome)
+        verify(publisher, times(2)).publish(identity.playerId)
+    }
+
+    @Test
+    fun publishesTheTombstonedPlayerForFirstAndRepeatedDeletes() {
+        val deletedIdentity = identity().copy(keycloakUserId = "deleted-user")
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore().apply { identities = listOf(deletedIdentity) },
+                source = emptyIdentitySource(),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        coordinator.refreshPlayer(deletedIdentity.keycloakUserId)
+        coordinator.refreshPlayer(deletedIdentity.keycloakUserId)
+
+        verify(publisher, times(2)).publish(deletedIdentity.playerId)
+    }
+
+    @Test
+    fun failsTargetedRefreshAfterACommittedInvalidationPublishFailure() {
+        val identity = identity()
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        doThrow(
+                PermissionSnapshotInvalidationPublishException(
+                    IllegalStateException("nats unavailable")
+                )
+            )
+            .whenever(publisher)
+            .publish(identity.playerId)
+        val store = RecordingIdentityStore()
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        val result = coordinator.refreshPlayer(identity.keycloakUserId)
+
+        assertEquals(IdentityRefreshOutcome.FAILED, result.outcome)
+        assertEquals(listOf(identity), store.identities)
+    }
+
+    @Test
+    fun logsOnlyTheInvalidationWarningWhenTargetedPublicationFails() {
+        val identity = identity()
+        val publisher = mock<PermissionSnapshotInvalidationPublisher>()
+        doThrow(
+                PermissionSnapshotInvalidationPublishException(
+                    IllegalStateException("nats unavailable")
+                )
+            )
+            .whenever(publisher)
+            .publish(identity.playerId)
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source = sourceFor(identity),
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+                invalidationPublisher = publisher,
+            )
+
+        val (result, records) =
+            captureLogRecords { coordinator.refreshPlayer(identity.keycloakUserId) }
+
+        assertEquals(IdentityRefreshOutcome.FAILED, result.outcome)
+        assertEquals(
+            1,
+            records.count {
+                it.level == Level.WARNING &&
+                    it.message ==
+                        "Permission snapshot invalidation publish failed " +
+                            "(playerId=${identity.playerId}, reason=nats_publish_failed)"
+            },
+        )
+        assertFalse(records.any { it.level.intValue() >= Level.SEVERE.intValue() })
+    }
+
+    @Test
+    fun returnsUnchangedWhenTargetedRefreshDoesNotAlterTheProjection() {
+        val identity = identity()
+        val store = RecordingIdentityStore().apply { identities = listOf(identity) }
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = store,
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> = emptyList()
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity =
+                            identity
+                    },
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+            )
+
+        val outcome = coordinator.refreshPlayer(identity.keycloakUserId)
+
+        assertEquals(IdentityRefreshOutcome.UNCHANGED, outcome.outcome)
+        assertEquals(identity.playerId, outcome.playerId)
+    }
+
+    @Test
+    fun returnsFailedWhenTargetedRefreshCannotLoadTheIdentity() {
+        val coordinator =
+            IdentitySyncCoordinator(
+                store = RecordingIdentityStore(),
+                source =
+                    object : PlayerIdentitySource {
+                        override fun loadAll(): List<ProjectedPlayerIdentity> = emptyList()
+
+                        override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? {
+                            throw IllegalStateException("identity source unavailable")
+                        }
+                    },
+                clock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC),
+            )
+
+        val outcome = coordinator.refreshPlayer("failed-user")
+
+        assertEquals(IdentityRefreshOutcome.FAILED, outcome.outcome)
+        assertEquals(null, outcome.playerId)
     }
 
     private fun identity(): ProjectedPlayerIdentity =
@@ -519,6 +778,13 @@ class IdentitySyncCoordinatorTest {
             override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? = null
         }
 
+    private fun sourceFor(identity: ProjectedPlayerIdentity): PlayerIdentitySource =
+        object : PlayerIdentitySource {
+            override fun loadAll(): List<ProjectedPlayerIdentity> = listOf(identity)
+
+            override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity = identity
+        }
+
     private fun failingIdentitySource(): PlayerIdentitySource =
         object : PlayerIdentitySource {
             override fun loadAll(): List<ProjectedPlayerIdentity> {
@@ -528,9 +794,12 @@ class IdentitySyncCoordinatorTest {
             override fun loadPlayer(keycloakUserId: String): ProjectedPlayerIdentity? = null
         }
 
-    private fun captureLogs(
-        operation: () -> IdentitySyncOutcome
-    ): Pair<IdentitySyncOutcome, List<String>> {
+    private fun <T> captureLogs(operation: () -> T): Pair<T, List<String>> {
+        val (result, records) = captureLogRecords(operation)
+        return result to records.map(LogRecord::getMessage)
+    }
+
+    private fun <T> captureLogRecords(operation: () -> T): Pair<T, List<LogRecord>> {
         val records = mutableListOf<LogRecord>()
         val handler =
             object : Handler() {
@@ -547,7 +816,7 @@ class IdentitySyncCoordinatorTest {
                 addHandler(handler)
             }
         return try {
-            operation() to records.map(LogRecord::getMessage)
+            operation() to records
         } finally {
             logger.removeHandler(handler)
         }
@@ -560,6 +829,7 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
     val deletedKeycloakUserIds = mutableListOf<String>()
     val deletionTimestamps = mutableListOf<Instant>()
     private val tombstones = mutableMapOf<String, Instant>()
+    private val tombstonePlayerIds = mutableMapOf<String, UUID>()
     var markSyncFailedAttempts = 0
         private set
 
@@ -586,24 +856,42 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
     override fun search(query: String, page: Int, perPage: Int): PlayerSearchPage =
         PlayerSearchPage(emptyList(), page, perPage, 0)
 
-    override fun replacePlayer(identity: ProjectedPlayerIdentity) {
+    override fun replacePlayer(identity: ProjectedPlayerIdentity): IdentityProjectionChanges {
+        val before = identities
         val deletedAt = tombstones[identity.keycloakUserId]
         if (deletedAt?.isAfter(identity.syncedAt) == true) {
-            return
+            return IdentityProjectionChanges.NONE
         }
         tombstones.remove(identity.keycloakUserId)
         identities = identities.filterNot { it.playerId == identity.playerId } + identity
+        return projectionChanges(before, identities)
     }
 
-    override fun deleteByKeycloakUserId(keycloakUserId: String, deletedAt: Instant) {
+    override fun deleteByKeycloakUserId(
+        keycloakUserId: String,
+        deletedAt: Instant,
+    ): IdentityProjectionChanges {
+        val before = identities
         deletedKeycloakUserIds += keycloakUserId
         deletionTimestamps += deletedAt
+        identities
+            .firstOrNull { it.keycloakUserId == keycloakUserId }
+            ?.let { tombstonePlayerIds[keycloakUserId] = it.playerId }
         tombstones.merge(keycloakUserId, deletedAt, ::maxOf)
         identities = identities.filterNot { it.keycloakUserId == keycloakUserId }
+        return projectionChanges(before, identities).takeUnless {
+            it == IdentityProjectionChanges.NONE
+        }
+            ?: tombstonePlayerIds[keycloakUserId]?.let { IdentityProjectionChanges(setOf(it)) }
+            ?: IdentityProjectionChanges.NONE
     }
 
     @Synchronized
-    override fun replaceAll(identities: List<ProjectedPlayerIdentity>, completedAt: Instant) {
+    override fun replaceAll(
+        identities: List<ProjectedPlayerIdentity>,
+        completedAt: Instant,
+    ): IdentityProjectionChanges {
+        val before = this.identities
         check(state.status == IdentitySyncStatus.RUNNING)
         val snapshotStartedAt = checkNotNull(state.startedAt)
         val reconciled = this.identities.toMutableList()
@@ -641,7 +929,25 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
                 playerCount = reconciled.size.toLong(),
                 failureReason = null,
             )
+        return projectionChanges(before, this.identities)
     }
+
+    private fun projectionChanges(
+        before: List<ProjectedPlayerIdentity>,
+        after: List<ProjectedPlayerIdentity>,
+    ): IdentityProjectionChanges {
+        val beforeById = before.associateBy(ProjectedPlayerIdentity::playerId)
+        val afterById = after.associateBy(ProjectedPlayerIdentity::playerId)
+        return IdentityProjectionChanges(
+            (beforeById.keys + afterById.keys).filterTo(mutableSetOf()) { playerId ->
+                beforeById[playerId]?.effectiveProjection() !=
+                    afterById[playerId]?.effectiveProjection()
+            }
+        )
+    }
+
+    private fun ProjectedPlayerIdentity.effectiveProjection() =
+        copy(syncedAt = Instant.EPOCH, sourceUpdatedAt = null)
 
     @Synchronized
     override fun markSyncRunning(startedAt: Instant) {

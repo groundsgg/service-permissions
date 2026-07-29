@@ -12,7 +12,8 @@ class IdentitySyncLifecycleTest {
     @Test
     fun dispatchesStartupSyncWithoutBlockingStartup() {
         val coordinator = mock<IdentitySyncCoordinator>()
-        whenever(coordinator.synchronizeAll()).thenReturn(IdentitySyncOutcome.COMPLETED)
+        whenever(coordinator.synchronizeAll())
+            .thenReturn(IdentitySyncResult(IdentitySyncOutcome.COMPLETED))
         val queued = mutableListOf<Runnable>()
         val lifecycle = IdentitySyncLifecycle(coordinator, Executor(queued::add))
 
@@ -29,7 +30,8 @@ class IdentitySyncLifecycleTest {
     @Test
     fun scheduledReconciliationUsesTheSameCoordinatorAndAcceptsLockSkips() {
         val coordinator = mock<IdentitySyncCoordinator>()
-        whenever(coordinator.synchronizeAll()).thenReturn(IdentitySyncOutcome.ALREADY_RUNNING)
+        whenever(coordinator.synchronizeAll())
+            .thenReturn(IdentitySyncResult(IdentitySyncOutcome.ALREADY_RUNNING))
         val lifecycle = IdentitySyncLifecycle(coordinator, Executor(Runnable::run))
 
         lifecycle.reconcileScheduled()

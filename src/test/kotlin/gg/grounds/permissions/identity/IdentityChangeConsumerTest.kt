@@ -24,7 +24,8 @@ class IdentityChangeConsumerTest {
 
     @Test
     fun acknowledgesOnlyAfterSuccessfulCurrentStateRefresh() {
-        whenever(coordinator.refreshPlayer("user-1")).thenReturn(IdentityRefreshOutcome.UPDATED)
+        whenever(coordinator.refreshPlayer("user-1"))
+            .thenReturn(IdentityRefreshResult(IdentityRefreshOutcome.UPDATED))
         val delivery = RecordingDelivery(validPayload())
 
         consumer.process(delivery)
@@ -35,7 +36,8 @@ class IdentityChangeConsumerTest {
 
     @Test
     fun duplicateAndOutOfOrderEventsAlwaysReloadCurrentState() {
-        whenever(coordinator.refreshPlayer("user-1")).thenReturn(IdentityRefreshOutcome.UPDATED)
+        whenever(coordinator.refreshPlayer("user-1"))
+            .thenReturn(IdentityRefreshResult(IdentityRefreshOutcome.UPDATED))
         val first = RecordingDelivery(validPayload(reason = "group_removed"))
         val second = RecordingDelivery(validPayload(reason = "group_added"))
 
@@ -59,13 +61,41 @@ class IdentityChangeConsumerTest {
 
     @Test
     fun negativelyAcknowledgesTransientRefreshFailures() {
-        whenever(coordinator.refreshPlayer("user-1")).thenReturn(IdentityRefreshOutcome.FAILED)
+        whenever(coordinator.refreshPlayer("user-1"))
+            .thenReturn(IdentityRefreshResult(IdentityRefreshOutcome.FAILED))
         val delivery = RecordingDelivery(validPayload())
 
         consumer.process(delivery)
 
         assertEquals(DeliveryOutcome.NEGATIVELY_ACKNOWLEDGED, delivery.outcome)
         assertEquals(Duration.ofSeconds(5), delivery.retryDelay)
+    }
+
+    @Test
+    fun acknowledgesUnchangedRefreshes() {
+        whenever(coordinator.refreshPlayer("user-1"))
+            .thenReturn(IdentityRefreshResult(IdentityRefreshOutcome.UNCHANGED))
+        val delivery = RecordingDelivery(validPayload())
+
+        consumer.process(delivery)
+
+        assertEquals(DeliveryOutcome.ACKNOWLEDGED, delivery.outcome)
+    }
+
+    @Test
+    fun acknowledgesRemovedRefreshes() {
+        whenever(coordinator.refreshPlayer("user-1"))
+            .thenReturn(
+                IdentityRefreshResult(
+                    outcome = IdentityRefreshOutcome.REMOVED,
+                    playerId = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001"),
+                )
+            )
+        val delivery = RecordingDelivery(validPayload())
+
+        consumer.process(delivery)
+
+        assertEquals(DeliveryOutcome.ACKNOWLEDGED, delivery.outcome)
     }
 
     @Test
