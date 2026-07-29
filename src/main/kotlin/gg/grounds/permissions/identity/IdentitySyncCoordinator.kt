@@ -5,6 +5,7 @@ import jakarta.inject.Inject
 import java.sql.Connection
 import java.time.Clock
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.Executor
 import javax.sql.DataSource
 import org.eclipse.microprofile.config.inject.ConfigProperty
@@ -18,9 +19,17 @@ enum class IdentitySyncOutcome {
 
 enum class IdentityRefreshOutcome {
     UPDATED,
+    UNCHANGED,
     REMOVED,
     FAILED,
 }
+
+data class IdentitySyncResult(
+    val outcome: IdentitySyncOutcome,
+    val changedPlayerIds: Set<UUID> = emptySet(),
+)
+
+data class IdentityRefreshResult(val outcome: IdentityRefreshOutcome, val playerId: UUID? = null)
 
 sealed interface IdentitySyncLockResult<out T> {
     data class Acquired<T>(val value: T) : IdentitySyncLockResult<T>
@@ -148,12 +157,13 @@ class IdentitySyncCoordinator(
         @ConfigProperty(name = "permissions.identity-sync.max-staleness") maxStaleness: Duration,
     ) : this(store, source, Clock.systemUTC(), maxStaleness, syncLock)
 
-    fun synchronizeAll(): IdentitySyncOutcome {
+    fun synchronizeAll(): IdentitySyncResult {
         val startedAt = clock.instant()
         return try {
             when (val result = syncLock.tryRun { synchronizeLocked(startedAt) }) {
                 is IdentitySyncLockResult.Acquired -> result.value
-                IdentitySyncLockResult.AlreadyLocked -> IdentitySyncOutcome.ALREADY_RUNNING
+                IdentitySyncLockResult.AlreadyLocked ->
+                    IdentitySyncResult(IdentitySyncOutcome.ALREADY_RUNNING)
             }
         } catch (_: Exception) {
             val completedAt = clock.instant()
@@ -162,26 +172,26 @@ class IdentitySyncCoordinator(
                 elapsedMilliseconds(startedAt, completedAt),
                 SYNC_FAILURE_REASON,
             )
-            IdentitySyncOutcome.FAILED
+            IdentitySyncResult(IdentitySyncOutcome.FAILED)
         }
     }
 
-    private fun synchronizeLocked(startedAt: java.time.Instant): IdentitySyncOutcome {
+    private fun synchronizeLocked(startedAt: java.time.Instant): IdentitySyncResult {
         val staleBefore = startedAt.minus(maxStaleness)
         if (!store.tryMarkSyncRunning(startedAt, staleBefore)) {
-            return IdentitySyncOutcome.ALREADY_RUNNING
+            return IdentitySyncResult(IdentitySyncOutcome.ALREADY_RUNNING)
         }
 
         return try {
             val identities = reconcileOmittedExistingIdentities(source.loadAll())
             val completedAt = clock.instant()
-            store.replaceAll(identities, completedAt)
+            val changes = store.replaceAll(identities, completedAt)
             LOG.infof(
                 "Player identity sync completed successfully (durationMs=%d, playerCount=%d)",
                 elapsedMilliseconds(startedAt, completedAt),
                 identities.size,
             )
-            IdentitySyncOutcome.COMPLETED
+            IdentitySyncResult(IdentitySyncOutcome.COMPLETED, changes.playerIds)
         } catch (_: Exception) {
             val completedAt = clock.instant()
             markSyncFailed(startedAt, completedAt)
@@ -190,7 +200,7 @@ class IdentitySyncCoordinator(
                 elapsedMilliseconds(startedAt, completedAt),
                 SYNC_FAILURE_REASON,
             )
-            IdentitySyncOutcome.FAILED
+            IdentitySyncResult(IdentitySyncOutcome.FAILED)
         }
     }
 
@@ -226,35 +236,50 @@ class IdentitySyncCoordinator(
         )
     }
 
-    fun refreshPlayer(keycloakUserId: String): IdentityRefreshOutcome {
+    fun refreshPlayer(keycloakUserId: String): IdentityRefreshResult {
         val startedAt = clock.instant()
         return try {
             val identity = source.loadPlayer(keycloakUserId)
-            val outcome =
+            val result =
                 if (identity == null) {
-                    store.deleteByKeycloakUserId(keycloakUserId, clock.instant())
-                    IdentityRefreshOutcome.REMOVED
+                    val changes = store.deleteByKeycloakUserId(keycloakUserId, clock.instant())
+                    val playerId = changes.playerIds.singleOrNull()
+                    IdentityRefreshResult(
+                        outcome =
+                            if (playerId == null) {
+                                IdentityRefreshOutcome.UNCHANGED
+                            } else {
+                                IdentityRefreshOutcome.REMOVED
+                            },
+                        playerId = playerId,
+                    )
                 } else {
-                    store.replacePlayer(identity)
-                    IdentityRefreshOutcome.UPDATED
+                    val changes = store.replacePlayer(identity)
+                    IdentityRefreshResult(
+                        outcome =
+                            if (identity.playerId in changes.playerIds) {
+                                IdentityRefreshOutcome.UPDATED
+                            } else {
+                                IdentityRefreshOutcome.UNCHANGED
+                            },
+                        playerId = identity.playerId.takeIf { it in changes.playerIds },
+                    )
                 }
             val completedAt = clock.instant()
             LOG.infof(
-                "Player identity refresh completed successfully (keycloakUserId=%s, reason=%s, durationMs=%d)",
-                keycloakUserId,
-                outcome.name.lowercase(),
+                "Player identity refresh completed successfully (outcome=%s, durationMs=%d)",
+                result.outcome.name.lowercase(),
                 elapsedMilliseconds(startedAt, completedAt),
             )
-            outcome
+            result
         } catch (_: Exception) {
             val completedAt = clock.instant()
             LOG.errorf(
-                "Player identity refresh failed (keycloakUserId=%s, reason=%s, durationMs=%d)",
-                keycloakUserId,
+                "Player identity refresh failed (reason=%s, durationMs=%d)",
                 REFRESH_FAILURE_REASON,
                 elapsedMilliseconds(startedAt, completedAt),
             )
-            IdentityRefreshOutcome.FAILED
+            IdentityRefreshResult(IdentityRefreshOutcome.FAILED)
         }
     }
 

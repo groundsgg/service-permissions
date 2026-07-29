@@ -1,5 +1,6 @@
 package gg.grounds.permissions.persistence
 
+import gg.grounds.permissions.identity.IdentityProjectionChanges
 import gg.grounds.permissions.identity.IdentitySyncState
 import gg.grounds.permissions.identity.IdentitySyncStatus
 import gg.grounds.permissions.identity.PlayerIdentityStore
@@ -212,17 +213,20 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         )
     }
 
-    override fun replacePlayer(identity: ProjectedPlayerIdentity) {
+    override fun replacePlayer(identity: ProjectedPlayerIdentity): IdentityProjectionChanges {
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
                 acquireMutationLock(connection)
+                val before = readEffectiveIdentities(connection)
                 if (clearTombstoneIfAccepted(connection, identity)) {
                     deleteRelinkedIdentity(connection, identity)
                     upsertIdentity(connection, identity)
                     replaceGroups(connection, identity.playerId, identity.groupPaths)
                 }
+                val changes = projectionChanges(before, readEffectiveIdentities(connection))
                 connection.commit()
+                return changes
             } catch (error: Throwable) {
                 connection.rollback()
                 throw error
@@ -230,12 +234,19 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         }
     }
 
-    override fun deleteByKeycloakUserId(keycloakUserId: String, deletedAt: Instant) {
+    override fun deleteByKeycloakUserId(
+        keycloakUserId: String,
+        deletedAt: Instant,
+    ): IdentityProjectionChanges {
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
                 acquireMutationLock(connection)
-                upsertTombstone(connection, keycloakUserId, deletedAt)
+                val before = readEffectiveIdentities(connection)
+                val playerId =
+                    before.values.firstOrNull { it.keycloakUserId == keycloakUserId }?.playerId
+                        ?: findTombstonedPlayerId(connection, keycloakUserId)
+                upsertTombstone(connection, keycloakUserId, playerId, deletedAt)
                 connection
                     .prepareStatement(
                         "DELETE FROM permission_player_identities WHERE keycloak_user_id = ?"
@@ -244,7 +255,11 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                         statement.setString(1, keycloakUserId)
                         statement.executeUpdate()
                     }
+                val changes = projectionChanges(before, readEffectiveIdentities(connection))
                 connection.commit()
+                return changes.takeUnless { it == IdentityProjectionChanges.NONE }
+                    ?: playerId?.let { IdentityProjectionChanges(setOf(it)) }
+                    ?: IdentityProjectionChanges.NONE
             } catch (error: Throwable) {
                 connection.rollback()
                 throw error
@@ -252,11 +267,15 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
         }
     }
 
-    override fun replaceAll(identities: List<ProjectedPlayerIdentity>, completedAt: Instant) {
+    override fun replaceAll(
+        identities: List<ProjectedPlayerIdentity>,
+        completedAt: Instant,
+    ): IdentityProjectionChanges {
         dataSource.connection.use { connection ->
             connection.autoCommit = false
             try {
                 acquireMutationLock(connection)
+                val before = readEffectiveIdentities(connection)
                 createReconciliationStage(connection)
                 identities.forEach { identity -> stageIdentity(connection, identity) }
                 clearObsoleteTombstones(connection)
@@ -265,7 +284,9 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
                 reconcileGroups(connection)
                 deleteMissingIdentities(connection)
                 completeSync(connection, completedAt)
+                val changes = projectionChanges(before, readEffectiveIdentities(connection))
                 connection.commit()
+                return changes
             } catch (error: Throwable) {
                 connection.rollback()
                 throw error
@@ -711,25 +732,83 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     private fun upsertTombstone(
         connection: Connection,
         keycloakUserId: String,
+        playerId: UUID?,
         deletedAt: Instant,
     ) {
         connection
             .prepareStatement(
                 """
-                INSERT INTO permission_player_identity_tombstones (keycloak_user_id, deleted_at)
-                VALUES (?, ?)
+                INSERT INTO permission_player_identity_tombstones (keycloak_user_id, player_id, deleted_at)
+                VALUES (?, ?, ?)
                 ON CONFLICT (keycloak_user_id) DO UPDATE
-                SET deleted_at = EXCLUDED.deleted_at
+                SET player_id = COALESCE(EXCLUDED.player_id, permission_player_identity_tombstones.player_id),
+                    deleted_at = EXCLUDED.deleted_at
                 WHERE permission_player_identity_tombstones.deleted_at < EXCLUDED.deleted_at
                 """
                     .trimIndent()
             )
             .use { statement ->
                 statement.setString(1, keycloakUserId)
-                statement.setTimestamp(2, Timestamp.from(deletedAt))
+                statement.setObject(2, playerId)
+                statement.setTimestamp(3, Timestamp.from(deletedAt))
                 statement.executeUpdate()
             }
     }
+
+    private fun findTombstonedPlayerId(connection: Connection, keycloakUserId: String): UUID? =
+        connection
+            .prepareStatement(
+                "SELECT player_id FROM permission_player_identity_tombstones WHERE keycloak_user_id = ?"
+            )
+            .use { statement ->
+                statement.setString(1, keycloakUserId)
+                statement.executeQuery().use { rows ->
+                    if (rows.next()) rows.getObject("player_id", UUID::class.java) else null
+                }
+            }
+
+    private fun readEffectiveIdentities(connection: Connection): Map<UUID, EffectiveIdentity> =
+        connection
+            .prepareStatement(
+                """
+                SELECT identities.player_id,
+                       identities.keycloak_user_id,
+                       identities.minecraft_username,
+                       identities.minecraft_username_normalized,
+                       COALESCE(
+                           array_agg(groups.keycloak_group_path ORDER BY groups.keycloak_group_path)
+                               FILTER (WHERE groups.keycloak_group_path IS NOT NULL),
+                           ARRAY[]::text[]
+                       ) AS group_paths
+                FROM permission_player_identities identities
+                LEFT JOIN permission_player_keycloak_groups groups ON groups.player_id = identities.player_id
+                GROUP BY identities.player_id,
+                         identities.keycloak_user_id,
+                         identities.minecraft_username,
+                         identities.minecraft_username_normalized
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.executeQuery().use { rows ->
+                    buildMap {
+                        while (rows.next()) {
+                            val identity = rows.toEffectiveIdentity()
+                            put(identity.playerId, identity)
+                        }
+                    }
+                }
+            }
+
+    private fun projectionChanges(
+        before: Map<UUID, EffectiveIdentity>,
+        after: Map<UUID, EffectiveIdentity>,
+    ): IdentityProjectionChanges =
+        IdentityProjectionChanges(
+            (before.keys + after.keys).filterTo(mutableSetOf()) { playerId ->
+                before[playerId] != after[playerId]
+            }
+        )
 
     private fun deleteRelinkedIdentity(connection: Connection, identity: ProjectedPlayerIdentity) {
         connection
@@ -805,6 +884,16 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
             sourceUpdatedAt = getTimestamp("source_updated_at")?.toInstant(),
         )
 
+    private fun ResultSet.toEffectiveIdentity() =
+        EffectiveIdentity(
+            playerId = getObject("player_id", UUID::class.java),
+            keycloakUserId = getString("keycloak_user_id"),
+            minecraftUsername = getString("minecraft_username"),
+            normalizedUsername = getString("minecraft_username_normalized"),
+            groupPaths =
+                (getArray("group_paths").array as Array<*>).filterIsInstance<String>().toSet(),
+        )
+
     private fun ResultSet.toSearchItem() =
         PlayerSearchItem(
             playerId = getObject("player_id", UUID::class.java),
@@ -839,4 +928,12 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     }
 
     private data class SearchResult(val items: List<PlayerSearchItem>, val total: Long)
+
+    private data class EffectiveIdentity(
+        val playerId: UUID,
+        val keycloakUserId: String,
+        val minecraftUsername: String,
+        val normalizedUsername: String,
+        val groupPaths: Set<String>,
+    )
 }

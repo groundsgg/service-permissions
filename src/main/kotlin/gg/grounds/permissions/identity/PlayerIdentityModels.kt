@@ -21,6 +21,12 @@ data class ProjectedPlayerIdentity(
     val sourceUpdatedAt: Instant?,
 )
 
+data class IdentityProjectionChanges(val playerIds: Set<UUID>) {
+    companion object {
+        val NONE = IdentityProjectionChanges(emptySet())
+    }
+}
+
 data class PlayerSearchItem(
     val playerId: UUID,
     val minecraftUsername: String,
@@ -62,11 +68,17 @@ interface PlayerIdentityStore {
 
     fun search(query: String, page: Int, perPage: Int): PlayerSearchPage
 
-    fun replacePlayer(identity: ProjectedPlayerIdentity)
+    fun replacePlayer(identity: ProjectedPlayerIdentity): IdentityProjectionChanges
 
-    fun deleteByKeycloakUserId(keycloakUserId: String, deletedAt: Instant)
+    fun deleteByKeycloakUserId(
+        keycloakUserId: String,
+        deletedAt: Instant,
+    ): IdentityProjectionChanges
 
-    fun replaceAll(identities: List<ProjectedPlayerIdentity>, completedAt: Instant)
+    fun replaceAll(
+        identities: List<ProjectedPlayerIdentity>,
+        completedAt: Instant,
+    ): IdentityProjectionChanges
 
     fun markSyncRunning(startedAt: Instant)
 

@@ -1,8 +1,10 @@
 package gg.grounds.permissions.rest
 
 import gg.grounds.permissions.identity.IdentityRefreshOutcome
+import gg.grounds.permissions.identity.IdentityRefreshResult
 import gg.grounds.permissions.identity.IdentitySyncCoordinator
 import gg.grounds.permissions.identity.IdentitySyncOutcome
+import gg.grounds.permissions.identity.IdentitySyncResult
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.persistence.PermissionRepository
 import gg.grounds.permissions.persistence.PermissionsPostgresTestResource
@@ -60,7 +62,7 @@ class PermissionIdentitySyncResourceTest {
         doAnswer {
                 started.countDown()
                 check(releaseSync!!.await(5, TimeUnit.SECONDS))
-                IdentitySyncOutcome.COMPLETED
+                IdentitySyncResult(IdentitySyncOutcome.COMPLETED)
             }
             .whenever(coordinator)
             .synchronizeAll()
@@ -110,7 +112,8 @@ class PermissionIdentitySyncResourceTest {
                 sourceUpdatedAt = null,
             )
         )
-        whenever(coordinator.refreshPlayer(any())).thenReturn(IdentityRefreshOutcome.UPDATED)
+        whenever(coordinator.refreshPlayer(any()))
+            .thenReturn(IdentityRefreshResult(IdentityRefreshOutcome.UPDATED))
 
         given()
             .post("/v1/permissions/players/$playerId/identity-sync")
