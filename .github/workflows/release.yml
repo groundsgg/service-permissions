@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   metadata:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.meta.outputs.version }}
       ref: ${{ steps.meta.outputs.ref }}
@@ -65,7 +65,7 @@ jobs:
 
   image:
     needs: metadata
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
         with:
