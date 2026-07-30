@@ -8,4 +8,4 @@ on:
 
 jobs:
   reusable:
-    uses: groundsgg/.github/.github/workflows/gradle-ci.yml@main
+    uses: groundsgg/.github/.github/workflows/gradle-ci.yml@ci/rightsize-runners
