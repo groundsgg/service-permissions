@@ -207,7 +207,8 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "permission",
-                allowedSortKeys = listOf("permission", "effect", "scope", "expiration"),
+                allowedSortKeys =
+                    listOf("permission", "effect", "scope", "activation", "expiration"),
             )
         val result =
             repository.searchRoleGrantRecords(
@@ -294,15 +295,18 @@ constructor(
     private fun requireManage(headers: HttpHeaders): String =
         authorization.requireMinecraftPermissionsManage(identity, headers)
 
-    private fun GrantRequest.toRoleGrantRecord(roleKey: String, id: UUID): RoleGrantRecord =
-        RoleGrantRecord(
+    private fun GrantRequest.toRoleGrantRecord(roleKey: String, id: UUID): RoleGrantRecord {
+        PermissionValidation.validityWindow(startsAt, expiresAt)
+        return RoleGrantRecord(
             id = id,
             roleKey = roleKey,
             effect = requireNotNull(effect) { "effect must not be null" },
             pattern = PermissionValidation.permissionPattern(permissionPattern),
             scope = PermissionValidation.scope(scopeKind, scopeValue),
+            startsAt = startsAt,
             expiresAt = expiresAt,
         )
+    }
 }
 
 fun RoleRecord.toResponse(): RoleResponse =
@@ -342,12 +346,14 @@ fun RoleGrantRecord.toResponse(): RoleGrantResponse =
         permissionPattern = pattern,
         scopeKind = scope.kind,
         scopeValue = scope.value,
+        startsAt = startsAt,
         expiresAt = expiresAt,
     )
 
 fun PermissionScope.toGrantResponse(
     effect: gg.grounds.permissions.domain.PermissionEffect,
     pattern: String,
+    startsAt: java.time.Instant?,
     expiresAt: java.time.Instant?,
     origin: gg.grounds.permissions.domain.PermissionGrantOrigin,
 ): EffectiveGrantResponse =
@@ -356,6 +362,7 @@ fun PermissionScope.toGrantResponse(
         permissionPattern = pattern,
         scopeKind = kind,
         scopeValue = value,
+        startsAt = startsAt,
         expiresAt = expiresAt,
         source = origin.kind,
         grantId = origin.grantId,

@@ -3,6 +3,7 @@ package gg.grounds.permissions.rest
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
 import java.text.Normalizer
+import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 
@@ -67,6 +68,12 @@ object PermissionValidation {
             require(value != null) { "scopeValue is required for ${kind.name} scope" }
         }
         return PermissionScope(kind, value)
+    }
+
+    fun validityWindow(startsAt: Instant?, expiresAt: Instant?) {
+        require(startsAt == null || expiresAt == null || startsAt.isBefore(expiresAt)) {
+            "startsAt must be before expiresAt"
+        }
     }
 
     private fun required(value: String?, fieldName: String): String {

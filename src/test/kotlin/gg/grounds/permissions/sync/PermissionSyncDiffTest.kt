@@ -67,6 +67,12 @@ class PermissionSyncDiffTest {
                         }
                 ),
                 original.copy(
+                    roleGrants =
+                        original.roleGrants.map {
+                            it.copy(startsAt = Instant.parse("2029-01-01T00:00:00Z"))
+                        }
+                ),
+                original.copy(
                     inheritance =
                         listOf(SyncInheritance(parentRoleKey = "admin", childRoleKey = "guest"))
                 ),
@@ -77,6 +83,12 @@ class PermissionSyncDiffTest {
                     keycloakMappings =
                         original.keycloakMappings.map {
                             it.copy(expiresAt = Instant.parse("2031-01-01T00:00:00Z"))
+                        }
+                ),
+                original.copy(
+                    keycloakMappings =
+                        original.keycloakMappings.map {
+                            it.copy(startsAt = Instant.parse("2029-01-01T00:00:00Z"))
                         }
                 ),
             )
@@ -362,6 +374,61 @@ class PermissionSyncDiffTest {
             emptyList<SyncChange>(),
             serviceFor(" ").preview(compatibleSnapshot("prod")).changes,
         )
+    }
+
+    @Test
+    fun previewRejectsInvalidRoleGrantValidityWindows() {
+        val snapshot =
+            compatibleSnapshot("prod")
+                .copy(
+                    roleGrants =
+                        listOf(
+                            SyncRoleGrant(
+                                id = UUID.fromString("00000000-0000-0000-0000-000000000091"),
+                                roleKey = "staff",
+                                effect = PermissionEffect.ALLOW,
+                                permissionPattern = "grounds.command.staff",
+                                scopeKind = PermissionScopeKind.GLOBAL,
+                                startsAt = Instant.parse("2030-01-01T00:00:00Z"),
+                                expiresAt = Instant.parse("2030-01-01T00:00:00Z"),
+                            )
+                        )
+                )
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) { serviceFor(" ").preview(snapshot) }
+
+        assertEquals("startsAt must be before expiresAt", error.message)
+    }
+
+    @Test
+    fun importRejectsInvalidKeycloakMappingValidityWindows() {
+        val snapshot =
+            compatibleSnapshot("prod")
+                .copy(
+                    keycloakMappings =
+                        listOf(
+                            SyncKeycloakMapping(
+                                id = UUID.fromString("00000000-0000-0000-0000-000000000092"),
+                                keycloakGroup = "/staff",
+                                roleKey = "staff",
+                                startsAt = Instant.parse("2031-01-01T00:00:00Z"),
+                                expiresAt = Instant.parse("2030-01-01T00:00:00Z"),
+                            )
+                        )
+                )
+        val request =
+            PermissionSyncImportRequest(
+                snapshot = snapshot,
+                expectedTargetFingerprint = "reviewed-target",
+            )
+
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                serviceFor(" ").import(request, "admin-user")
+            }
+
+        assertEquals("startsAt must be before expiresAt", error.message)
     }
 
     @Test

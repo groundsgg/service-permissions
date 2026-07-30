@@ -93,7 +93,7 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "role",
-                allowedSortKeys = listOf("role", "source", "expiration"),
+                allowedSortKeys = listOf("role", "source", "activation", "expiration"),
             )
         val rows =
             playerRoleRows(id).filter { it.matches(search.query) }.sortedWith(search.comparator())
@@ -121,11 +121,13 @@ constructor(
     ): Response {
         val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
+        PermissionValidation.validityWindow(request.startsAt, request.expiresAt)
         val grant =
             PlayerRoleGrantRecord(
                 id = UUID.randomUUID(),
                 playerId = id,
                 roleKey = PermissionValidation.roleKey(request.roleKey),
+                startsAt = request.startsAt,
                 expiresAt = request.expiresAt,
             )
         return Response.status(Response.Status.CREATED)
@@ -145,11 +147,13 @@ constructor(
         val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
+        PermissionValidation.validityWindow(request.startsAt, request.expiresAt)
         val grant =
             PlayerRoleGrantRecord(
                 id = parsedGrantId,
                 playerId = id,
                 roleKey = PermissionValidation.roleKey(request.roleKey),
+                startsAt = request.startsAt,
                 expiresAt = request.expiresAt,
             )
         return repository.updatePlayerRoleGrant(actor, id, parsedGrantId, grant).toResponse()
@@ -209,7 +213,8 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "permission",
-                allowedSortKeys = listOf("permission", "effect", "scope", "expiration"),
+                allowedSortKeys =
+                    listOf("permission", "effect", "scope", "activation", "expiration"),
             )
         val result =
             repository.searchPlayerGrantRecords(
@@ -362,7 +367,8 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "permission",
-                allowedSortKeys = listOf("permission", "effect", "scope", "source", "expiration"),
+                allowedSortKeys =
+                    listOf("permission", "effect", "scope", "source", "activation", "expiration"),
             )
         val requestedEffect = effect?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "ALL"
         require(requestedEffect in setOf("ALL", "ALLOW", "DENY")) {
@@ -466,13 +472,12 @@ constructor(
         )
 
     private fun PermissionGrant.toResponse(): EffectiveGrantResponse =
-        scope.toGrantResponse(effect, pattern, expiresAt, origin)
+        scope.toGrantResponse(effect, pattern, startsAt, expiresAt, origin)
 
     private fun playerRoleRows(playerId: UUID): List<PlayerEffectiveRoleResponse> {
         val directGrants = repository.listPlayerRoleGrantRecords(playerId)
         val directGrantsById = directGrants.associateBy { it.id }
-        val mappingExpirations =
-            repository.listKeycloakGroupMappings().associateBy({ it.id }, { it.expiresAt })
+        val mappings = repository.listKeycloakGroupMappings().associateBy { it.id }
         val roles = repository.listRoles().associateBy { it.key }
         val snapshot = snapshotFor(playerId, null, null)
         val directRows =
@@ -482,6 +487,7 @@ constructor(
                     roleKey = grant.roleKey,
                     roleName = roles[grant.roleKey]?.name ?: grant.roleKey,
                     source = PermissionGrantOriginKind.DIRECT_ROLE,
+                    startsAt = grant.startsAt,
                     expiresAt = grant.expiresAt,
                     editable = true,
                     directGrant = grant.toResponse(),
@@ -528,9 +534,12 @@ constructor(
                         roleKey = first.roleKey,
                         roleName = roles[first.roleKey]?.name ?: first.roleKey,
                         source = first.origin.kind,
+                        startsAt =
+                            first.origin.grantId?.let { directGrantsById[it]?.startsAt }
+                                ?: first.origin.mappingId?.let { mappings[it]?.startsAt },
                         expiresAt =
                             first.origin.grantId?.let { directGrantsById[it]?.expiresAt }
-                                ?: first.origin.mappingId?.let { mappingExpirations[it] },
+                                ?: first.origin.mappingId?.let { mappings[it]?.expiresAt },
                         editable = false,
                         directGrant = null,
                         inherited = assignments.any { it.origin.inheritedPath.isNotEmpty() },
@@ -574,6 +583,7 @@ constructor(
                 when (sortBy) {
                     "role" -> left.roleName.compareTo(right.roleName, ignoreCase = true) * direction
                     "source" -> left.source.name.compareTo(right.source.name) * direction
+                    "activation" -> compareNullable(left.startsAt, right.startsAt, direction)
                     "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
                     else -> error("Unsupported sort key (sortBy=$sortBy)")
                 }
@@ -596,6 +606,7 @@ constructor(
                         }
                     }
                     "source" -> left.origin.kind.name.compareTo(right.origin.kind.name) * direction
+                    "activation" -> compareNullable(left.startsAt, right.startsAt, direction)
                     "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
                     else -> error("Unsupported sort key (sortBy=$sortBy)")
                 }
@@ -647,19 +658,28 @@ constructor(
     private fun requireManage(headers: HttpHeaders): String =
         authorization.requireMinecraftPermissionsManage(identity, headers)
 
-    private fun GrantRequest.toPlayerGrantRecord(playerId: UUID, grantId: UUID): PlayerGrantRecord =
-        PlayerGrantRecord(
+    private fun GrantRequest.toPlayerGrantRecord(playerId: UUID, grantId: UUID): PlayerGrantRecord {
+        PermissionValidation.validityWindow(startsAt, expiresAt)
+        return PlayerGrantRecord(
             id = grantId,
             playerId = playerId,
             effect = requireNotNull(effect) { "effect must not be null" },
             pattern = PermissionValidation.permissionPattern(permissionPattern),
             scope = PermissionValidation.scope(scopeKind, scopeValue),
+            startsAt = startsAt,
             expiresAt = expiresAt,
         )
+    }
 }
 
 fun PlayerRoleGrantRecord.toResponse(): PlayerRoleGrantResponse =
-    PlayerRoleGrantResponse(id = id, playerId = playerId, roleKey = roleKey, expiresAt = expiresAt)
+    PlayerRoleGrantResponse(
+        id = id,
+        playerId = playerId,
+        roleKey = roleKey,
+        startsAt = startsAt,
+        expiresAt = expiresAt,
+    )
 
 fun PlayerGrantRecord.toResponse(): PlayerGrantResponse =
     PlayerGrantResponse(
@@ -669,5 +689,6 @@ fun PlayerGrantRecord.toResponse(): PlayerGrantResponse =
         permissionPattern = pattern,
         scopeKind = scope.kind,
         scopeValue = scope.value,
+        startsAt = startsAt,
         expiresAt = expiresAt,
     )

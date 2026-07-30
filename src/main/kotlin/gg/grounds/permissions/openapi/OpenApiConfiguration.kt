@@ -331,13 +331,15 @@ class PermissionsOpenApiFilter : OASFilter {
 
         val SORT_BY_VALUES =
             mapOf(
-                "searchRoleGrants" to listOf("permission", "effect", "scope", "expiration"),
-                "searchPlayerRoles" to listOf("role", "source", "expiration"),
-                "searchPlayerGrants" to listOf("permission", "effect", "scope", "expiration"),
+                "searchRoleGrants" to
+                    listOf("permission", "effect", "scope", "activation", "expiration"),
+                "searchPlayerRoles" to listOf("role", "source", "activation", "expiration"),
+                "searchPlayerGrants" to
+                    listOf("permission", "effect", "scope", "activation", "expiration"),
                 "searchEffectivePlayerPermissions" to
-                    listOf("permission", "effect", "scope", "source", "expiration"),
+                    listOf("permission", "effect", "scope", "source", "activation", "expiration"),
                 "searchPermissionCatalog" to listOf("permission", "label", "source", "lastseen"),
-                "searchKeycloakGroupMappings" to listOf("group", "role", "expiration"),
+                "searchKeycloakGroupMappings" to listOf("group", "role", "activation", "expiration"),
             )
 
         val COMMON_PROBLEM_RESPONSES =

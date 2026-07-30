@@ -73,6 +73,18 @@ constructor(
         if (snapshot.sourceEnvironment != expectedSourceEnvironment()) {
             throw PermissionSyncConflictException(PermissionSyncConflictReason.INCOMPATIBLE_SOURCE)
         }
+        snapshot.validateValidityWindows()
+    }
+
+    private fun GlobalPermissionSnapshot.validateValidityWindows() {
+        roleGrants.forEach { validateValidityWindow(it.startsAt, it.expiresAt) }
+        keycloakMappings.orEmpty().forEach { validateValidityWindow(it.startsAt, it.expiresAt) }
+    }
+
+    private fun validateValidityWindow(startsAt: Instant?, expiresAt: Instant?) {
+        require(startsAt == null || expiresAt == null || startsAt.isBefore(expiresAt)) {
+            "startsAt must be before expiresAt"
+        }
     }
 
     private fun sourceEnvironment(): String =

@@ -118,6 +118,7 @@ class PermissionRestResourceTest {
                   "permissionPattern": "grounds.command.moderate",
                   "scopeKind": "SERVER_TYPE",
                   "scopeValue": "paper",
+                  "startsAt": "2029-01-01T00:00:00Z",
                   "expiresAt": "2030-01-01T00:00:00Z"
                 }
                 """
@@ -129,6 +130,18 @@ class PermissionRestResourceTest {
             .body("roleKey", equalTo("moderator"))
             .body("permissionPattern", equalTo("grounds.command.moderate"))
             .body("scopeKind", equalTo("SERVER_TYPE"))
+            .body("startsAt", equalTo("2029-01-01T00:00:00Z"))
+
+        given()
+            .contentType("application/json")
+            .body(
+                """{"effect":"ALLOW","permissionPattern":"grounds.command.fly","startsAt":"2030-01-01T00:00:00Z","expiresAt":"2030-01-01T00:00:00Z"}"""
+            )
+            .post("/v1/permissions/roles/moderator/grants")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("invalid_validity_window"))
+            .body("detail", equalTo("startsAt must be before expiresAt"))
 
         given()
             .get("/v1/permissions/roles")
@@ -199,6 +212,17 @@ class PermissionRestResourceTest {
                 PermissionEffect.ALLOW,
                 "grounds.command.fly",
                 PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper network"),
+                startsAt = Instant.parse("2021-01-01T00:00:00Z"),
+            )
+        )
+        repository.createRoleGrant(
+            RoleGrantRecord(
+                UUID.fromString("00000000-0000-0000-0000-000000000322"),
+                "moderator",
+                PermissionEffect.ALLOW,
+                "grounds.command.warn",
+                PermissionScope(PermissionScopeKind.GLOBAL),
+                startsAt = Instant.parse("2022-01-01T00:00:00Z"),
             )
         )
 
@@ -211,6 +235,14 @@ class PermissionRestResourceTest {
             .body("perPage", equalTo(20))
             .body("total", equalTo(1))
             .body("items[0].permissionPattern", equalTo("grounds.command.fly"))
+
+        assertSearchOrder(
+            "/v1/permissions/roles/moderator/grants/search",
+            "activation",
+            "asc",
+            "items.permissionPattern",
+            listOf("grounds.command.fly", "grounds.command.warn"),
+        )
     }
 
     @Test
@@ -222,6 +254,7 @@ class PermissionRestResourceTest {
                 UUID.fromString("00000000-0000-0000-0000-000000000331"),
                 "/staff/builders",
                 "builder",
+                startsAt = Instant.parse("2021-01-01T00:00:00Z"),
             )
         )
         repository.createKeycloakGroupMapping(
@@ -229,6 +262,7 @@ class PermissionRestResourceTest {
                 UUID.fromString("00000000-0000-0000-0000-000000000332"),
                 "/staff/moderators",
                 "moderator",
+                startsAt = Instant.parse("2022-01-01T00:00:00Z"),
             )
         )
 
@@ -243,6 +277,14 @@ class PermissionRestResourceTest {
             .body("total", equalTo(2))
             .body("items", hasSize<Any>(1))
             .body("items[0].keycloakGroup", equalTo("/staff/builders"))
+
+        assertSearchOrder(
+            "/v1/permissions/keycloak-groups/search",
+            "activation",
+            "asc",
+            "items.keycloakGroup",
+            listOf("/staff/builders", "/staff/moderators"),
+        )
     }
 
     @Test
@@ -562,7 +604,8 @@ class PermissionRestResourceTest {
                 UUID.fromString("00000000-0000-0000-0000-000000000431"),
                 playerId,
                 "direct",
-                Instant.parse("2031-01-01T00:00:00Z"),
+                expiresAt = Instant.parse("2031-01-01T00:00:00Z"),
+                startsAt = Instant.parse("2022-01-01T00:00:00Z"),
             )
         )
         repository.createKeycloakGroupMapping(
@@ -570,7 +613,8 @@ class PermissionRestResourceTest {
                 UUID.fromString("00000000-0000-0000-0000-000000000432"),
                 "/mapped",
                 "mapped",
-                Instant.parse("2030-01-01T00:00:00Z"),
+                expiresAt = Instant.parse("2030-01-01T00:00:00Z"),
+                startsAt = Instant.parse("2021-01-01T00:00:00Z"),
             )
         )
         val syncedAt = Instant.now()
@@ -598,6 +642,13 @@ class PermissionRestResourceTest {
         assertSearchOrder(
             endpoint,
             "role",
+            "asc",
+            "items.roleKey",
+            listOf("mapped", "direct", "default"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "activation",
             "asc",
             "items.roleKey",
             listOf("mapped", "direct", "default"),
@@ -649,7 +700,8 @@ class PermissionRestResourceTest {
                     PermissionEffect.ALLOW,
                     "grounds.command.zeta",
                     PermissionScope(PermissionScopeKind.GLOBAL),
-                    Instant.parse("2031-01-01T00:00:00Z"),
+                    expiresAt = Instant.parse("2031-01-01T00:00:00Z"),
+                    startsAt = Instant.parse("2022-01-01T00:00:00Z"),
                 ),
                 PlayerGrantRecord(
                     UUID.fromString("00000000-0000-0000-0000-000000000442"),
@@ -664,7 +716,8 @@ class PermissionRestResourceTest {
                     PermissionEffect.ALLOW,
                     "grounds.command.middle",
                     PermissionScope(PermissionScopeKind.SERVER, "lobby"),
-                    Instant.parse("2030-01-01T00:00:00Z"),
+                    expiresAt = Instant.parse("2030-01-01T00:00:00Z"),
+                    startsAt = Instant.parse("2021-01-01T00:00:00Z"),
                 ),
             )
             .forEach(repository::createPlayerGrant)
@@ -731,6 +784,13 @@ class PermissionRestResourceTest {
         )
         assertSearchOrder(
             endpoint,
+            "activation",
+            "asc",
+            itemPath,
+            listOf("grounds.command.middle", "grounds.command.zeta", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
             "expiration",
             "desc",
             itemPath,
@@ -757,6 +817,7 @@ class PermissionRestResourceTest {
                 PermissionEffect.ALLOW,
                 "grounds.command.alpha",
                 PermissionScope(PermissionScopeKind.GLOBAL),
+                startsAt = Instant.parse("2020-01-01T00:00:00Z"),
             )
         )
         repository.createRoleGrant(
@@ -766,7 +827,8 @@ class PermissionRestResourceTest {
                 PermissionEffect.DENY,
                 "grounds.command.middle",
                 PermissionScope(PermissionScopeKind.SERVER, "lobby"),
-                Instant.parse("2030-01-01T00:00:00Z"),
+                expiresAt = Instant.parse("2030-01-01T00:00:00Z"),
+                startsAt = Instant.parse("2021-01-01T00:00:00Z"),
             )
         )
         repository.createPlayerGrant(
@@ -776,7 +838,8 @@ class PermissionRestResourceTest {
                 PermissionEffect.DENY,
                 "grounds.command.zeta",
                 PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper"),
-                Instant.parse("2032-01-01T00:00:00Z"),
+                expiresAt = Instant.parse("2032-01-01T00:00:00Z"),
+                startsAt = Instant.parse("2022-01-01T00:00:00Z"),
             )
         )
 
@@ -819,6 +882,13 @@ class PermissionRestResourceTest {
             "desc",
             itemPath,
             listOf("grounds.command.middle", "grounds.command.zeta", "grounds.command.alpha"),
+        )
+        assertSearchOrder(
+            endpoint,
+            "activation",
+            "asc",
+            itemPath,
+            listOf("grounds.command.alpha", "grounds.command.middle", "grounds.command.zeta"),
         )
         assertSearchOrder(
             endpoint,
@@ -869,15 +939,15 @@ class PermissionRestResourceTest {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000134")
         assertSearchValidation(
             "/v1/permissions/players/$playerId/roles/search",
-            "sortBy must be one of: role, source, expiration",
+            "sortBy must be one of: role, source, activation, expiration",
         )
         assertSearchValidation(
             "/v1/permissions/players/$playerId/grants/search",
-            "sortBy must be one of: permission, effect, scope, expiration",
+            "sortBy must be one of: permission, effect, scope, activation, expiration",
         )
         assertSearchValidation(
             "/v1/permissions/players/$playerId/effective/search",
-            "sortBy must be one of: permission, effect, scope, source, expiration",
+            "sortBy must be one of: permission, effect, scope, source, activation, expiration",
         )
     }
 
@@ -963,7 +1033,7 @@ class PermissionRestResourceTest {
         given()
             .contentType("application/json")
             .body(
-                """{"effect":"ALLOW","permissionPattern":"grounds.command.fly","scopeKind":"GLOBAL"}"""
+                """{"effect":"ALLOW","permissionPattern":"grounds.command.fly","scopeKind":"GLOBAL","startsAt":"2029-01-01T00:00:00Z"}"""
             )
             .post("/v1/permissions/players/$playerId/grants")
             .then()
@@ -978,6 +1048,7 @@ class PermissionRestResourceTest {
             .body("items[0].action", equalTo("player.grant.created"))
             .body("items[0].metadata.playerId", equalTo(playerId))
             .body("items[0].metadata.permissionPattern", equalTo("grounds.command.fly"))
+            .body("items[0].metadata.startsAt", equalTo("2029-01-01T00:00:00Z"))
     }
 
     @Test
@@ -1121,7 +1192,9 @@ class PermissionRestResourceTest {
 
         given()
             .contentType("application/json")
-            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .body(
+                """{"keycloakGroup":"/staff","roleKey":"moderator","startsAt":"2029-01-01T00:00:00Z"}"""
+            )
             .post("/v1/permissions/keycloak-groups")
             .then()
             .statusCode(201)
@@ -1134,6 +1207,7 @@ class PermissionRestResourceTest {
             .body("items[0].actorUserId", equalTo("admin-user"))
             .body("items[0].metadata.keycloakGroup", equalTo("/staff"))
             .body("items[0].metadata.roleKey", equalTo("moderator"))
+            .body("items[0].metadata.startsAt", equalTo("2029-01-01T00:00:00Z"))
     }
 
     @Test
@@ -1706,11 +1780,14 @@ class PermissionRestResourceTest {
         val playerRoleGrantId =
             given()
                 .contentType("application/json")
-                .body("""{"roleKey":"moderator","expiresAt":"2030-01-01T00:00:00Z"}""")
+                .body(
+                    """{"roleKey":"moderator","startsAt":"2025-01-01T00:00:00Z","expiresAt":"2030-01-01T00:00:00Z"}"""
+                )
                 .post("/v1/permissions/players/00000000-0000-0000-0000-000000000123/roles")
                 .then()
                 .statusCode(201)
                 .body("roleKey", equalTo("moderator"))
+                .body("startsAt", equalTo("2025-01-01T00:00:00Z"))
                 .extract()
                 .path<String>("id")
 
@@ -1732,7 +1809,8 @@ class PermissionRestResourceTest {
                     {
                       "effect": "DENY",
                       "permissionPattern": "grounds.command.op",
-                      "scopeKind": "GLOBAL"
+                      "scopeKind": "GLOBAL",
+                      "startsAt": "2025-02-01T00:00:00Z"
                     }
                     """
                         .trimIndent()
@@ -1741,16 +1819,20 @@ class PermissionRestResourceTest {
                 .then()
                 .statusCode(201)
                 .body("permissionPattern", equalTo("grounds.command.op"))
+                .body("startsAt", equalTo("2025-02-01T00:00:00Z"))
                 .extract()
                 .path<String>("id")
 
         given()
             .contentType("application/json")
-            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .body(
+                """{"keycloakGroup":"/staff","roleKey":"moderator","startsAt":"2025-03-01T00:00:00Z"}"""
+            )
             .post("/v1/permissions/keycloak-groups")
             .then()
             .statusCode(201)
             .body("keycloakGroup", equalTo("/staff"))
+            .body("startsAt", equalTo("2025-03-01T00:00:00Z"))
         given().put("/v1/permissions/roles/moderator/inherits/default").then().statusCode(204)
 
         val syncedAt = Instant.now()

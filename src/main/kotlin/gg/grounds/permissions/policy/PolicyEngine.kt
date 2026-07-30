@@ -65,12 +65,9 @@ object PolicyEngine {
         val rolesByKey = input.roles.toRoleMap()
         validateRoleGraph(input.roles.map { it.key }, rolesByKey)
 
-        val includedPlayerRoleGrants =
-            input.playerRoles
-                .asSequence()
-                .filter { it.playerId == playerId }
-                .filterNot { it.isExpired(now) }
-                .toList()
+        val matchingPlayerRoleGrants =
+            input.playerRoles.asSequence().filter { it.playerId == playerId }.toList()
+        val includedPlayerRoleGrants = matchingPlayerRoleGrants.filter { it.isActive(now) }
         val roleAssignments =
             input.roles
                 .filter { it.isDefault }
@@ -100,25 +97,23 @@ object PolicyEngine {
 
         val resolvedRoles = resolveRoles(roleAssignments, rolesByKey)
         val roleKeys = resolvedRoles.mapTo(linkedSetOf()) { it.roleKey }
-        val roleGrants =
+        val resolvedRoleGrants =
             resolvedRoles.flatMap { resolved ->
                 rolesByKey
                     .getValue(resolved.roleKey)
                     .grants
                     .asSequence()
-                    .filterNot { it.isExpired(now) }
                     .map { grant -> grant to resolved.origin }
                     .toList()
             }
+        val roleGrants = resolvedRoleGrants.filter { (grant) -> grant.isActive(now) }
         val effectiveRoleGrants =
             roleGrants.map { (grant, origin) -> grant.toGrant(PermissionGrantSource.ROLE, origin) }
-        val includedPlayerGrants =
-            input.playerGrants
-                .asSequence()
-                .filter { it.playerId == playerId }
-                .filterNot { it.isExpired(now) }
-                .filterNot { it.grant.isExpired(now) }
-                .toList()
+        val matchingPlayerGrants =
+            input.playerGrants.asSequence().filter { it.playerId == playerId }.toList()
+        val activePlayerGrantAssignments =
+            matchingPlayerGrants.filter { it.isAssignmentActive(now) }
+        val includedPlayerGrants = activePlayerGrantAssignments.filter { it.grant.isActive(now) }
         val playerGrants =
             includedPlayerGrants.map {
                 it.grant.toGrant(
@@ -135,7 +130,14 @@ object PolicyEngine {
             playerId = playerId,
             policyVersion = input.policyVersion,
             issuedAt = now,
-            refreshAfter = input.refreshAfter,
+            refreshAfter =
+                earliestOf(
+                    listOf(input.refreshAfter) +
+                        matchingPlayerRoleGrants.mapNotNull { it.futureStartAfter(now) } +
+                        resolvedRoleGrants.mapNotNull { it.first.futureStartAfter(now) } +
+                        matchingPlayerGrants.mapNotNull { it.futureAssignmentStartAfter(now) } +
+                        activePlayerGrantAssignments.mapNotNull { it.grant.futureStartAfter(now) }
+                ),
             expiresAt =
                 earliestOf(
                     listOf(input.expiresAt) +
@@ -305,14 +307,26 @@ object PolicyEngine {
             PermissionScopeKind.SERVER -> if (value == scope.server) 3 else null
         }
 
-    private fun PermissionGrantSpec.isExpired(now: Instant): Boolean =
-        expiresAt?.let { !it.isAfter(now) } ?: false
+    private fun PermissionGrantSpec.isActive(now: Instant): Boolean =
+        isActive(startsAt, expiresAt, now)
 
-    private fun PlayerPermissionGrant.isExpired(now: Instant): Boolean =
-        assignmentExpiresAt?.let { !it.isAfter(now) } ?: false
+    private fun PlayerPermissionGrant.isAssignmentActive(now: Instant): Boolean =
+        isActive(assignmentStartsAt, assignmentExpiresAt, now)
 
-    private fun PlayerRoleGrant.isExpired(now: Instant): Boolean =
-        expiresAt?.let { !it.isAfter(now) } ?: false
+    private fun PlayerRoleGrant.isActive(now: Instant): Boolean = isActive(startsAt, expiresAt, now)
+
+    private fun isActive(startsAt: Instant?, expiresAt: Instant?, now: Instant): Boolean =
+        (startsAt == null || !startsAt.isAfter(now)) &&
+            (expiresAt == null || expiresAt.isAfter(now))
+
+    private fun PermissionGrantSpec.futureStartAfter(now: Instant): Instant? =
+        startsAt?.takeIf { it.isAfter(now) }
+
+    private fun PlayerPermissionGrant.futureAssignmentStartAfter(now: Instant): Instant? =
+        assignmentStartsAt?.takeIf { it.isAfter(now) }
+
+    private fun PlayerRoleGrant.futureStartAfter(now: Instant): Instant? =
+        startsAt?.takeIf { it.isAfter(now) }
 
     private fun PermissionGrantSpec.toGrant(
         source: PermissionGrantSource,
@@ -323,6 +337,7 @@ object PolicyEngine {
             pattern = pattern,
             scope = scope,
             source = source,
+            startsAt = startsAt,
             expiresAt = expiresAt,
             origin = origin.copy(permissionGrantId = permissionGrantId),
         )

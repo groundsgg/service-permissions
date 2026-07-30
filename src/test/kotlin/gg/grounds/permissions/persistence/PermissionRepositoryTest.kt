@@ -397,6 +397,7 @@ class PermissionRepositoryTest {
         val playerRoleGrantId = UUID.fromString("00000000-0000-0000-0000-000000000202")
         val groupMappingId = UUID.fromString("00000000-0000-0000-0000-000000000203")
         val roleGrantId = UUID.fromString("00000000-0000-0000-0000-000000000204")
+        val startsAt = Instant.parse("2029-01-01T00:00:00Z")
         val expiresAt = Instant.parse("2030-01-01T00:00:00Z")
 
         repository.createRole(
@@ -429,6 +430,7 @@ class PermissionRepositoryTest {
                 effect = PermissionEffect.ALLOW,
                 pattern = "grounds.command.moderate",
                 scope = PermissionScope(PermissionScopeKind.SERVER_TYPE, "paper"),
+                startsAt = startsAt,
                 expiresAt = expiresAt,
             ),
         )
@@ -438,6 +440,7 @@ class PermissionRepositoryTest {
                 id = playerRoleGrantId,
                 playerId = playerId,
                 roleKey = "moderator",
+                startsAt = startsAt,
                 expiresAt = expiresAt,
             ),
         )
@@ -449,6 +452,7 @@ class PermissionRepositoryTest {
                 effect = PermissionEffect.DENY,
                 pattern = "grounds.command.op",
                 scope = PermissionScope(PermissionScopeKind.GLOBAL),
+                startsAt = startsAt,
                 expiresAt = expiresAt,
             ),
         )
@@ -458,6 +462,7 @@ class PermissionRepositoryTest {
                 id = groupMappingId,
                 keycloakGroup = "/staff",
                 roleKey = "moderator",
+                startsAt = startsAt,
                 expiresAt = expiresAt,
             ),
         )
@@ -511,6 +516,10 @@ class PermissionRepositoryTest {
         )
         assertEquals(1, input.roles.single { it.key == "moderator" }.grants.size)
         assertEquals(
+            startsAt,
+            input.roles.single { it.key == "moderator" }.grants.single().startsAt,
+        )
+        assertEquals(
             2,
             input.playerRoles.count { it.playerId == playerId && it.roleKey == "moderator" },
         )
@@ -518,10 +527,23 @@ class PermissionRepositoryTest {
             input.playerRoles.any {
                 it.roleKey == "moderator" &&
                     it.assignmentSource == PermissionRoleAssignmentSource.GROUP_MAPPING &&
-                    it.mappingId == groupMappingId
+                    it.mappingId == groupMappingId &&
+                    it.startsAt == startsAt
+            }
+        )
+        assertTrue(
+            input.playerRoles.any {
+                it.roleKey == "moderator" &&
+                    it.assignmentSource == PermissionRoleAssignmentSource.DIRECT &&
+                    it.startsAt == startsAt
             }
         )
         assertEquals(1, input.playerGrants.count { it.playerId == playerId })
+        assertEquals(startsAt, input.playerGrants.single().assignmentStartsAt)
+        assertEquals(startsAt, input.playerGrants.single().grant.startsAt)
+        val projectSnapshot = repository.permissionProjectSnapshot()
+        assertEquals(startsAt, projectSnapshot.roleGrants.single().startsAt)
+        assertEquals(startsAt, projectSnapshot.keycloakMappings.single().startsAt)
         assertEquals(1, repository.listCatalogEntries().size)
     }
 
@@ -1450,7 +1472,14 @@ class PermissionRepositoryTest {
                 inheritance = emptyList(),
                 catalogEntries = emptyList(),
                 keycloakMappings =
-                    listOf(SyncKeycloakMapping(globalMappingId, "/staff", "moderator")),
+                    listOf(
+                        SyncKeycloakMapping(
+                            globalMappingId,
+                            "/staff",
+                            "moderator",
+                            startsAt = Instant.parse("2029-01-01T00:00:00Z"),
+                        )
+                    ),
             )
 
         repository.importPermissionSnapshot(
@@ -1467,7 +1496,9 @@ class PermissionRepositoryTest {
             actorUserId = "test-user",
         )
 
-        assertEquals(globalMappingId, repository.listKeycloakGroupMappings().single().id)
+        val importedMapping = repository.listKeycloakGroupMappings().single()
+        assertEquals(globalMappingId, importedMapping.id)
+        assertEquals(Instant.parse("2029-01-01T00:00:00Z"), importedMapping.startsAt)
     }
 
     @Test
