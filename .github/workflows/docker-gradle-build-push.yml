@@ -17,4 +17,4 @@ concurrency:
 
 jobs:
   reusable:
-    uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@ci/public-off-blacksmith
+    uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main
