@@ -118,6 +118,7 @@ class PermissionRestResourceTest {
                   "permissionPattern": "grounds.command.moderate",
                   "scopeKind": "SERVER_TYPE",
                   "scopeValue": "paper",
+                  "startsAt": "2029-01-01T00:00:00Z",
                   "expiresAt": "2030-01-01T00:00:00Z"
                 }
                 """
@@ -129,6 +130,17 @@ class PermissionRestResourceTest {
             .body("roleKey", equalTo("moderator"))
             .body("permissionPattern", equalTo("grounds.command.moderate"))
             .body("scopeKind", equalTo("SERVER_TYPE"))
+            .body("startsAt", equalTo("2029-01-01T00:00:00Z"))
+
+        given()
+            .contentType("application/json")
+            .body(
+                """{"effect":"ALLOW","permissionPattern":"grounds.command.fly","startsAt":"2030-01-01T00:00:00Z","expiresAt":"2030-01-01T00:00:00Z"}"""
+            )
+            .post("/v1/permissions/roles/moderator/grants")
+            .then()
+            .statusCode(400)
+            .body("error", equalTo("invalid_request"))
 
         given()
             .get("/v1/permissions/roles")
@@ -963,7 +975,7 @@ class PermissionRestResourceTest {
         given()
             .contentType("application/json")
             .body(
-                """{"effect":"ALLOW","permissionPattern":"grounds.command.fly","scopeKind":"GLOBAL"}"""
+                """{"effect":"ALLOW","permissionPattern":"grounds.command.fly","scopeKind":"GLOBAL","startsAt":"2029-01-01T00:00:00Z"}"""
             )
             .post("/v1/permissions/players/$playerId/grants")
             .then()
@@ -978,6 +990,7 @@ class PermissionRestResourceTest {
             .body("items[0].action", equalTo("player.grant.created"))
             .body("items[0].metadata.playerId", equalTo(playerId))
             .body("items[0].metadata.permissionPattern", equalTo("grounds.command.fly"))
+            .body("items[0].metadata.startsAt", equalTo("2029-01-01T00:00:00Z"))
     }
 
     @Test
@@ -1121,7 +1134,9 @@ class PermissionRestResourceTest {
 
         given()
             .contentType("application/json")
-            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .body(
+                """{"keycloakGroup":"/staff","roleKey":"moderator","startsAt":"2029-01-01T00:00:00Z"}"""
+            )
             .post("/v1/permissions/keycloak-groups")
             .then()
             .statusCode(201)
@@ -1134,6 +1149,7 @@ class PermissionRestResourceTest {
             .body("items[0].actorUserId", equalTo("admin-user"))
             .body("items[0].metadata.keycloakGroup", equalTo("/staff"))
             .body("items[0].metadata.roleKey", equalTo("moderator"))
+            .body("items[0].metadata.startsAt", equalTo("2029-01-01T00:00:00Z"))
     }
 
     @Test
@@ -1706,11 +1722,14 @@ class PermissionRestResourceTest {
         val playerRoleGrantId =
             given()
                 .contentType("application/json")
-                .body("""{"roleKey":"moderator","expiresAt":"2030-01-01T00:00:00Z"}""")
+                .body(
+                    """{"roleKey":"moderator","startsAt":"2025-01-01T00:00:00Z","expiresAt":"2030-01-01T00:00:00Z"}"""
+                )
                 .post("/v1/permissions/players/00000000-0000-0000-0000-000000000123/roles")
                 .then()
                 .statusCode(201)
                 .body("roleKey", equalTo("moderator"))
+                .body("startsAt", equalTo("2025-01-01T00:00:00Z"))
                 .extract()
                 .path<String>("id")
 
@@ -1732,7 +1751,8 @@ class PermissionRestResourceTest {
                     {
                       "effect": "DENY",
                       "permissionPattern": "grounds.command.op",
-                      "scopeKind": "GLOBAL"
+                      "scopeKind": "GLOBAL",
+                      "startsAt": "2025-02-01T00:00:00Z"
                     }
                     """
                         .trimIndent()
@@ -1741,16 +1761,20 @@ class PermissionRestResourceTest {
                 .then()
                 .statusCode(201)
                 .body("permissionPattern", equalTo("grounds.command.op"))
+                .body("startsAt", equalTo("2025-02-01T00:00:00Z"))
                 .extract()
                 .path<String>("id")
 
         given()
             .contentType("application/json")
-            .body("""{"keycloakGroup":"/staff","roleKey":"moderator"}""")
+            .body(
+                """{"keycloakGroup":"/staff","roleKey":"moderator","startsAt":"2025-03-01T00:00:00Z"}"""
+            )
             .post("/v1/permissions/keycloak-groups")
             .then()
             .statusCode(201)
             .body("keycloakGroup", equalTo("/staff"))
+            .body("startsAt", equalTo("2025-03-01T00:00:00Z"))
         given().put("/v1/permissions/roles/moderator/inherits/default").then().statusCode(204)
 
         val syncedAt = Instant.now()

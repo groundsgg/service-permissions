@@ -28,6 +28,7 @@ data class SyncRoleGrant(
     val scopeKind: PermissionScopeKind,
     val scopeValue: String? = null,
     val expiresAt: Instant? = null,
+    val startsAt: Instant? = null,
 )
 
 @Schema(description = "Parent-child role inheritance edge contained in an environment snapshot.")
@@ -51,6 +52,7 @@ data class SyncKeycloakMapping(
     val keycloakGroup: String,
     val roleKey: String,
     val expiresAt: Instant? = null,
+    val startsAt: Instant? = null,
 )
 
 @Schema(description = "Rejected player-specific grant marker in a global environment snapshot.")

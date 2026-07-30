@@ -211,12 +211,7 @@ class PolicyEngineTest {
         assertFalse(hasPermission(beforeStart, "warp.use", PermissionCheckScope.global()))
         assertEquals(startsAt, beforeStart.refreshAfter)
         assertTrue(
-            hasPermission(
-                atStart,
-                "warp.use",
-                PermissionCheckScope.global(),
-                now = startsAt,
-            )
+            hasPermission(atStart, "warp.use", PermissionCheckScope.global(), now = startsAt)
         )
     }
 
@@ -261,10 +256,7 @@ class PolicyEngineTest {
             policy(
                 roles =
                     listOf(
-                        role(
-                            "member",
-                            grants = listOf(allowSpec("fly.use", startsAt = startsAt)),
-                        )
+                        role("member", grants = listOf(allowSpec("fly.use", startsAt = startsAt)))
                     ),
                 playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
             )
@@ -274,9 +266,7 @@ class PolicyEngineTest {
 
         assertFalse(hasPermission(beforeStart, "fly.use", PermissionCheckScope.global()))
         assertEquals(startsAt, beforeStart.refreshAfter)
-        assertTrue(
-            hasPermission(atStart, "fly.use", PermissionCheckScope.global(), now = startsAt)
-        )
+        assertTrue(hasPermission(atStart, "fly.use", PermissionCheckScope.global(), now = startsAt))
     }
 
     @Test

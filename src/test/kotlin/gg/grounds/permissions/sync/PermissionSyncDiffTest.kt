@@ -67,6 +67,12 @@ class PermissionSyncDiffTest {
                         }
                 ),
                 original.copy(
+                    roleGrants =
+                        original.roleGrants.map {
+                            it.copy(startsAt = Instant.parse("2029-01-01T00:00:00Z"))
+                        }
+                ),
+                original.copy(
                     inheritance =
                         listOf(SyncInheritance(parentRoleKey = "admin", childRoleKey = "guest"))
                 ),
@@ -77,6 +83,12 @@ class PermissionSyncDiffTest {
                     keycloakMappings =
                         original.keycloakMappings.map {
                             it.copy(expiresAt = Instant.parse("2031-01-01T00:00:00Z"))
+                        }
+                ),
+                original.copy(
+                    keycloakMappings =
+                        original.keycloakMappings.map {
+                            it.copy(startsAt = Instant.parse("2029-01-01T00:00:00Z"))
                         }
                 ),
             )

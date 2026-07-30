@@ -66,6 +66,7 @@ class PermissionSnapshotFingerprint @Inject constructor(private val objectMapper
                         put("permissionPattern", grant.permissionPattern)
                         put("scopeKind", grant.scopeKind.name)
                         putNullable("scopeValue", grant.scopeValue)
+                        putNullable("startsAt", grant.startsAt?.toString())
                         putNullable("expiresAt", grant.expiresAt?.toString())
                     }
                 )
@@ -114,6 +115,7 @@ class PermissionSnapshotFingerprint @Inject constructor(private val objectMapper
                         put("id", mapping.id.toString())
                         put("keycloakGroup", mapping.keycloakGroup)
                         put("roleKey", mapping.roleKey)
+                        putNullable("startsAt", mapping.startsAt?.toString())
                         putNullable("expiresAt", mapping.expiresAt?.toString())
                     }
                 )

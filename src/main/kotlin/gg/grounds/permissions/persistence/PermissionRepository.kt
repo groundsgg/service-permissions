@@ -71,6 +71,7 @@ data class RoleGrantRecord(
     val pattern: String,
     val scope: PermissionScope,
     val expiresAt: Instant? = null,
+    val startsAt: Instant? = null,
 )
 
 data class PlayerRoleGrantRecord(
@@ -78,6 +79,7 @@ data class PlayerRoleGrantRecord(
     val playerId: UUID,
     val roleKey: String,
     val expiresAt: Instant? = null,
+    val startsAt: Instant? = null,
 )
 
 data class PlayerGrantRecord(
@@ -87,6 +89,7 @@ data class PlayerGrantRecord(
     val pattern: String,
     val scope: PermissionScope,
     val expiresAt: Instant? = null,
+    val startsAt: Instant? = null,
 )
 
 data class KeycloakGroupMappingRecord(
@@ -94,6 +97,7 @@ data class KeycloakGroupMappingRecord(
     val keycloakGroup: String,
     val roleKey: String,
     val expiresAt: Instant? = null,
+    val startsAt: Instant? = null,
 )
 
 data class CatalogEntryRecord(
@@ -430,9 +434,10 @@ constructor(
                 .prepareStatement(
                     """
                     INSERT INTO permission_role_grants (
-                        id, role_key, effect, permission_pattern, scope_kind, scope_value, expires_at
+                        id, role_key, effect, permission_pattern, scope_kind, scope_value, starts_at,
+                        expires_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """
                         .trimIndent()
                 )
@@ -443,7 +448,8 @@ constructor(
                     statement.setString(4, grant.pattern)
                     statement.setString(5, grant.scope.kind.name)
                     statement.setString(6, grant.scope.value)
-                    statement.setTimestamp(7, grant.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(7, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(8, grant.expiresAt?.let(Timestamp::from))
                     statement.executeUpdate()
                 }
             grant
@@ -460,7 +466,8 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value, starts_at,
+                       expires_at
                 FROM permission_role_grants
                 WHERE role_key = ?
                 ORDER BY created_at ASC, id ASC
@@ -529,7 +536,7 @@ constructor(
                 .prepareStatement(
                     """
                     SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value,
-                           expires_at
+                           starts_at, expires_at
                     FROM permission_role_grants
                     WHERE role_key = ?
                       AND (
@@ -597,11 +604,13 @@ constructor(
                 .prepareStatement(
                     """
                     UPDATE permission_role_grants
-                    SET effect = ?, permission_pattern = ?, scope_kind = ?, scope_value = ?, expires_at = ?
+                    SET effect = ?, permission_pattern = ?, scope_kind = ?, scope_value = ?,
+                        starts_at = ?, expires_at = ?
                     WHERE id = ? AND role_key = ?
                       AND (
                           effect IS DISTINCT FROM ? OR permission_pattern IS DISTINCT FROM ? OR
                           scope_kind IS DISTINCT FROM ? OR scope_value IS DISTINCT FROM ? OR
+                          starts_at IS DISTINCT FROM ? OR
                           expires_at IS DISTINCT FROM ?
                       )
                     """
@@ -612,14 +621,16 @@ constructor(
                     statement.setString(2, grant.pattern)
                     statement.setString(3, grant.scope.kind.name)
                     statement.setString(4, grant.scope.value)
-                    statement.setTimestamp(5, grant.expiresAt?.let(Timestamp::from))
-                    statement.setObject(6, grantId)
-                    statement.setString(7, roleKey)
-                    statement.setString(8, grant.effect.name)
-                    statement.setString(9, grant.pattern)
-                    statement.setString(10, grant.scope.kind.name)
-                    statement.setString(11, grant.scope.value)
-                    statement.setTimestamp(12, grant.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(5, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(6, grant.expiresAt?.let(Timestamp::from))
+                    statement.setObject(7, grantId)
+                    statement.setString(8, roleKey)
+                    statement.setString(9, grant.effect.name)
+                    statement.setString(10, grant.pattern)
+                    statement.setString(11, grant.scope.kind.name)
+                    statement.setString(12, grant.scope.value)
+                    statement.setTimestamp(13, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(14, grant.expiresAt?.let(Timestamp::from))
                     val changed = statement.executeUpdate() > 0
                     require(
                         changed ||
@@ -675,8 +686,10 @@ constructor(
             connection
                 .prepareStatement(
                     """
-                    INSERT INTO permission_player_role_grants (id, player_id, role_key, expires_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO permission_player_role_grants (
+                        id, player_id, role_key, starts_at, expires_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
                     """
                         .trimIndent()
                 )
@@ -684,7 +697,8 @@ constructor(
                     statement.setObject(1, grant.id)
                     statement.setObject(2, grant.playerId)
                     statement.setString(3, grant.roleKey)
-                    statement.setTimestamp(4, grant.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(4, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(5, grant.expiresAt?.let(Timestamp::from))
                     statement.executeUpdate()
                 }
             grant
@@ -695,7 +709,7 @@ constructor(
             connection
                 .prepareStatement(
                     """
-                    SELECT id, player_id, role_key, expires_at
+                    SELECT id, player_id, role_key, starts_at, expires_at
                     FROM permission_player_role_grants
                     WHERE player_id = ?
                     ORDER BY created_at ASC, id ASC
@@ -712,6 +726,7 @@ constructor(
                                         id = rows.getObject("id", UUID::class.java),
                                         playerId = rows.getObject("player_id", UUID::class.java),
                                         roleKey = rows.getString("role_key"),
+                                        startsAt = rows.instantOrNull("starts_at"),
                                         expiresAt = rows.instantOrNull("expires_at"),
                                     )
                                 )
@@ -739,19 +754,24 @@ constructor(
                 .prepareStatement(
                     """
                     UPDATE permission_player_role_grants
-                    SET role_key = ?, expires_at = ?
+                    SET role_key = ?, starts_at = ?, expires_at = ?
                     WHERE id = ? AND player_id = ?
-                      AND (role_key IS DISTINCT FROM ? OR expires_at IS DISTINCT FROM ?)
+                      AND (
+                          role_key IS DISTINCT FROM ? OR starts_at IS DISTINCT FROM ? OR
+                          expires_at IS DISTINCT FROM ?
+                      )
                     """
                         .trimIndent()
                 )
                 .use { statement ->
                     statement.setString(1, grant.roleKey)
-                    statement.setTimestamp(2, grant.expiresAt?.let(Timestamp::from))
-                    statement.setObject(3, grantId)
-                    statement.setObject(4, playerId)
-                    statement.setString(5, grant.roleKey)
-                    statement.setTimestamp(6, grant.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(2, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(3, grant.expiresAt?.let(Timestamp::from))
+                    statement.setObject(4, grantId)
+                    statement.setObject(5, playerId)
+                    statement.setString(6, grant.roleKey)
+                    statement.setTimestamp(7, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(8, grant.expiresAt?.let(Timestamp::from))
                     val changed = statement.executeUpdate() > 0
                     require(
                         changed ||
@@ -805,9 +825,10 @@ constructor(
                 .prepareStatement(
                     """
                     INSERT INTO permission_player_grants (
-                        id, player_id, effect, permission_pattern, scope_kind, scope_value, expires_at
+                        id, player_id, effect, permission_pattern, scope_kind, scope_value, starts_at,
+                        expires_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """
                         .trimIndent()
                 )
@@ -818,7 +839,8 @@ constructor(
                     statement.setString(4, grant.pattern)
                     statement.setString(5, grant.scope.kind.name)
                     statement.setString(6, grant.scope.value)
-                    statement.setTimestamp(7, grant.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(7, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(8, grant.expiresAt?.let(Timestamp::from))
                     statement.executeUpdate()
                 }
             grant
@@ -828,7 +850,8 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value, starts_at,
+                       expires_at
                 FROM permission_player_grants
                 WHERE player_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -898,7 +921,7 @@ constructor(
                 .prepareStatement(
                     """
                     SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value,
-                           expires_at
+                           starts_at, expires_at
                     FROM permission_player_grants
                     WHERE player_id = ?
                       AND (
@@ -944,11 +967,13 @@ constructor(
                 .prepareStatement(
                     """
                     UPDATE permission_player_grants
-                    SET effect = ?, permission_pattern = ?, scope_kind = ?, scope_value = ?, expires_at = ?
+                    SET effect = ?, permission_pattern = ?, scope_kind = ?, scope_value = ?,
+                        starts_at = ?, expires_at = ?
                     WHERE id = ? AND player_id = ?
                       AND (
                           effect IS DISTINCT FROM ? OR permission_pattern IS DISTINCT FROM ? OR
                           scope_kind IS DISTINCT FROM ? OR scope_value IS DISTINCT FROM ? OR
+                          starts_at IS DISTINCT FROM ? OR
                           expires_at IS DISTINCT FROM ?
                       )
                     """
@@ -959,14 +984,16 @@ constructor(
                     statement.setString(2, grant.pattern)
                     statement.setString(3, grant.scope.kind.name)
                     statement.setString(4, grant.scope.value)
-                    statement.setTimestamp(5, grant.expiresAt?.let(Timestamp::from))
-                    statement.setObject(6, grantId)
-                    statement.setObject(7, playerId)
-                    statement.setString(8, grant.effect.name)
-                    statement.setString(9, grant.pattern)
-                    statement.setString(10, grant.scope.kind.name)
-                    statement.setString(11, grant.scope.value)
-                    statement.setTimestamp(12, grant.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(5, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(6, grant.expiresAt?.let(Timestamp::from))
+                    statement.setObject(7, grantId)
+                    statement.setObject(8, playerId)
+                    statement.setString(9, grant.effect.name)
+                    statement.setString(10, grant.pattern)
+                    statement.setString(11, grant.scope.kind.name)
+                    statement.setString(12, grant.scope.value)
+                    statement.setTimestamp(13, grant.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(14, grant.expiresAt?.let(Timestamp::from))
                     val changed = statement.executeUpdate() > 0
                     require(
                         changed ||
@@ -1023,9 +1050,9 @@ constructor(
                 .prepareStatement(
                     """
                     INSERT INTO permission_keycloak_group_mappings (
-                        id, keycloak_group, role_key, expires_at
+                        id, keycloak_group, role_key, starts_at, expires_at
                     )
-                    VALUES (?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     """
                         .trimIndent()
                 )
@@ -1033,7 +1060,8 @@ constructor(
                     statement.setObject(1, mapping.id)
                     statement.setString(2, mapping.keycloakGroup)
                     statement.setString(3, mapping.roleKey)
-                    statement.setTimestamp(4, mapping.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(4, mapping.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(5, mapping.expiresAt?.let(Timestamp::from))
                     statement.executeUpdate()
                 }
             mapping
@@ -1048,7 +1076,7 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT id, keycloak_group, role_key, expires_at
+                SELECT id, keycloak_group, role_key, starts_at, expires_at
                 FROM permission_keycloak_group_mappings
                 ORDER BY keycloak_group ASC, role_key ASC
                 """
@@ -1107,7 +1135,7 @@ constructor(
             connection
                 .prepareStatement(
                     """
-                    SELECT id, keycloak_group, role_key, expires_at
+                    SELECT id, keycloak_group, role_key, starts_at, expires_at
                     FROM permission_keycloak_group_mappings
                     WHERE keycloak_group ILIKE ? ESCAPE '\'
                        OR role_key ILIKE ? ESCAPE '\'
@@ -1147,10 +1175,11 @@ constructor(
                 .prepareStatement(
                     """
                     UPDATE permission_keycloak_group_mappings
-                    SET keycloak_group = ?, role_key = ?, expires_at = ?
+                    SET keycloak_group = ?, role_key = ?, starts_at = ?, expires_at = ?
                     WHERE id = ?
                       AND (
                           keycloak_group IS DISTINCT FROM ? OR role_key IS DISTINCT FROM ? OR
+                          starts_at IS DISTINCT FROM ? OR
                           expires_at IS DISTINCT FROM ?
                       )
                     """
@@ -1159,11 +1188,13 @@ constructor(
                 .use { statement ->
                     statement.setString(1, mapping.keycloakGroup)
                     statement.setString(2, mapping.roleKey)
-                    statement.setTimestamp(3, mapping.expiresAt?.let(Timestamp::from))
-                    statement.setObject(4, mappingId)
-                    statement.setString(5, mapping.keycloakGroup)
-                    statement.setString(6, mapping.roleKey)
-                    statement.setTimestamp(7, mapping.expiresAt?.let(Timestamp::from))
+                    statement.setTimestamp(3, mapping.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(4, mapping.expiresAt?.let(Timestamp::from))
+                    statement.setObject(5, mappingId)
+                    statement.setString(6, mapping.keycloakGroup)
+                    statement.setString(7, mapping.roleKey)
+                    statement.setTimestamp(8, mapping.startsAt?.let(Timestamp::from))
+                    statement.setTimestamp(9, mapping.expiresAt?.let(Timestamp::from))
                     val changed = statement.executeUpdate() > 0
                     require(
                         changed ||
@@ -1749,7 +1780,8 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value, starts_at,
+                       expires_at
                 FROM permission_role_grants
                 ORDER BY created_at ASC, id ASC
                 """
@@ -1770,7 +1802,7 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT id, player_id, role_key, expires_at
+                SELECT id, player_id, role_key, starts_at, expires_at
                 FROM permission_player_role_grants
                 WHERE player_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -1787,6 +1819,7 @@ constructor(
                                     grantId = rows.getObject("id", UUID::class.java),
                                     playerId = rows.getObject("player_id", UUID::class.java),
                                     roleKey = rows.getString("role_key"),
+                                    startsAt = rows.instantOrNull("starts_at"),
                                     expiresAt = rows.instantOrNull("expires_at"),
                                 )
                             )
@@ -1819,7 +1852,7 @@ constructor(
             connection
                 .prepareStatement(
                     """
-                    SELECT id, role_key, expires_at
+                    SELECT id, role_key, starts_at, expires_at
                     FROM permission_keycloak_group_mappings
                     WHERE keycloak_group = ANY (?)
                     ORDER BY created_at ASC, id ASC
@@ -1838,6 +1871,7 @@ constructor(
                                     PlayerRoleGrant(
                                         playerId = playerId,
                                         roleKey = rows.getString("role_key"),
+                                        startsAt = rows.instantOrNull("starts_at"),
                                         expiresAt = rows.instantOrNull("expires_at"),
                                         assignmentSource =
                                             PermissionRoleAssignmentSource.GROUP_MAPPING,
@@ -1855,7 +1889,8 @@ constructor(
         connection
             .prepareStatement(
                 """
-                SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value, expires_at
+                SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value, starts_at,
+                       expires_at
                 FROM permission_player_grants
                 WHERE player_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -1872,6 +1907,8 @@ constructor(
                                     grantId = rows.getObject("id", UUID::class.java),
                                     playerId = rows.getObject("player_id", UUID::class.java),
                                     grant = rows.toGrantSpec(),
+                                    assignmentStartsAt = rows.instantOrNull("starts_at"),
+                                    assignmentExpiresAt = rows.instantOrNull("expires_at"),
                                 )
                             )
                         }
@@ -1907,6 +1944,7 @@ constructor(
         put("effect", grant.effect.name)
         put("scopeKind", grant.scope.kind.name)
         put("scopeValue", grant.scope.value)
+        put("startsAt", grant.startsAt?.toString())
         put("expiresAt", grant.expiresAt?.toString())
     }
 
@@ -1914,6 +1952,7 @@ constructor(
         put("playerId", grant.playerId.toString())
         put("grantId", grant.id.toString())
         put("roleKey", grant.roleKey)
+        put("startsAt", grant.startsAt?.toString())
         put("expiresAt", grant.expiresAt?.toString())
     }
 
@@ -1924,6 +1963,7 @@ constructor(
         put("effect", grant.effect.name)
         put("scopeKind", grant.scope.kind.name)
         put("scopeValue", grant.scope.value)
+        put("startsAt", grant.startsAt?.toString())
         put("expiresAt", grant.expiresAt?.toString())
     }
 
@@ -1931,6 +1971,7 @@ constructor(
         put("mappingId", mapping.id.toString())
         put("keycloakGroup", mapping.keycloakGroup)
         put("roleKey", mapping.roleKey)
+        put("startsAt", mapping.startsAt?.toString())
         put("expiresAt", mapping.expiresAt?.toString())
     }
 
@@ -2249,11 +2290,15 @@ constructor(
         connection
             .prepareStatement(
                 """
-                INSERT INTO permission_role_grants (id, role_key, effect, permission_pattern, scope_kind, scope_value, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO permission_role_grants (
+                    id, role_key, effect, permission_pattern, scope_kind, scope_value, starts_at,
+                    expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (id) DO UPDATE SET role_key=EXCLUDED.role_key, effect=EXCLUDED.effect,
                     permission_pattern=EXCLUDED.permission_pattern, scope_kind=EXCLUDED.scope_kind,
-                    scope_value=EXCLUDED.scope_value, expires_at=EXCLUDED.expires_at
+                    scope_value=EXCLUDED.scope_value, starts_at=EXCLUDED.starts_at,
+                    expires_at=EXCLUDED.expires_at
                 """
                     .trimIndent()
             )
@@ -2264,7 +2309,8 @@ constructor(
                 statement.setString(4, grant.permissionPattern)
                 statement.setString(5, grant.scopeKind.name)
                 statement.setString(6, grant.scopeValue)
-                statement.setTimestamp(7, grant.expiresAt?.let(Timestamp::from))
+                statement.setTimestamp(7, grant.startsAt?.let(Timestamp::from))
+                statement.setTimestamp(8, grant.expiresAt?.let(Timestamp::from))
                 statement.executeUpdate()
             }
     }
@@ -2316,9 +2362,12 @@ constructor(
         connection
             .prepareStatement(
                 """
-                INSERT INTO permission_keycloak_group_mappings (id, keycloak_group, role_key, expires_at)
-                VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET keycloak_group=EXCLUDED.keycloak_group,
-                    role_key=EXCLUDED.role_key, expires_at=EXCLUDED.expires_at
+                INSERT INTO permission_keycloak_group_mappings (
+                    id, keycloak_group, role_key, starts_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET
+                    keycloak_group=EXCLUDED.keycloak_group, role_key=EXCLUDED.role_key,
+                    starts_at=EXCLUDED.starts_at, expires_at=EXCLUDED.expires_at
                 """
                     .trimIndent()
             )
@@ -2326,7 +2375,8 @@ constructor(
                 statement.setObject(1, mapping.id)
                 statement.setString(2, mapping.keycloakGroup)
                 statement.setString(3, mapping.roleKey)
-                statement.setTimestamp(4, mapping.expiresAt?.let(Timestamp::from))
+                statement.setTimestamp(4, mapping.startsAt?.let(Timestamp::from))
+                statement.setTimestamp(5, mapping.expiresAt?.let(Timestamp::from))
                 statement.executeUpdate()
             }
     }
@@ -2429,7 +2479,7 @@ constructor(
         SyncRole(key, name, description, prefix, color, sortOrder, metadata, isDefault)
 
     private fun RoleGrantRecord.toSync() =
-        SyncRoleGrant(id, roleKey, effect, pattern, scope.kind, scope.value, expiresAt)
+        SyncRoleGrant(id, roleKey, effect, pattern, scope.kind, scope.value, expiresAt, startsAt)
 
     private fun CatalogEntryRecord.toSync() =
         SyncCatalogEntry(
@@ -2444,7 +2494,7 @@ constructor(
         )
 
     private fun KeycloakGroupMappingRecord.toSync() =
-        SyncKeycloakMapping(id, keycloakGroup, roleKey, expiresAt)
+        SyncKeycloakMapping(id, keycloakGroup, roleKey, expiresAt, startsAt)
 
     private fun SyncInheritance.key() = "$parentRoleKey->$childRoleKey"
 
@@ -2514,6 +2564,7 @@ constructor(
                     kind = PermissionScopeKind.valueOf(getString("scope_kind")),
                     value = getString("scope_value"),
                 ),
+            startsAt = instantOrNull("starts_at"),
             expiresAt = instantOrNull("expires_at"),
         )
 
@@ -2528,6 +2579,7 @@ constructor(
                     kind = PermissionScopeKind.valueOf(getString("scope_kind")),
                     value = getString("scope_value"),
                 ),
+            startsAt = instantOrNull("starts_at"),
             expiresAt = instantOrNull("expires_at"),
         )
 
@@ -2536,6 +2588,7 @@ constructor(
             id = getObject("id", UUID::class.java),
             keycloakGroup = getString("keycloak_group"),
             roleKey = getString("role_key"),
+            startsAt = instantOrNull("starts_at"),
             expiresAt = instantOrNull("expires_at"),
         )
 
@@ -2548,6 +2601,7 @@ constructor(
                     kind = PermissionScopeKind.valueOf(getString("scope_kind")),
                     value = getString("scope_value"),
                 ),
+            startsAt = instantOrNull("starts_at"),
             expiresAt = instantOrNull("expires_at"),
             permissionGrantId = getObject("id", UUID::class.java),
         )

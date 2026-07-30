@@ -121,6 +121,7 @@ data class GrantRequest(
         description = "Absent for GLOBAL; a nonblank value is required for other scope kinds.",
     )
     var scopeValue: String? = null,
+    var startsAt: Instant? = null,
     var expiresAt: Instant? = null,
 )
 
@@ -132,6 +133,7 @@ data class RoleGrantResponse(
     val permissionPattern: String,
     val scopeKind: PermissionScopeKind,
     val scopeValue: String?,
+    val startsAt: Instant?,
     val expiresAt: Instant?,
 )
 
@@ -142,6 +144,7 @@ data class RoleGrantResponse(
 data class PlayerRoleGrantRequest(
     @field:Schema(nullable = false, minLength = 1, pattern = "^[a-z0-9._-]+$")
     var roleKey: String? = null,
+    var startsAt: Instant? = null,
     var expiresAt: Instant? = null,
 )
 
@@ -150,6 +153,7 @@ data class PlayerRoleGrantResponse(
     val id: UUID,
     val playerId: UUID,
     val roleKey: String,
+    val startsAt: Instant?,
     val expiresAt: Instant?,
 )
 
@@ -159,6 +163,7 @@ data class PlayerEffectiveRoleResponse(
     val roleKey: String,
     val roleName: String,
     val source: PermissionGrantOriginKind,
+    val startsAt: Instant?,
     val expiresAt: Instant?,
     val editable: Boolean,
     val directGrant: PlayerRoleGrantResponse?,
@@ -174,6 +179,7 @@ data class PlayerGrantResponse(
     val permissionPattern: String,
     val scopeKind: PermissionScopeKind,
     val scopeValue: String?,
+    val startsAt: Instant?,
     val expiresAt: Instant?,
 )
 
@@ -186,6 +192,7 @@ data class KeycloakGroupMappingRequest(
     var keycloakGroup: String? = null,
     @field:Schema(nullable = false, minLength = 1, pattern = "^[a-z0-9._-]+$")
     var roleKey: String? = null,
+    var startsAt: Instant? = null,
     var expiresAt: Instant? = null,
 )
 
@@ -194,6 +201,7 @@ data class KeycloakGroupMappingResponse(
     val id: UUID,
     val keycloakGroup: String,
     val roleKey: String,
+    val startsAt: Instant?,
     val expiresAt: Instant?,
 )
 
@@ -245,6 +253,7 @@ data class EffectiveGrantResponse(
     val permissionPattern: String,
     val scopeKind: PermissionScopeKind,
     val scopeValue: String?,
+    val startsAt: Instant?,
     val expiresAt: Instant?,
     val source: PermissionGrantOriginKind,
     val grantId: UUID?,

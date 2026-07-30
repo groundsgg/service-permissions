@@ -158,13 +158,16 @@ constructor(
     private fun requireManage(headers: HttpHeaders): String =
         authorization.requireMinecraftPermissionsManage(identity, headers)
 
-    private fun KeycloakGroupMappingRequest.toRecord(id: UUID): KeycloakGroupMappingRecord =
-        KeycloakGroupMappingRecord(
+    private fun KeycloakGroupMappingRequest.toRecord(id: UUID): KeycloakGroupMappingRecord {
+        PermissionValidation.validityWindow(startsAt, expiresAt)
+        return KeycloakGroupMappingRecord(
             id = id,
             keycloakGroup = PermissionValidation.keycloakGroup(keycloakGroup),
             roleKey = PermissionValidation.roleKey(roleKey),
+            startsAt = startsAt,
             expiresAt = expiresAt,
         )
+    }
 }
 
 fun KeycloakGroupMappingRecord.toResponse(): KeycloakGroupMappingResponse =
@@ -172,5 +175,6 @@ fun KeycloakGroupMappingRecord.toResponse(): KeycloakGroupMappingResponse =
         id = id,
         keycloakGroup = keycloakGroup,
         roleKey = roleKey,
+        startsAt = startsAt,
         expiresAt = expiresAt,
     )

@@ -121,11 +121,13 @@ constructor(
     ): Response {
         val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
+        PermissionValidation.validityWindow(request.startsAt, request.expiresAt)
         val grant =
             PlayerRoleGrantRecord(
                 id = UUID.randomUUID(),
                 playerId = id,
                 roleKey = PermissionValidation.roleKey(request.roleKey),
+                startsAt = request.startsAt,
                 expiresAt = request.expiresAt,
             )
         return Response.status(Response.Status.CREATED)
@@ -145,11 +147,13 @@ constructor(
         val actor = requireManage(headers)
         val id = PermissionValidation.uuid(playerId, "playerId")
         val parsedGrantId = PermissionValidation.uuid(grantId, "grantId")
+        PermissionValidation.validityWindow(request.startsAt, request.expiresAt)
         val grant =
             PlayerRoleGrantRecord(
                 id = parsedGrantId,
                 playerId = id,
                 roleKey = PermissionValidation.roleKey(request.roleKey),
+                startsAt = request.startsAt,
                 expiresAt = request.expiresAt,
             )
         return repository.updatePlayerRoleGrant(actor, id, parsedGrantId, grant).toResponse()
@@ -466,13 +470,12 @@ constructor(
         )
 
     private fun PermissionGrant.toResponse(): EffectiveGrantResponse =
-        scope.toGrantResponse(effect, pattern, expiresAt, origin)
+        scope.toGrantResponse(effect, pattern, startsAt, expiresAt, origin)
 
     private fun playerRoleRows(playerId: UUID): List<PlayerEffectiveRoleResponse> {
         val directGrants = repository.listPlayerRoleGrantRecords(playerId)
         val directGrantsById = directGrants.associateBy { it.id }
-        val mappingExpirations =
-            repository.listKeycloakGroupMappings().associateBy({ it.id }, { it.expiresAt })
+        val mappings = repository.listKeycloakGroupMappings().associateBy { it.id }
         val roles = repository.listRoles().associateBy { it.key }
         val snapshot = snapshotFor(playerId, null, null)
         val directRows =
@@ -482,6 +485,7 @@ constructor(
                     roleKey = grant.roleKey,
                     roleName = roles[grant.roleKey]?.name ?: grant.roleKey,
                     source = PermissionGrantOriginKind.DIRECT_ROLE,
+                    startsAt = grant.startsAt,
                     expiresAt = grant.expiresAt,
                     editable = true,
                     directGrant = grant.toResponse(),
@@ -528,9 +532,12 @@ constructor(
                         roleKey = first.roleKey,
                         roleName = roles[first.roleKey]?.name ?: first.roleKey,
                         source = first.origin.kind,
+                        startsAt =
+                            first.origin.grantId?.let { directGrantsById[it]?.startsAt }
+                                ?: first.origin.mappingId?.let { mappings[it]?.startsAt },
                         expiresAt =
                             first.origin.grantId?.let { directGrantsById[it]?.expiresAt }
-                                ?: first.origin.mappingId?.let { mappingExpirations[it] },
+                                ?: first.origin.mappingId?.let { mappings[it]?.expiresAt },
                         editable = false,
                         directGrant = null,
                         inherited = assignments.any { it.origin.inheritedPath.isNotEmpty() },
@@ -647,19 +654,28 @@ constructor(
     private fun requireManage(headers: HttpHeaders): String =
         authorization.requireMinecraftPermissionsManage(identity, headers)
 
-    private fun GrantRequest.toPlayerGrantRecord(playerId: UUID, grantId: UUID): PlayerGrantRecord =
-        PlayerGrantRecord(
+    private fun GrantRequest.toPlayerGrantRecord(playerId: UUID, grantId: UUID): PlayerGrantRecord {
+        PermissionValidation.validityWindow(startsAt, expiresAt)
+        return PlayerGrantRecord(
             id = grantId,
             playerId = playerId,
             effect = requireNotNull(effect) { "effect must not be null" },
             pattern = PermissionValidation.permissionPattern(permissionPattern),
             scope = PermissionValidation.scope(scopeKind, scopeValue),
+            startsAt = startsAt,
             expiresAt = expiresAt,
         )
+    }
 }
 
 fun PlayerRoleGrantRecord.toResponse(): PlayerRoleGrantResponse =
-    PlayerRoleGrantResponse(id = id, playerId = playerId, roleKey = roleKey, expiresAt = expiresAt)
+    PlayerRoleGrantResponse(
+        id = id,
+        playerId = playerId,
+        roleKey = roleKey,
+        startsAt = startsAt,
+        expiresAt = expiresAt,
+    )
 
 fun PlayerGrantRecord.toResponse(): PlayerGrantResponse =
     PlayerGrantResponse(
@@ -669,5 +685,6 @@ fun PlayerGrantRecord.toResponse(): PlayerGrantResponse =
         permissionPattern = pattern,
         scopeKind = scope.kind,
         scopeValue = scope.value,
+        startsAt = startsAt,
         expiresAt = expiresAt,
     )
