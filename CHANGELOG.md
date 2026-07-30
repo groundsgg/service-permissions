@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/groundsgg/service-permissions/compare/v1.1.1...v1.2.0) (2026-07-30)
+
+
+### Features
+
+* **permissions:** support scheduled grant activation ([#72](https://github.com/groundsgg/service-permissions/issues/72)) ([97ec8ae](https://github.com/groundsgg/service-permissions/commit/97ec8aeb5c4044c57ce9b75c6a3611f8f639c0f4))
+
 ## [1.1.1](https://github.com/groundsgg/service-permissions/compare/v1.1.0...v1.1.1) (2026-07-29)
 
 
