@@ -31,6 +31,7 @@ data class PermissionGrant(
     val pattern: String,
     val scope: PermissionScope,
     val source: PermissionGrantSource,
+    val startsAt: Instant? = null,
     val expiresAt: Instant? = null,
     val origin: PermissionGrantOrigin =
         PermissionGrantOrigin(
@@ -45,6 +46,7 @@ data class PermissionGrantSpec(
     val effect: PermissionEffect,
     val pattern: String,
     val scope: PermissionScope,
+    val startsAt: Instant? = null,
     val expiresAt: Instant? = null,
     val permissionGrantId: UUID? = null,
 )
@@ -115,6 +117,7 @@ enum class PermissionRoleAssignmentSource {
 data class PlayerRoleGrant(
     val playerId: UUID,
     val roleKey: String,
+    val startsAt: Instant? = null,
     val expiresAt: Instant? = null,
     val assignmentSource: PermissionRoleAssignmentSource = PermissionRoleAssignmentSource.DIRECT,
     val mappingId: UUID? = null,
@@ -133,6 +136,7 @@ data class PlayerRoleGrant(
 data class PlayerPermissionGrant(
     val playerId: UUID,
     val grant: PermissionGrantSpec,
+    val assignmentStartsAt: Instant? = null,
     val assignmentExpiresAt: Instant? = null,
     val grantId: UUID? = null,
 )

@@ -8,6 +8,7 @@ import gg.grounds.permissions.domain.PermissionGrantSource.PLAYER
 import gg.grounds.permissions.domain.PermissionGrantSource.ROLE
 import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionPolicyInput
+import gg.grounds.permissions.domain.PermissionRoleAssignmentSource.GROUP_MAPPING
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind.ENVIRONMENT
 import gg.grounds.permissions.domain.PermissionScopeKind.GLOBAL
@@ -186,6 +187,111 @@ class PolicyEngineTest {
 
         assertFalse(hasPermission(snapshot, "fly.use", PermissionCheckScope.global()))
         assertFalse(hasPermission(snapshot, "warp.use", PermissionCheckScope.global()))
+    }
+
+    @Test
+    fun futureDirectPlayerGrantIsExcludedUntilItsInclusiveStartAndSchedulesRefresh() {
+        val startsAt = now.plusSeconds(30)
+        val input =
+            policy(
+                roles = emptyList(),
+                playerGrants =
+                    listOf(
+                        PlayerPermissionGrant(
+                            playerId = playerId,
+                            grant = allowSpec("warp.use"),
+                            assignmentStartsAt = startsAt,
+                        )
+                    ),
+            )
+
+        val beforeStart = PolicyEngine.createSnapshot(playerId, input, now)
+        val atStart = PolicyEngine.createSnapshot(playerId, input, startsAt)
+
+        assertFalse(hasPermission(beforeStart, "warp.use", PermissionCheckScope.global()))
+        assertEquals(startsAt, beforeStart.refreshAfter)
+        assertTrue(
+            hasPermission(
+                atStart,
+                "warp.use",
+                PermissionCheckScope.global(),
+                now = startsAt,
+            )
+        )
+    }
+
+    @Test
+    fun futurePlayerRoleAndGroupMappingAssignmentsAreExcludedUntilTheirStart() {
+        val startsAt = now.plusSeconds(30)
+        val role = role("member", grants = listOf(allowSpec("chat.read")))
+
+        listOf(
+                PlayerRoleGrant(playerId, "member", startsAt = startsAt),
+                PlayerRoleGrant(
+                    playerId = playerId,
+                    roleKey = "member",
+                    startsAt = startsAt,
+                    assignmentSource = GROUP_MAPPING,
+                    mappingId = UUID.fromString("00000000-0000-0000-0000-000000000999"),
+                ),
+            )
+            .forEach { assignment ->
+                val input = policy(roles = listOf(role), playerRoles = listOf(assignment))
+
+                val beforeStart = PolicyEngine.createSnapshot(playerId, input, now)
+                val atStart = PolicyEngine.createSnapshot(playerId, input, startsAt)
+
+                assertFalse(hasPermission(beforeStart, "chat.read", PermissionCheckScope.global()))
+                assertEquals(startsAt, beforeStart.refreshAfter)
+                assertTrue(
+                    hasPermission(
+                        atStart,
+                        "chat.read",
+                        PermissionCheckScope.global(),
+                        now = startsAt,
+                    )
+                )
+            }
+    }
+
+    @Test
+    fun futureRolePermissionGrantIsExcludedAndSchedulesRefreshForAssignedRole() {
+        val startsAt = now.plusSeconds(30)
+        val input =
+            policy(
+                roles =
+                    listOf(
+                        role(
+                            "member",
+                            grants = listOf(allowSpec("fly.use", startsAt = startsAt)),
+                        )
+                    ),
+                playerRoles = listOf(PlayerRoleGrant(playerId, "member")),
+            )
+
+        val beforeStart = PolicyEngine.createSnapshot(playerId, input, now)
+        val atStart = PolicyEngine.createSnapshot(playerId, input, startsAt)
+
+        assertFalse(hasPermission(beforeStart, "fly.use", PermissionCheckScope.global()))
+        assertEquals(startsAt, beforeStart.refreshAfter)
+        assertTrue(
+            hasPermission(atStart, "fly.use", PermissionCheckScope.global(), now = startsAt)
+        )
+    }
+
+    @Test
+    fun futureAssignmentForAnotherPlayerDoesNotShortenRefresh() {
+        val startsAt = now.plusSeconds(30)
+        val otherPlayerId = UUID.fromString("00000000-0000-0000-0000-000000000456")
+        val input =
+            policy(
+                roles = listOf(role("member", grants = listOf(allowSpec("chat.read")))),
+                playerRoles = listOf(PlayerRoleGrant(otherPlayerId, "member", startsAt = startsAt)),
+            )
+
+        val snapshot = PolicyEngine.createSnapshot(playerId, input, now)
+
+        assertEquals(now.plusSeconds(60), snapshot.refreshAfter)
     }
 
     @Test
@@ -578,8 +684,16 @@ class PolicyEngineTest {
     private fun allowSpec(
         pattern: String,
         scope: PermissionScope = PermissionScope(GLOBAL),
+        startsAt: Instant? = null,
         expiresAt: Instant? = null,
-    ) = PermissionGrantSpec(effect = ALLOW, pattern = pattern, scope = scope, expiresAt = expiresAt)
+    ) =
+        PermissionGrantSpec(
+            effect = ALLOW,
+            pattern = pattern,
+            scope = scope,
+            startsAt = startsAt,
+            expiresAt = expiresAt,
+        )
 
     private fun allow(
         pattern: String,
