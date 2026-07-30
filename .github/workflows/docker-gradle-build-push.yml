@@ -11,6 +11,10 @@ permissions:
   contents: write
   actions: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   reusable:
     uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main
