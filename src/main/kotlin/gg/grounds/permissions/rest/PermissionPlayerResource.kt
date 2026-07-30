@@ -93,7 +93,7 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "role",
-                allowedSortKeys = listOf("role", "source", "expiration"),
+                allowedSortKeys = listOf("role", "source", "activation", "expiration"),
             )
         val rows =
             playerRoleRows(id).filter { it.matches(search.query) }.sortedWith(search.comparator())
@@ -213,7 +213,8 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "permission",
-                allowedSortKeys = listOf("permission", "effect", "scope", "expiration"),
+                allowedSortKeys =
+                    listOf("permission", "effect", "scope", "activation", "expiration"),
             )
         val result =
             repository.searchPlayerGrantRecords(
@@ -366,7 +367,8 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "permission",
-                allowedSortKeys = listOf("permission", "effect", "scope", "source", "expiration"),
+                allowedSortKeys =
+                    listOf("permission", "effect", "scope", "source", "activation", "expiration"),
             )
         val requestedEffect = effect?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "ALL"
         require(requestedEffect in setOf("ALL", "ALLOW", "DENY")) {
@@ -581,6 +583,7 @@ constructor(
                 when (sortBy) {
                     "role" -> left.roleName.compareTo(right.roleName, ignoreCase = true) * direction
                     "source" -> left.source.name.compareTo(right.source.name) * direction
+                    "activation" -> compareNullable(left.startsAt, right.startsAt, direction)
                     "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
                     else -> error("Unsupported sort key (sortBy=$sortBy)")
                 }
@@ -603,6 +606,7 @@ constructor(
                         }
                     }
                     "source" -> left.origin.kind.name.compareTo(right.origin.kind.name) * direction
+                    "activation" -> compareNullable(left.startsAt, right.startsAt, direction)
                     "expiration" -> compareNullable(left.expiresAt, right.expiresAt, direction)
                     else -> error("Unsupported sort key (sortBy=$sortBy)")
                 }

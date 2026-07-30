@@ -57,6 +57,8 @@ abstract class PermissionExceptionMapperSupport {
     protected fun invalidArgumentProblem(exception: IllegalArgumentException): SafeProblem =
         when (exception.message) {
             "role_name_invalid" -> SafeProblem("role_name_invalid", "The role name is invalid.")
+            "startsAt must be before expiresAt" ->
+                SafeProblem("invalid_validity_window", "startsAt must be before expiresAt")
             in LEGACY_SAFE_INVALID_REQUESTS ->
                 SafeProblem(requireNotNull(exception.message), requireNotNull(exception.message))
             else -> SafeProblem("invalid_request", "The request is invalid.")
@@ -91,11 +93,11 @@ private val LEGACY_SAFE_INVALID_REQUESTS =
         "page must be at least 1",
         "perPage must be between 1 and 100",
         "query must contain at least 2 characters",
-        "sortBy must be one of: group, role, expiration",
-        "sortBy must be one of: permission, effect, scope, expiration",
-        "sortBy must be one of: permission, effect, scope, source, expiration",
+        "sortBy must be one of: group, role, activation, expiration",
+        "sortBy must be one of: permission, effect, scope, activation, expiration",
+        "sortBy must be one of: permission, effect, scope, source, activation, expiration",
         "sortBy must be one of: permission, label, source, lastseen",
-        "sortBy must be one of: role, source, expiration",
+        "sortBy must be one of: role, source, activation, expiration",
         "sortDirection must be one of: asc, desc",
     )
 

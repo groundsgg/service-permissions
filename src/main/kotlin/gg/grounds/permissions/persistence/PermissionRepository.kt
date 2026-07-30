@@ -527,6 +527,7 @@ constructor(
                         "permission" to listOf("LOWER(permission_pattern)"),
                         "effect" to listOf("effect"),
                         "scope" to listOf("scope_kind", "LOWER(COALESCE(scope_value, ''))"),
+                        "activation" to listOf("starts_at"),
                         "expiration" to listOf("expires_at"),
                     ),
                 tieBreaker = "id",
@@ -912,6 +913,7 @@ constructor(
                         "permission" to listOf("LOWER(permission_pattern)"),
                         "effect" to listOf("effect"),
                         "scope" to listOf("scope_kind", "LOWER(COALESCE(scope_value, ''))"),
+                        "activation" to listOf("starts_at"),
                         "expiration" to listOf("expires_at"),
                     ),
                 tieBreaker = "id",
@@ -1127,6 +1129,7 @@ constructor(
                     mapOf(
                         "group" to listOf("LOWER(keycloak_group)"),
                         "role" to listOf("LOWER(role_key)"),
+                        "activation" to listOf("starts_at"),
                         "expiration" to listOf("expires_at"),
                     ),
                 tieBreaker = "id",

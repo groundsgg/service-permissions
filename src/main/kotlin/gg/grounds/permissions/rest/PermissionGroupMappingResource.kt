@@ -72,7 +72,7 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "group",
-                allowedSortKeys = listOf("group", "role", "expiration"),
+                allowedSortKeys = listOf("group", "role", "activation", "expiration"),
             )
         val result =
             repository.searchKeycloakGroupMappings(

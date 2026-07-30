@@ -207,7 +207,8 @@ constructor(
                 sortBy = sortBy,
                 sortDirection = sortDirection,
                 defaultSortBy = "permission",
-                allowedSortKeys = listOf("permission", "effect", "scope", "expiration"),
+                allowedSortKeys =
+                    listOf("permission", "effect", "scope", "activation", "expiration"),
             )
         val result =
             repository.searchRoleGrantRecords(
