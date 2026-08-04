@@ -79,3 +79,10 @@ dependencies {
     testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")
 }
+
+tasks.processResources {
+    val projectVersion = version.toString()
+    filesMatching("**/default_banner.txt") {
+        filter { line: String -> line.replace("@VERSION@", projectVersion) }
+    }
+}
