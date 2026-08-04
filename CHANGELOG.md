@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/groundsgg/service-permissions/compare/v1.2.0...v1.3.0) (2026-08-04)
+
+
+### Features
+
+* **metrics:** expose the Agroal connection-pool gauges ([#76](https://github.com/groundsgg/service-permissions/issues/76)) ([1807a64](https://github.com/groundsgg/service-permissions/commit/1807a64bd0e0e7d73d202b7c7281be56cc886740))
+
 ## [1.2.0](https://github.com/groundsgg/service-permissions/compare/v1.1.1...v1.2.0) (2026-07-30)
 
 
