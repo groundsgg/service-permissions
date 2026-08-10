@@ -69,7 +69,7 @@ dependencies {
     implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
-    implementation("io.nats:jnats:2.26.0")
+    implementation("io.nats:jnats:2.26.1")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")
