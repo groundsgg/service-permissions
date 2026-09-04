@@ -5,7 +5,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
-    id("gg.grounds.base-conventions") version "0.8.0"
+    id("gg.grounds.base-conventions") version "0.8.1"
     id("io.quarkus") version "3.38.0"
 }
 
