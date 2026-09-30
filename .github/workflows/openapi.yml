@@ -14,7 +14,12 @@ jobs:
   export-openapi:
     if: >-
       github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
-    runs-on: arc-dind
+    # Public repos build on GitHub-hosted runners; private ones on the shared
+    # self-hosted pool. `arc-dind` belonged to an ARC install that no longer exists.
+    runs-on: >-
+      ${{ (github.event.repository.visibility == 'public' && 'ubuntu-24.04')
+          || (github.event.repository.name && 'grounds-runners')
+          || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - name: Check out source
