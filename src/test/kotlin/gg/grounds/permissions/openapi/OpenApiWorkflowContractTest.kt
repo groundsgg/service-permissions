@@ -28,7 +28,10 @@ class OpenApiWorkflowContractTest {
         assertThat(workflowPath).exists()
         val workflow = Files.readString(workflowPath)
 
-        assertThat(workflow).contains("runs-on: arc-dind")
+        // Private repos build on the shared self-hosted pool, public ones on GitHub-hosted runners;
+        // arc-dind belonged to an ARC install that no longer exists.
+        assertThat(workflow).contains("'grounds-runners'", "'ubuntu-24.04'")
+        assertThat(workflow).doesNotContain("runs-on: arc-dind")
         assertThat(workflow).contains("actions/checkout@v7")
         assertThat(workflow).contains("actions/setup-java@v5", "java-version: \"25\"")
         assertThat(workflow).contains("gradle/actions/setup-gradle@v6")
