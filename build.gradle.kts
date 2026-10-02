@@ -76,7 +76,7 @@ dependencies {
     testImplementation("io.quarkus:quarkus-test-security")
     testImplementation("io.rest-assured:rest-assured")
     testImplementation("org.assertj:assertj-core:3.27.7")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:6.4.0")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")
 }
 
