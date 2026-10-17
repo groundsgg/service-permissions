@@ -140,7 +140,7 @@ constructor(
             }
         require(scopes.isNotEmpty()) { "permissions[$index].supportedScopes must not be empty" }
         return CatalogEntryRecord(
-            key = PermissionValidation.permissionKey(key),
+            key = PermissionValidation.catalogKey(key),
             label = PermissionValidation.label(label),
             description = description?.trim().orEmpty(),
             source = source,

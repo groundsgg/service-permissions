@@ -42,6 +42,14 @@ object PermissionValidation {
         return permissionKey
     }
 
+    fun catalogKey(value: String?): String {
+        val key = required(value, "permissionKey")
+        require(key != "*" && isSupportedPermissionPattern(key)) {
+            "permissionKey must be a concrete key or a suffix wildcard ending in '.*'"
+        }
+        return key
+    }
+
     fun permissionPattern(value: String?): String {
         val permissionPattern = required(value, "permissionPattern")
         require(isSupportedPermissionPattern(permissionPattern)) {
