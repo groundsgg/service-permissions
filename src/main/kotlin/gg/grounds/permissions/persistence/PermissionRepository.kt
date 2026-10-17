@@ -24,6 +24,7 @@ import gg.grounds.permissions.domain.PlayerRoleGrant
 import gg.grounds.permissions.domain.RoleDefinition
 import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.identity.IdentitySyncReadinessCheck
+import gg.grounds.permissions.identity.PlayerPolicyChangeNotifier
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionProjectSnapshot
 import gg.grounds.permissions.sync.PermissionSnapshotFingerprint
@@ -164,6 +165,7 @@ constructor(
     @param:Readiness private val identityReadinessCheck: IdentitySyncReadinessCheck,
     snapshotCacheSettings: SnapshotCacheSettings,
     playerPolicyL2: PlayerPolicyL2,
+    private val playerPolicyChanges: PlayerPolicyChangeNotifier = PlayerPolicyChangeNotifier {},
 ) {
     constructor(
         dataSource: DataSource,
@@ -2117,7 +2119,9 @@ constructor(
     private fun afterPolicyWrite(target: String) {
         snapshotCache.markGlobalsStale()
         if (target.startsWith(PLAYER_TARGET_PREFIX)) {
-            snapshotCache.evictPlayer(UUID.fromString(target.removePrefix(PLAYER_TARGET_PREFIX)))
+            val playerId = UUID.fromString(target.removePrefix(PLAYER_TARGET_PREFIX))
+            snapshotCache.evictPlayer(playerId)
+            playerPolicyChanges.playerChanged(playerId)
         }
     }
 

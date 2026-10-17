@@ -12,6 +12,7 @@ import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
 import gg.grounds.permissions.identity.IdentitySyncReadinessCheck
 import gg.grounds.permissions.identity.IdentitySyncStatus
 import gg.grounds.permissions.identity.PermissionSnapshotInvalidationEvent
+import gg.grounds.permissions.identity.PermissionSnapshotInvalidationPublisher
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
 import gg.grounds.permissions.identity.SNAPSHOT_INVALIDATION_SCHEMA_VERSION
 import gg.grounds.permissions.policy.PolicyEngine
@@ -30,6 +31,7 @@ import io.agroal.api.AgroalDataSource
 import io.agroal.api.configuration.supplier.AgroalDataSourceConfigurationSupplier
 import io.agroal.api.security.NamePrincipal
 import io.agroal.api.security.SimplePassword
+import io.quarkus.test.InjectMock
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
@@ -56,7 +58,15 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doAnswer
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.reset
+import org.mockito.kotlin.times
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyNoInteractions
+import org.mockito.kotlin.whenever
 
 @QuarkusTest
 @QuarkusTestResource(
@@ -68,6 +78,8 @@ class PermissionRepositoryTest {
     private val testActor = "test-user"
 
     @Inject lateinit var repository: PermissionRepository
+
+    @InjectMock lateinit var publisher: PermissionSnapshotInvalidationPublisher
 
     @Inject lateinit var identityRepository: PlayerIdentityRepository
 
@@ -91,6 +103,81 @@ class PermissionRepositoryTest {
     @BeforeEach
     fun resetDatabase() {
         repository.deleteAllPermissionData()
+        reset(publisher)
+    }
+
+    @Test
+    fun directRoleAssignmentsNotifyEveryRuntimeAfterCommitWithoutAnIdentityLink() {
+        val playerId = UUID.randomUUID()
+        val grant = PlayerRoleGrantRecord(UUID.randomUUID(), playerId, "member")
+        repository.createRole(RoleRecord("member", "Member"))
+        var notifications = 0
+        doAnswer {
+                notifications++
+                val persisted = repository.listPlayerRoleGrantRecords(playerId)
+                assertEquals(
+                    if (notifications < 3) listOf(grant.id) else emptyList(),
+                    persisted.map { it.id },
+                )
+                null
+            }
+            .whenever(publisher)
+            .publish(playerId)
+
+        repository.createPlayerRoleGrant(grant)
+        verify(publisher).publish(playerId)
+        repository.updatePlayerRoleGrant(
+            playerId,
+            grant.id,
+            grant.copy(expiresAt = Instant.now().plusSeconds(600)),
+        )
+        verify(publisher, times(2)).publish(playerId)
+        repository.deletePlayerRoleGrant(playerId, grant.id)
+        verify(publisher, times(3)).publish(playerId)
+        assertNull(identityRepository.findByPlayerId(playerId))
+    }
+
+    @Test
+    fun directPermissionGrantCreationUpdateAndRevocationNotifyEveryRuntime() {
+        val playerId = UUID.randomUUID()
+        val grant =
+            PlayerGrantRecord(
+                UUID.randomUUID(),
+                playerId,
+                PermissionEffect.ALLOW,
+                "grounds.command.fly",
+                PermissionScope(PermissionScopeKind.GLOBAL),
+            )
+        repository.createPlayerGrant(grant)
+        verify(publisher).publish(playerId)
+        repository.updatePlayerGrant(playerId, grant.id, grant.copy(effect = PermissionEffect.DENY))
+        verify(publisher, times(2)).publish(playerId)
+        repository.deletePlayerGrant(playerId, grant.id)
+        verify(publisher, times(3)).publish(playerId)
+    }
+
+    @Test
+    fun failedPlayerWriteDoesNotPublishAnInvalidation() {
+        val grant = PlayerRoleGrantRecord(UUID.randomUUID(), UUID.randomUUID(), "missing-role")
+        assertThrows(Exception::class.java) { repository.createPlayerRoleGrant(grant) }
+        verifyNoInteractions(publisher)
+    }
+
+    @Test
+    fun publicationFailureDoesNotRejectOrRollBackACommittedGrant() {
+        val playerId = UUID.randomUUID()
+        val grant =
+            PlayerGrantRecord(
+                UUID.randomUUID(),
+                playerId,
+                PermissionEffect.ALLOW,
+                "grounds.command.fly",
+                PermissionScope(PermissionScopeKind.GLOBAL),
+            )
+        doThrow(IllegalStateException("unavailable")).whenever(publisher).publish(any())
+        repository.createPlayerGrant(grant)
+        verify(publisher).publish(playerId)
+        assertEquals(listOf(grant.id), repository.listPlayerGrantRecords(playerId).map { it.id })
     }
 
     @Test
