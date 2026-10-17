@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/groundsgg/service-permissions/compare/v1.4.0...v1.4.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **permissions:** notify online runtimes after direct grant changes ([#110](https://github.com/groundsgg/service-permissions/issues/110)) ([ec99b72](https://github.com/groundsgg/service-permissions/commit/ec99b72f261bbd96349e988e24cb25721addcf59))
+
 ## [1.4.0](https://github.com/groundsgg/service-permissions/compare/v1.3.1...v1.4.0) (2026-10-17)
 
 
