@@ -144,6 +144,47 @@ class PermissionRuntimeResourceTest {
     }
 
     @Test
+    fun `registers an emoji wildcard catalog entry without granting it to players`() {
+        given()
+            .header("Authorization", "Bearer runtime-token")
+            .contentType("application/json")
+            .body(VALID_MANIFEST.replace("grounds.chat.staff", "grounds.chat.emoji.*"))
+            .put(MANIFEST_PATH)
+            .then()
+            .statusCode(204)
+
+        assertEquals(listOf("grounds.chat.emoji.*"), repository.listCatalogEntries().map { it.key })
+        given()
+            .header("Authorization", "Bearer runtime-token")
+            .get("$SNAPSHOT_PATH_TEMPLATE/${UUID.randomUUID()}/snapshot")
+            .then()
+            .statusCode(200)
+            .body("allowPatterns", empty<Any>())
+    }
+
+    @Test
+    fun `rejects broad and partial wildcard catalog keys without replacing the existing catalog`() {
+        given()
+            .header("Authorization", "Bearer runtime-token")
+            .contentType("application/json")
+            .body(VALID_MANIFEST)
+            .put(MANIFEST_PATH)
+            .then()
+            .statusCode(204)
+
+        for (key in listOf("*", "grounds.chat.*.heart", "grounds.chat.emoji*")) {
+            given()
+                .header("Authorization", "Bearer runtime-token")
+                .contentType("application/json")
+                .body(VALID_MANIFEST.replace("grounds.chat.staff", key))
+                .put(MANIFEST_PATH)
+                .then()
+                .statusCode(400)
+        }
+        assertEquals(listOf("grounds.chat.staff"), repository.listCatalogEntries().map { it.key })
+    }
+
+    @Test
     fun `clears a runtime manifest when the replacement contains no permissions`() {
         given()
             .header("Authorization", "Bearer runtime-token")
