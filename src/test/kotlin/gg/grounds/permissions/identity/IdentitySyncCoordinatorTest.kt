@@ -844,11 +844,14 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
             failureReason = null,
         )
 
-    override fun findByPlayerId(playerId: UUID): ProjectedPlayerIdentity? =
-        identities.firstOrNull { it.playerId == playerId }
+    override fun findByPlayerId(playerId: UUID): ProjectedPlayerIdentity? = identities.firstOrNull {
+        it.playerId == playerId
+    }
 
     override fun findByKeycloakUserId(keycloakUserId: String): ProjectedPlayerIdentity? =
-        identities.firstOrNull { it.keycloakUserId == keycloakUserId }
+        identities.firstOrNull {
+            it.keycloakUserId == keycloakUserId
+        }
 
     override fun listKeycloakUserIds(): Set<String> =
         identities.mapTo(mutableSetOf()) { it.keycloakUserId }
@@ -895,21 +898,19 @@ private class RecordingIdentityStore(private var markSyncFailuresRemaining: Int 
         check(state.status == IdentitySyncStatus.RUNNING)
         val snapshotStartedAt = checkNotNull(state.startedAt)
         val reconciled = this.identities.toMutableList()
-        val acceptedIdentities =
-            identities.filter { identity ->
-                val deletedAt = tombstones[identity.keycloakUserId]
-                if (deletedAt?.isAfter(snapshotStartedAt) == true) {
-                    false
-                } else {
-                    tombstones.remove(identity.keycloakUserId)
-                    true
-                }
+        val acceptedIdentities = identities.filter { identity ->
+            val deletedAt = tombstones[identity.keycloakUserId]
+            if (deletedAt?.isAfter(snapshotStartedAt) == true) {
+                false
+            } else {
+                tombstones.remove(identity.keycloakUserId)
+                true
             }
+        }
         acceptedIdentities.forEach { identity ->
-            val conflicts =
-                reconciled.filter {
-                    it.playerId == identity.playerId || it.keycloakUserId == identity.keycloakUserId
-                }
+            val conflicts = reconciled.filter {
+                it.playerId == identity.playerId || it.keycloakUserId == identity.keycloakUserId
+            }
             if (conflicts.none { it.syncedAt.isAfter(snapshotStartedAt) }) {
                 reconciled.removeAll(conflicts)
                 reconciled += identity

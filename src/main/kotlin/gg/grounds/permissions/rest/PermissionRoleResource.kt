@@ -370,5 +370,6 @@ fun PermissionScope.toGrantResponse(
         mappingId = origin.mappingId,
         inheritedPath = origin.inheritedPath,
         editable =
-            origin.kind == gg.grounds.permissions.domain.PermissionGrantOriginKind.DIRECT_PERMISSION,
+            origin.kind ==
+                gg.grounds.permissions.domain.PermissionGrantOriginKind.DIRECT_PERMISSION,
     )

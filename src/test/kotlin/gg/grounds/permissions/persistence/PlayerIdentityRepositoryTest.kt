@@ -583,24 +583,20 @@ class PlayerIdentityRepositoryTest {
 
         try {
             startSync(Instant.parse("2030-01-01T00:00:01Z"))
-            val fullReconciliation =
-                executor.submit {
-                    identityRepository.replaceAll(
-                        listOf(
-                            staleSnapshot.copy(syncedAt = Instant.parse("2030-01-01T00:00:03Z"))
-                        ),
-                        Instant.parse("2030-01-01T00:00:04Z"),
-                    )
-                }
+            val fullReconciliation = executor.submit {
+                identityRepository.replaceAll(
+                    listOf(staleSnapshot.copy(syncedAt = Instant.parse("2030-01-01T00:00:03Z"))),
+                    Instant.parse("2030-01-01T00:00:04Z"),
+                )
+            }
             awaitMutationLockWaiters(1)
 
-            val deletion =
-                executor.submit {
-                    identityRepository.deleteByKeycloakUserId(
-                        staleSnapshot.keycloakUserId,
-                        Instant.parse("2030-01-01T00:00:02Z"),
-                    )
-                }
+            val deletion = executor.submit {
+                identityRepository.deleteByKeycloakUserId(
+                    staleSnapshot.keycloakUserId,
+                    Instant.parse("2030-01-01T00:00:02Z"),
+                )
+            }
             awaitMutationLockWaiters(2)
             assertFalse(fullReconciliation.isDone)
             assertFalse(deletion.isDone)
@@ -631,8 +627,9 @@ class PlayerIdentityRepositoryTest {
         val executor = Executors.newSingleThreadExecutor()
 
         try {
-            val replacementFuture =
-                executor.submit { identityRepository.replacePlayer(replacement) }
+            val replacementFuture = executor.submit {
+                identityRepository.replacePlayer(replacement)
+            }
             awaitMutationLockWaiters(1)
 
             assertFalse(replacementFuture.isDone)
