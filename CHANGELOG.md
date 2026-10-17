@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.1](https://github.com/groundsgg/service-permissions/compare/v1.3.0...v1.3.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **build:** resolve dependencies through the runner mirror in Docker builds ([#99](https://github.com/groundsgg/service-permissions/issues/99)) ([5da849d](https://github.com/groundsgg/service-permissions/commit/5da849d3a9342b995fa9ac3957b2f1bd75fd7bcc))
+* remove the snapshot pool deadlock and cache snapshots for cross-region DB access ([#106](https://github.com/groundsgg/service-permissions/issues/106)) ([36eee39](https://github.com/groundsgg/service-permissions/commit/36eee3988c3c0e7e772b5885383388efc70d838a))
+* **runtime:** accept suffix wildcard catalog entries ([#104](https://github.com/groundsgg/service-permissions/issues/104)) ([94568d8](https://github.com/groundsgg/service-permissions/commit/94568d89f7cc525a9518caa2401a91e3bc973b3b))
+
 ## [1.3.0](https://github.com/groundsgg/service-permissions/compare/v1.2.0...v1.3.0) (2026-08-04)
 
 
