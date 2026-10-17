@@ -480,29 +480,28 @@ constructor(
         val mappings = repository.listKeycloakGroupMappings().associateBy { it.id }
         val roles = repository.listRoles().associateBy { it.key }
         val snapshot = snapshotFor(playerId, null, null)
-        val directRows =
-            directGrants.map { grant ->
-                PlayerEffectiveRoleResponse(
-                    id = grant.id.toString(),
-                    roleKey = grant.roleKey,
-                    roleName = roles[grant.roleKey]?.name ?: grant.roleKey,
-                    source = PermissionGrantOriginKind.DIRECT_ROLE,
-                    startsAt = grant.startsAt,
-                    expiresAt = grant.expiresAt,
-                    editable = true,
-                    directGrant = grant.toResponse(),
-                    inherited = false,
-                    assignments =
-                        snapshot.roleAssignments
-                            .filter {
-                                it.roleKey == grant.roleKey &&
-                                    it.origin.kind == PermissionGrantOriginKind.DIRECT_ROLE &&
-                                    it.origin.grantId == grant.id &&
-                                    it.origin.inheritedPath.isEmpty()
-                            }
-                            .map { it.toResponse() },
-                )
-            }
+        val directRows = directGrants.map { grant ->
+            PlayerEffectiveRoleResponse(
+                id = grant.id.toString(),
+                roleKey = grant.roleKey,
+                roleName = roles[grant.roleKey]?.name ?: grant.roleKey,
+                source = PermissionGrantOriginKind.DIRECT_ROLE,
+                startsAt = grant.startsAt,
+                expiresAt = grant.expiresAt,
+                editable = true,
+                directGrant = grant.toResponse(),
+                inherited = false,
+                assignments =
+                    snapshot.roleAssignments
+                        .filter {
+                            it.roleKey == grant.roleKey &&
+                                it.origin.kind == PermissionGrantOriginKind.DIRECT_ROLE &&
+                                it.origin.grantId == grant.id &&
+                                it.origin.inheritedPath.isEmpty()
+                        }
+                        .map { it.toResponse() },
+            )
+        }
         val derivedRows =
             snapshot.roleAssignments
                 .filterNot { assignment ->

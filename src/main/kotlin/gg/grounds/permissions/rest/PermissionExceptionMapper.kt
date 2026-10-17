@@ -223,7 +223,8 @@ class PermissionForbiddenExceptionMapper :
         problem(
             Response.Status.FORBIDDEN,
             "The authenticated user lacks the required permission.",
-            if (exception.message == "missing_permission") "missing_permission" else "access_denied",
+            if (exception.message == "missing_permission") "missing_permission"
+            else "access_denied",
         )
 }
 

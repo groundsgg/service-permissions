@@ -339,7 +339,8 @@ class PermissionsOpenApiFilter : OASFilter {
                 "searchEffectivePlayerPermissions" to
                     listOf("permission", "effect", "scope", "source", "activation", "expiration"),
                 "searchPermissionCatalog" to listOf("permission", "label", "source", "lastseen"),
-                "searchKeycloakGroupMappings" to listOf("group", "role", "activation", "expiration"),
+                "searchKeycloakGroupMappings" to
+                    listOf("group", "role", "activation", "expiration"),
             )
 
         val COMMON_PROBLEM_RESPONSES =

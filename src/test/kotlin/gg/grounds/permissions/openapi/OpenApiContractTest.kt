@@ -637,7 +637,8 @@ class OpenApiContractTest {
                 "searchEffectivePlayerPermissions" to
                     listOf("permission", "effect", "scope", "source", "activation", "expiration"),
                 "searchPermissionCatalog" to listOf("permission", "label", "source", "lastseen"),
-                "searchKeycloakGroupMappings" to listOf("group", "role", "activation", "expiration"),
+                "searchKeycloakGroupMappings" to
+                    listOf("group", "role", "activation", "expiration"),
             )
 
         val ENUM_VALUES =
@@ -651,7 +652,13 @@ class OpenApiContractTest {
                     listOf("IMPORT", "KEEP_PROJECT", "USE_GLOBAL", "REMOVE_PROJECT_ENTRY"),
                 "SyncChangeKind" to listOf("IMPORT", "CONFLICT", "PROJECT_ONLY"),
                 "SyncEntityType" to
-                    listOf("ROLE", "ROLE_GRANT", "INHERITANCE", "CATALOG_ENTRY", "KEYCLOAK_MAPPING"),
+                    listOf(
+                        "ROLE",
+                        "ROLE_GRANT",
+                        "INHERITANCE",
+                        "CATALOG_ENTRY",
+                        "KEYCLOAK_MAPPING",
+                    ),
             )
 
         data class RequiredQueryParameter(val name: String, val description: String)

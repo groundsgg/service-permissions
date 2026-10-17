@@ -97,33 +97,33 @@ object PolicyEngine {
 
         val resolvedRoles = resolveRoles(roleAssignments, rolesByKey)
         val roleKeys = resolvedRoles.mapTo(linkedSetOf()) { it.roleKey }
-        val resolvedRoleGrants =
-            resolvedRoles.flatMap { resolved ->
-                rolesByKey
-                    .getValue(resolved.roleKey)
-                    .grants
-                    .asSequence()
-                    .map { grant -> grant to resolved.origin }
-                    .toList()
-            }
+        val resolvedRoleGrants = resolvedRoles.flatMap { resolved ->
+            rolesByKey
+                .getValue(resolved.roleKey)
+                .grants
+                .asSequence()
+                .map { grant -> grant to resolved.origin }
+                .toList()
+        }
         val roleGrants = resolvedRoleGrants.filter { (grant) -> grant.isActive(now) }
-        val effectiveRoleGrants =
-            roleGrants.map { (grant, origin) -> grant.toGrant(PermissionGrantSource.ROLE, origin) }
+        val effectiveRoleGrants = roleGrants.map { (grant, origin) ->
+            grant.toGrant(PermissionGrantSource.ROLE, origin)
+        }
         val matchingPlayerGrants =
             input.playerGrants.asSequence().filter { it.playerId == playerId }.toList()
-        val activePlayerGrantAssignments =
-            matchingPlayerGrants.filter { it.isAssignmentActive(now) }
+        val activePlayerGrantAssignments = matchingPlayerGrants.filter {
+            it.isAssignmentActive(now)
+        }
         val includedPlayerGrants = activePlayerGrantAssignments.filter { it.grant.isActive(now) }
-        val playerGrants =
-            includedPlayerGrants.map {
-                it.grant.toGrant(
-                    PermissionGrantSource.PLAYER,
-                    PermissionGrantOrigin(
-                        PermissionGrantOriginKind.DIRECT_PERMISSION,
-                        grantId = it.grantId,
-                    ),
-                )
-            }
+        val playerGrants = includedPlayerGrants.map {
+            it.grant.toGrant(
+                PermissionGrantSource.PLAYER,
+                PermissionGrantOrigin(
+                    PermissionGrantOriginKind.DIRECT_PERMISSION,
+                    grantId = it.grantId,
+                ),
+            )
+        }
         val grants = effectiveRoleGrants + playerGrants
 
         return EffectivePermissionSnapshot(
@@ -211,7 +211,10 @@ object PolicyEngine {
                     ResolvedRole(
                         roleKey = roleKey,
                         origin =
-                            assignment.origin.copy(roleKey = roleKey, inheritedPath = inheritedPath),
+                            assignment.origin.copy(
+                                roleKey = roleKey,
+                                inheritedPath = inheritedPath,
+                            ),
                     )
                 )
                 role.inheritedRoleKeys.forEach { inheritedRoleKey ->
@@ -319,14 +322,18 @@ object PolicyEngine {
         (startsAt == null || !startsAt.isAfter(now)) &&
             (expiresAt == null || expiresAt.isAfter(now))
 
-    private fun PermissionGrantSpec.futureStartAfter(now: Instant): Instant? =
-        startsAt?.takeIf { it.isAfter(now) }
+    private fun PermissionGrantSpec.futureStartAfter(now: Instant): Instant? = startsAt?.takeIf {
+        it.isAfter(now)
+    }
 
     private fun PlayerPermissionGrant.futureAssignmentStartAfter(now: Instant): Instant? =
-        assignmentStartsAt?.takeIf { it.isAfter(now) }
+        assignmentStartsAt?.takeIf {
+            it.isAfter(now)
+        }
 
-    private fun PlayerRoleGrant.futureStartAfter(now: Instant): Instant? =
-        startsAt?.takeIf { it.isAfter(now) }
+    private fun PlayerRoleGrant.futureStartAfter(now: Instant): Instant? = startsAt?.takeIf {
+        it.isAfter(now)
+    }
 
     private fun PermissionGrantSpec.toGrant(
         source: PermissionGrantSource,

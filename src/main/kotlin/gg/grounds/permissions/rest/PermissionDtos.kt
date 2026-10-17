@@ -212,7 +212,8 @@ data class KeycloakGroupMappingResponse(
 data class CatalogEntryRequest(
     @field:Schema(
         nullable = true,
-        description = "Ignored on update because the permissionKey path parameter is authoritative.",
+        description =
+            "Ignored on update because the permissionKey path parameter is authoritative.",
     )
     var key: String? = null,
     @field:Schema(nullable = false, minLength = 1, pattern = "\\S") var label: String? = null,
