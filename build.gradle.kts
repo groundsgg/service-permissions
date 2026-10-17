@@ -67,6 +67,8 @@ dependencies {
     implementation("io.quarkus:quarkus-opentelemetry")
     implementation("io.quarkus:quarkus-kubernetes-client")
     implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
+    implementation("io.quarkus:quarkus-redis-client")
+    implementation("com.github.ben-manes.caffeine:caffeine")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("io.nats:jnats:2.26.4")
@@ -78,6 +80,7 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     testImplementation("org.mockito.kotlin:mockito-kotlin:6.4.0")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")
+    testImplementation("org.testcontainers:testcontainers-toxiproxy:2.0.5")
 }
 
 tasks.processResources {

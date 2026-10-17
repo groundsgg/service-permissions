@@ -5,6 +5,14 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 import gg.grounds.permissions.api.PermissionPolicyRequest
+import gg.grounds.permissions.cache.DisabledPlayerPolicyL2
+import gg.grounds.permissions.cache.GlobalPolicyDefinitions
+import gg.grounds.permissions.cache.GroupRoleMapping
+import gg.grounds.permissions.cache.PermissionSnapshotCache
+import gg.grounds.permissions.cache.PlayerPolicyData
+import gg.grounds.permissions.cache.PlayerPolicyL2
+import gg.grounds.permissions.cache.PolicyDataSource
+import gg.grounds.permissions.cache.SnapshotCacheSettings
 import gg.grounds.permissions.domain.PermissionEffect
 import gg.grounds.permissions.domain.PermissionGrantSpec
 import gg.grounds.permissions.domain.PermissionPolicyInput
@@ -32,6 +40,7 @@ import gg.grounds.permissions.sync.SyncInheritance
 import gg.grounds.permissions.sync.SyncKeycloakMapping
 import gg.grounds.permissions.sync.SyncRole
 import gg.grounds.permissions.sync.SyncRoleGrant
+import jakarta.annotation.PreDestroy
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.sql.Connection
@@ -39,6 +48,7 @@ import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Duration
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.util.UUID
 import javax.sql.DataSource
 import org.eclipse.microprofile.health.Readiness
@@ -151,9 +161,39 @@ class PermissionRepository
 constructor(
     private val dataSource: DataSource,
     private val objectMapper: ObjectMapper,
-    private val identityRepository: PlayerIdentityRepository,
     @param:Readiness private val identityReadinessCheck: IdentitySyncReadinessCheck,
+    snapshotCacheSettings: SnapshotCacheSettings,
+    playerPolicyL2: PlayerPolicyL2,
 ) {
+    constructor(
+        dataSource: DataSource,
+        objectMapper: ObjectMapper,
+        identityReadinessCheck: IdentitySyncReadinessCheck,
+    ) : this(
+        dataSource,
+        objectMapper,
+        identityReadinessCheck,
+        SnapshotCacheSettings(),
+        DisabledPlayerPolicyL2,
+    )
+
+    internal val snapshotCache =
+        PermissionSnapshotCache(
+            snapshotCacheSettings,
+            playerPolicyL2,
+            object : PolicyDataSource {
+                override fun loadGlobalDefinitions() = read(::loadGlobalDefinitions)
+
+                override fun loadPlayerPolicyData(playerIds: Set<UUID>) = read { connection ->
+                    loadPlayerPolicyData(connection, playerIds)
+                }
+            },
+        )
+
+    @PreDestroy fun closeSnapshotCache() = snapshotCache.close()
+
+    private var lastSnapshotPollAt: Instant? = null
+    private val seenPlayerAuditEvents = mutableMapOf<UUID, Instant>()
 
     fun createRole(actorUserId: String, role: RoleRecord): RoleRecord =
         try {
@@ -1540,6 +1580,7 @@ constructor(
                         },
                 )
                 connection.commit()
+                snapshotCache.markGlobalsStale()
                 PermissionSyncMetadataRecord(snapshot.snapshotId, actorUserId, importedAt)
             } catch (error: Throwable) {
                 connection.rollback()
@@ -1659,43 +1700,330 @@ constructor(
                 }
             }
 
-    /** Reads the whole policy input on one pooled connection and from one database snapshot. */
+    /**
+     * Builds the policy input from cached global definitions and the player's cached rows. A miss
+     * costs one database round trip; see [PermissionSnapshotCache].
+     */
     fun policyFor(
         request: PermissionPolicyRequest,
         now: Instant = Instant.now(),
-    ): PermissionPolicyInput = consistentRead { connection ->
-        val roles = listRoleDefinitions(connection)
-        val directPlayerRoles = listPlayerRoleGrants(connection, request.playerId)
+    ): PermissionPolicyInput {
+        var (globals, player) = cachedPolicyData(request.playerId)
+        if (!globals.definesRolesOf(player)) {
+            // A role the cached rows reference is gone or not loaded yet: reload both once.
+            snapshotCache.evictPlayer(request.playerId)
+            snapshotCache.markGlobalsStale()
+            val reloaded = cachedPolicyData(request.playerId)
+            globals = reloaded.first
+            player = reloaded.second
+        }
         val mappedRoles =
-            if (hasKeycloakGroupMappings(connection)) {
+            if (globals.groupMappings.isEmpty()) {
+                emptyList()
+            } else {
                 if (
                     !identityReadinessCheck.isIdentityPolicyAvailable(
-                        identityRepository.currentSyncState(connection),
+                        snapshotCache.identityLastSuccessAt,
                         now,
                     )
                 ) {
                     throw IdentityProjectionUnavailableException()
                 }
-                val groupPaths =
-                    identityRepository
-                        .findByPlayerId(connection, request.playerId)
-                        ?.groupPaths
-                        .orEmpty()
-                listMappedRoleGrants(connection, request.playerId, groupPaths)
-            } else {
-                emptyList()
+                globals.groupMappings
+                    .filter { it.keycloakGroup in player.groupPaths }
+                    .map { mapping ->
+                        PlayerRoleGrant(
+                            playerId = request.playerId,
+                            roleKey = mapping.roleKey,
+                            startsAt = mapping.startsAt,
+                            expiresAt = mapping.expiresAt,
+                            assignmentSource = PermissionRoleAssignmentSource.GROUP_MAPPING,
+                            mappingId = mapping.mappingId,
+                        )
+                    }
             }
-        val playerGrants = listPlayerGrants(connection, request.playerId)
 
-        PermissionPolicyInput(
-            policyVersion = currentPolicyVersion(connection),
-            roles = roles,
-            playerRoles = directPlayerRoles + mappedRoles,
-            playerGrants = playerGrants,
+        return PermissionPolicyInput(
+            policyVersion = globals.policyVersion,
+            roles = globals.roles,
+            playerRoles = player.roleGrants + mappedRoles,
+            playerGrants = player.grants,
             refreshAfter = now.plus(REFRESH_AFTER_OFFSET),
             expiresAt = now.plus(EXPIRES_AFTER_OFFSET),
         )
     }
+
+    /**
+     * Polls the policy version, the identity sync state and the player-scoped writes since the last
+     * poll in one round trip, so writes made by other instances reach this instance's cache.
+     */
+    @Synchronized
+    fun refreshSnapshotCache() {
+        val poll = read { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    SELECT
+                        (SELECT version FROM permission_policy_versions WHERE id = 1) AS policy_version,
+                        (SELECT last_success_at FROM permission_identity_sync_state WHERE id = 1)
+                            AS identity_last_success_at,
+                        now() AS polled_at,
+                        (
+                            SELECT COALESCE(
+                                json_agg(json_build_object('id', id, 'target', target, 'createdAt', created_at)),
+                                '[]'::json
+                            )
+                            FROM permission_audit_events
+                            WHERE action = ANY (?)
+                              AND created_at >= COALESCE(?, now()) - ?::interval
+                        ) AS player_events
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.setArray(
+                        1,
+                        connection.createArrayOf("text", PLAYER_AUDIT_ACTIONS.toTypedArray()),
+                    )
+                    statement.setTimestamp(2, lastSnapshotPollAt?.let(Timestamp::from))
+                    statement.setString(3, "${SNAPSHOT_POLL_OVERLAP.toSeconds()} seconds")
+                    statement.executeQuery().use { rows ->
+                        check(rows.next())
+                        SnapshotPoll(
+                            policyVersion = rows.getLong("policy_version"),
+                            identityLastSuccessAt = rows.instantOrNull("identity_last_success_at"),
+                            polledAt = rows.getTimestamp("polled_at").toInstant(),
+                            playerEvents = objectMapper.readTree(rows.getString("player_events")),
+                        )
+                    }
+                }
+        }
+        val changedPlayers =
+            poll.playerEvents
+                .filter { event ->
+                    seenPlayerAuditEvents.putIfAbsent(event.uuid("id"), poll.polledAt) == null
+                }
+                .mapNotNull { event ->
+                    event.text("target")?.removePrefix(PLAYER_TARGET_PREFIX)?.let(UUID::fromString)
+                }
+                .toSet()
+        seenPlayerAuditEvents.values.removeIf {
+            it.isBefore(poll.polledAt.minus(SNAPSHOT_POLL_OVERLAP.multipliedBy(2)))
+        }
+        lastSnapshotPollAt = poll.polledAt
+        snapshotCache.observe(poll.policyVersion, poll.identityLastSuccessAt, changedPlayers)
+        snapshotCache.globals(poll.policyVersion)
+    }
+
+    private fun cachedPolicyData(playerId: UUID): Pair<GlobalPolicyDefinitions, PlayerPolicyData> {
+        val globals = snapshotCache.globals()
+        val player = snapshotCache.player(playerId)
+        return if (player.policyVersion > globals.policyVersion) {
+            snapshotCache.globals(player.policyVersion) to player
+        } else {
+            globals to player
+        }
+    }
+
+    private fun GlobalPolicyDefinitions.definesRolesOf(player: PlayerPolicyData): Boolean {
+        val roleKeys = roles.mapTo(mutableSetOf()) { it.key }
+        return player.roleGrants.all { it.roleKey in roleKeys }
+    }
+
+    private fun loadGlobalDefinitions(connection: Connection): GlobalPolicyDefinitions =
+        connection
+            .prepareStatement(
+                """
+                SELECT
+                    (SELECT version FROM permission_policy_versions WHERE id = 1) AS policy_version,
+                    (SELECT last_success_at FROM permission_identity_sync_state WHERE id = 1)
+                        AS identity_last_success_at,
+                    (
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'key', key, 'name', name, 'description', description, 'prefix', prefix,
+                            'color', color, 'sortOrder', sort_order, 'isDefault', is_default
+                        ) ORDER BY sort_order ASC, key ASC), '[]'::json)
+                        FROM permission_roles
+                    ) AS roles,
+                    (
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'child', child_role_key, 'parent', parent_role_key
+                        ) ORDER BY child_role_key ASC, parent_role_key ASC), '[]'::json)
+                        FROM permission_role_inheritance
+                    ) AS inheritance,
+                    (
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'id', id, 'roleKey', role_key, 'effect', effect,
+                            'pattern', permission_pattern, 'scopeKind', scope_kind,
+                            'scopeValue', scope_value, 'startsAt', starts_at, 'expiresAt', expires_at
+                        ) ORDER BY created_at ASC, id ASC), '[]'::json)
+                        FROM permission_role_grants
+                    ) AS role_grants,
+                    (
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'id', id, 'group', keycloak_group, 'roleKey', role_key,
+                            'startsAt', starts_at, 'expiresAt', expires_at
+                        ) ORDER BY created_at ASC, id ASC), '[]'::json)
+                        FROM permission_keycloak_group_mappings
+                    ) AS group_mappings
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "Permission policy version row is missing" }
+                    val inheritedRoles =
+                        objectMapper
+                            .readTree(rows.getString("inheritance"))
+                            .groupBy({ it.text("child")!! }, { it.text("parent")!! })
+                    val grants =
+                        objectMapper
+                            .readTree(rows.getString("role_grants"))
+                            .groupBy({ it.text("roleKey")!! }, { it.toGrantSpec() })
+                    GlobalPolicyDefinitions(
+                        policyVersion = rows.getLong("policy_version"),
+                        roles =
+                            objectMapper.readTree(rows.getString("roles")).map { role ->
+                                val key = role.text("key")!!
+                                RoleDefinition(
+                                    key = key,
+                                    name = role.text("name")!!,
+                                    description = role.text("description")!!,
+                                    prefix = role.text("prefix"),
+                                    color = role.text("color"),
+                                    sortOrder = role.get("sortOrder").asInt(),
+                                    isDefault = role.get("isDefault").asBoolean(),
+                                    inheritedRoleKeys = inheritedRoles[key].orEmpty().toSet(),
+                                    grants = grants[key].orEmpty(),
+                                )
+                            },
+                        groupMappings =
+                            objectMapper.readTree(rows.getString("group_mappings")).map { mapping ->
+                                GroupRoleMapping(
+                                    mappingId = mapping.uuid("id"),
+                                    keycloakGroup = mapping.text("group")!!,
+                                    roleKey = mapping.text("roleKey")!!,
+                                    startsAt = mapping.instant("startsAt"),
+                                    expiresAt = mapping.instant("expiresAt"),
+                                )
+                            },
+                        identityLastSuccessAt = rows.instantOrNull("identity_last_success_at"),
+                    )
+                }
+            }
+
+    private fun loadPlayerPolicyData(
+        connection: Connection,
+        playerIds: Set<UUID>,
+    ): Map<UUID, PlayerPolicyData> =
+        connection
+            .prepareStatement(
+                """
+                SELECT
+                    players.player_id,
+                    (SELECT version FROM permission_policy_versions WHERE id = 1) AS policy_version,
+                    (SELECT last_success_at FROM permission_identity_sync_state WHERE id = 1)
+                        AS identity_last_success_at,
+                    ARRAY(
+                        SELECT keycloak_group_path
+                        FROM permission_player_keycloak_groups groups
+                        WHERE groups.player_id = players.player_id
+                        ORDER BY keycloak_group_path
+                    ) AS group_paths,
+                    (
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'id', id, 'roleKey', role_key, 'startsAt', starts_at, 'expiresAt', expires_at
+                        ) ORDER BY created_at ASC, id ASC), '[]'::json)
+                        FROM permission_player_role_grants role_grants
+                        WHERE role_grants.player_id = players.player_id
+                    ) AS role_grants,
+                    (
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'id', id, 'effect', effect, 'pattern', permission_pattern,
+                            'scopeKind', scope_kind, 'scopeValue', scope_value,
+                            'startsAt', starts_at, 'expiresAt', expires_at
+                        ) ORDER BY created_at ASC, id ASC), '[]'::json)
+                        FROM permission_player_grants grants
+                        WHERE grants.player_id = players.player_id
+                    ) AS grants
+                FROM unnest(?::uuid[]) AS players(player_id)
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setArray(1, connection.createArrayOf("uuid", playerIds.toTypedArray()))
+                statement.executeQuery().use { rows ->
+                    buildMap {
+                        while (rows.next()) {
+                            val playerId = rows.getObject("player_id", UUID::class.java)
+                            put(
+                                playerId,
+                                PlayerPolicyData(
+                                    playerId = playerId,
+                                    policyVersion = rows.getLong("policy_version"),
+                                    roleGrants =
+                                        objectMapper.readTree(rows.getString("role_grants")).map {
+                                            grant ->
+                                            PlayerRoleGrant(
+                                                grantId = grant.uuid("id"),
+                                                playerId = playerId,
+                                                roleKey = grant.text("roleKey")!!,
+                                                startsAt = grant.instant("startsAt"),
+                                                expiresAt = grant.instant("expiresAt"),
+                                            )
+                                        },
+                                    grants =
+                                        objectMapper.readTree(rows.getString("grants")).map { grant
+                                            ->
+                                            PlayerPermissionGrant(
+                                                grantId = grant.uuid("id"),
+                                                playerId = playerId,
+                                                grant = grant.toGrantSpec(),
+                                                assignmentStartsAt = grant.instant("startsAt"),
+                                                assignmentExpiresAt = grant.instant("expiresAt"),
+                                            )
+                                        },
+                                    groupPaths =
+                                        (rows.getArray("group_paths").array as Array<*>)
+                                            .filterIsInstance<String>()
+                                            .toSet(),
+                                    identityLastSuccessAt =
+                                        rows.instantOrNull("identity_last_success_at"),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+
+    private fun JsonNode.text(field: String): String? =
+        get(field)?.takeUnless(JsonNode::isNull)?.asText()
+
+    private fun JsonNode.uuid(field: String): UUID = UUID.fromString(text(field))
+
+    private fun JsonNode.instant(field: String): Instant? =
+        text(field)?.let { OffsetDateTime.parse(it).toInstant() }
+
+    private fun JsonNode.toGrantSpec(): PermissionGrantSpec =
+        PermissionGrantSpec(
+            effect = PermissionEffect.valueOf(text("effect")!!),
+            pattern = text("pattern")!!,
+            scope =
+                PermissionScope(
+                    kind = PermissionScopeKind.valueOf(text("scopeKind")!!),
+                    value = text("scopeValue"),
+                ),
+            startsAt = instant("startsAt"),
+            expiresAt = instant("expiresAt"),
+            permissionGrantId = uuid("id"),
+        )
+
+    private data class SnapshotPoll(
+        val policyVersion: Long,
+        val identityLastSuccessAt: Instant?,
+        val polledAt: Instant,
+        val playerEvents: JsonNode,
+    )
 
     fun requiresIdentityProjection(): Boolean = read(::hasKeycloakGroupMappings)
 
@@ -1743,28 +2071,11 @@ constructor(
                     )
                     .use { it.executeUpdate() }
                 connection.commit()
+                snapshotCache.clear()
             } catch (error: Throwable) {
                 connection.rollback()
                 throw error
             }
-        }
-    }
-
-    private fun listRoleDefinitions(connection: Connection): List<RoleDefinition> {
-        val inheritedRoles = listRoleInheritance(connection)
-        val grants = listRoleGrants(connection)
-        return listRoles(connection).map { role ->
-            RoleDefinition(
-                key = role.key,
-                name = role.name,
-                description = role.description,
-                prefix = role.prefix,
-                color = role.color,
-                sortOrder = role.sortOrder,
-                isDefault = role.isDefault,
-                inheritedRoleKeys = inheritedRoles[role.key].orEmpty(),
-                grants = grants[role.key].orEmpty(),
-            )
         }
     }
 
@@ -1789,61 +2100,6 @@ constructor(
                 }
             }
 
-    private fun listRoleGrants(connection: Connection): Map<String, List<PermissionGrantSpec>> =
-        connection
-            .prepareStatement(
-                """
-                SELECT id, role_key, effect, permission_pattern, scope_kind, scope_value, starts_at,
-                       expires_at
-                FROM permission_role_grants
-                ORDER BY created_at ASC, id ASC
-                """
-                    .trimIndent()
-            )
-            .use { statement ->
-                statement.executeQuery().use { rows ->
-                    buildMap<String, MutableList<PermissionGrantSpec>> {
-                        while (rows.next()) {
-                            getOrPut(rows.getString("role_key")) { mutableListOf() } +=
-                                rows.toGrantSpec()
-                        }
-                    }
-                }
-            }
-
-    private fun listPlayerRoleGrants(
-        connection: Connection,
-        playerId: UUID,
-    ): List<PlayerRoleGrant> =
-        connection
-            .prepareStatement(
-                """
-                SELECT id, player_id, role_key, starts_at, expires_at
-                FROM permission_player_role_grants
-                WHERE player_id = ?
-                ORDER BY created_at ASC, id ASC
-                """
-                    .trimIndent()
-            )
-            .use { statement ->
-                statement.setObject(1, playerId)
-                statement.executeQuery().use { rows ->
-                    buildList {
-                        while (rows.next()) {
-                            add(
-                                PlayerRoleGrant(
-                                    grantId = rows.getObject("id", UUID::class.java),
-                                    playerId = rows.getObject("player_id", UUID::class.java),
-                                    roleKey = rows.getString("role_key"),
-                                    startsAt = rows.instantOrNull("starts_at"),
-                                    expiresAt = rows.instantOrNull("expires_at"),
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-
     private fun hasKeycloakGroupMappings(connection: Connection): Boolean =
         connection
             .prepareStatement("SELECT EXISTS (SELECT 1 FROM permission_keycloak_group_mappings)")
@@ -1854,82 +2110,13 @@ constructor(
                 }
             }
 
-    private fun listMappedRoleGrants(
-        connection: Connection,
-        playerId: UUID,
-        keycloakGroups: Set<String>,
-    ): List<PlayerRoleGrant> {
-        if (keycloakGroups.isEmpty()) {
-            return emptyList()
+    /** Keeps this instance's snapshot cache in step with its own committed writes. */
+    private fun afterPolicyWrite(target: String) {
+        snapshotCache.markGlobalsStale()
+        if (target.startsWith(PLAYER_TARGET_PREFIX)) {
+            snapshotCache.evictPlayer(UUID.fromString(target.removePrefix(PLAYER_TARGET_PREFIX)))
         }
-
-        return connection
-            .prepareStatement(
-                """
-                SELECT id, role_key, starts_at, expires_at
-                FROM permission_keycloak_group_mappings
-                WHERE keycloak_group = ANY (?)
-                ORDER BY created_at ASC, id ASC
-                """
-                    .trimIndent()
-            )
-            .use { statement ->
-                statement.setArray(
-                    1,
-                    connection.createArrayOf("text", keycloakGroups.toTypedArray()),
-                )
-                statement.executeQuery().use { rows ->
-                    buildList {
-                        while (rows.next()) {
-                            add(
-                                PlayerRoleGrant(
-                                    playerId = playerId,
-                                    roleKey = rows.getString("role_key"),
-                                    startsAt = rows.instantOrNull("starts_at"),
-                                    expiresAt = rows.instantOrNull("expires_at"),
-                                    assignmentSource = PermissionRoleAssignmentSource.GROUP_MAPPING,
-                                    mappingId = rows.getObject("id", UUID::class.java),
-                                )
-                            )
-                        }
-                    }
-                }
-            }
     }
-
-    private fun listPlayerGrants(
-        connection: Connection,
-        playerId: UUID,
-    ): List<PlayerPermissionGrant> =
-        connection
-            .prepareStatement(
-                """
-                SELECT id, player_id, effect, permission_pattern, scope_kind, scope_value, starts_at,
-                       expires_at
-                FROM permission_player_grants
-                WHERE player_id = ?
-                ORDER BY created_at ASC, id ASC
-                """
-                    .trimIndent()
-            )
-            .use { statement ->
-                statement.setObject(1, playerId)
-                statement.executeQuery().use { rows ->
-                    buildList {
-                        while (rows.next()) {
-                            add(
-                                PlayerPermissionGrant(
-                                    grantId = rows.getObject("id", UUID::class.java),
-                                    playerId = rows.getObject("player_id", UUID::class.java),
-                                    grant = rows.toGrantSpec(),
-                                    assignmentStartsAt = rows.instantOrNull("starts_at"),
-                                    assignmentExpiresAt = rows.instantOrNull("expires_at"),
-                                )
-                            )
-                        }
-                    }
-                }
-            }
 
     private fun <T> read(block: (Connection) -> T): T =
         dataSource.connection.use { connection -> block(connection) }
@@ -2004,6 +2191,7 @@ constructor(
                 incrementPolicyVersion(connection)
                 insertAuditEvent(connection, actorUserId, action, target, metadata)
                 connection.commit()
+                afterPolicyWrite(target)
                 result
             } catch (error: Throwable) {
                 connection.rollback()
@@ -2022,11 +2210,15 @@ constructor(
             connection.autoCommit = false
             try {
                 lockPolicyVersion(connection)
-                if (block(connection)) {
+                val changed = block(connection)
+                if (changed) {
                     incrementPolicyVersion(connection)
                     insertAuditEvent(connection, actorUserId, action, target, metadata)
                 }
                 connection.commit()
+                if (changed) {
+                    afterPolicyWrite(target)
+                }
             } catch (error: Throwable) {
                 connection.rollback()
                 throw error
@@ -2606,20 +2798,6 @@ constructor(
             expiresAt = instantOrNull("expires_at"),
         )
 
-    private fun ResultSet.toGrantSpec(): PermissionGrantSpec =
-        PermissionGrantSpec(
-            effect = PermissionEffect.valueOf(getString("effect")),
-            pattern = getString("permission_pattern"),
-            scope =
-                PermissionScope(
-                    kind = PermissionScopeKind.valueOf(getString("scope_kind")),
-                    value = getString("scope_value"),
-                ),
-            startsAt = instantOrNull("starts_at"),
-            expiresAt = instantOrNull("expires_at"),
-            permissionGrantId = getObject("id", UUID::class.java),
-        )
-
     private fun ResultSet.toPermissionAuditEventRecord(): PermissionAuditEventRecord =
         PermissionAuditEventRecord(
             id = getObject("id", UUID::class.java),
@@ -2747,5 +2925,18 @@ constructor(
         private val EXPIRES_AFTER_OFFSET = Duration.ofMinutes(10)
         private val STRING_MAP_TYPE = object : TypeReference<Map<String, String>>() {}
         private val SEARCH_WHITESPACE = Regex("\\s+")
+        private const val PLAYER_TARGET_PREFIX = "player:"
+        private val PLAYER_AUDIT_ACTIONS =
+            listOf(
+                "player.role_grant.created",
+                "player.role_grant.updated",
+                "player.role_grant.deleted",
+                "player.grant.created",
+                "player.grant.updated",
+                "player.grant.deleted",
+            )
+
+        /** How far each poll looks back, so writes that commit late are still seen. */
+        private val SNAPSHOT_POLL_OVERLAP = Duration.ofSeconds(60)
     }
 }

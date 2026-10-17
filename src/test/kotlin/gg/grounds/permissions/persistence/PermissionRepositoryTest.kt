@@ -2,13 +2,18 @@ package gg.grounds.permissions.persistence
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.permissions.api.PermissionPolicyRequest
+import gg.grounds.permissions.cache.PermissionSnapshotInvalidationSubscriber
 import gg.grounds.permissions.domain.PermissionEffect
+import gg.grounds.permissions.domain.PermissionPolicyInput
 import gg.grounds.permissions.domain.PermissionRoleAssignmentSource
 import gg.grounds.permissions.domain.PermissionScope
 import gg.grounds.permissions.domain.PermissionScopeKind
 import gg.grounds.permissions.identity.IdentityProjectionUnavailableException
+import gg.grounds.permissions.identity.IdentitySyncReadinessCheck
 import gg.grounds.permissions.identity.IdentitySyncStatus
+import gg.grounds.permissions.identity.PermissionSnapshotInvalidationEvent
 import gg.grounds.permissions.identity.ProjectedPlayerIdentity
+import gg.grounds.permissions.identity.SNAPSHOT_INVALIDATION_SCHEMA_VERSION
 import gg.grounds.permissions.policy.PolicyEngine
 import gg.grounds.permissions.sync.GlobalPermissionSnapshot
 import gg.grounds.permissions.sync.PermissionSnapshotFingerprint
@@ -21,6 +26,10 @@ import gg.grounds.permissions.sync.SyncInheritance
 import gg.grounds.permissions.sync.SyncKeycloakMapping
 import gg.grounds.permissions.sync.SyncRole
 import gg.grounds.permissions.sync.SyncRoleGrant
+import io.agroal.api.AgroalDataSource
+import io.agroal.api.configuration.supplier.AgroalDataSourceConfigurationSupplier
+import io.agroal.api.security.NamePrincipal
+import io.agroal.api.security.SimplePassword
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
@@ -29,14 +38,18 @@ import java.lang.reflect.Proxy
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.Timestamp
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
+import org.eclipse.microprofile.config.inject.ConfigProperty
+import org.eclipse.microprofile.health.Readiness
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -61,6 +74,19 @@ class PermissionRepositoryTest {
     @Inject lateinit var dataSource: DataSource
 
     @Inject lateinit var objectMapper: ObjectMapper
+
+    @Inject lateinit var invalidationSubscriber: PermissionSnapshotInvalidationSubscriber
+
+    @Inject @field:Readiness lateinit var readinessCheck: IdentitySyncReadinessCheck
+
+    @ConfigProperty(name = "quarkus.datasource.jdbc.url") lateinit var jdbcUrl: String
+
+    @ConfigProperty(name = "quarkus.datasource.username") lateinit var username: String
+
+    @ConfigProperty(name = "quarkus.datasource.password") lateinit var password: String
+
+    private val cachePlayerId = UUID.fromString("00000000-0000-0000-0000-000000000a01")
+    private val cacheRequest = PermissionPolicyRequest(cachePlayerId, "lobby", "lobby-1")
 
     @BeforeEach
     fun resetDatabase() {
@@ -1319,8 +1345,7 @@ class PermissionRepositoryTest {
     @Test
     fun normalPolicyWriterWaitsForImportFingerprintTransactionBeforeEnteringMutation() {
         val observedDataSource = PolicyLockObservingDataSource(dataSource)
-        val observedRepository =
-            PermissionRepository(observedDataSource, objectMapper, identityRepository, mock())
+        val observedRepository = PermissionRepository(observedDataSource, objectMapper, mock())
         val reviewedTargetFingerprint = currentFingerprint()
         val executor = Executors.newFixedThreadPool(2)
 
@@ -1385,8 +1410,7 @@ class PermissionRepositoryTest {
                 importPolicyWriteSqlPrefix = "DELETE FROM permission_roles",
                 writerPolicyWriteSqlPrefix = "INSERT INTO permission_player_role_grants",
             )
-        val observedRepository =
-            PermissionRepository(observedDataSource, objectMapper, identityRepository, mock())
+        val observedRepository = PermissionRepository(observedDataSource, objectMapper, mock())
         val executor = Executors.newFixedThreadPool(2)
 
         try {
@@ -1443,12 +1467,7 @@ class PermissionRepositoryTest {
             actorUserId = "first-user",
         )
         val snapshotRepository =
-            PermissionRepository(
-                InterleavingAuditDataSource(dataSource),
-                objectMapper,
-                identityRepository,
-                mock(),
-            )
+            PermissionRepository(InterleavingAuditDataSource(dataSource), objectMapper, mock())
 
         val page = snapshotRepository.listAuditEvents(PermissionAuditEventQuery(perPage = 25))
 
@@ -1712,4 +1731,220 @@ class PermissionRepositoryTest {
             custom = true,
             lastSeenAt = null,
         )
+
+    // One pooled connection per snapshot
+    @Test
+    fun concurrentSnapshotsSucceedWithASingleConnectionPool() {
+        val playerId = UUID.fromString("00000000-0000-0000-0000-000000000901")
+        seedGroupMappedPlayer(playerId)
+
+        singleConnectionPool().use { pool ->
+            val poolRepository =
+                PermissionRepository(
+                    pool,
+                    objectMapper,
+                    IdentitySyncReadinessCheck(PlayerIdentityRepository(pool), Duration.ofHours(6)),
+                )
+            val executor = Executors.newFixedThreadPool(SINGLE_CONNECTION_REQUESTS)
+            try {
+                val snapshots =
+                    executor
+                        .invokeAll(
+                            List(SINGLE_CONNECTION_REQUESTS) {
+                                Callable<PermissionPolicyInput> {
+                                    poolRepository.policyFor(
+                                        PermissionPolicyRequest(playerId, "lobby", "lobby-1")
+                                    )
+                                }
+                            },
+                            30,
+                            TimeUnit.SECONDS,
+                        )
+                        .map { it.get() }
+
+                snapshots.forEach { input ->
+                    assertEquals(
+                        setOf("default", "staff"),
+                        input.roles.mapTo(linkedSetOf()) { it.key },
+                    )
+                    assertEquals(listOf("staff"), input.playerRoles.map { it.roleKey })
+                }
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+    }
+
+    private fun seedGroupMappedPlayer(playerId: UUID) {
+        repository.deleteAllPermissionData()
+        repository.createRole(
+            "test-user",
+            RoleRecord(key = "default", name = "Default", isDefault = true),
+        )
+        repository.createRole("test-user", RoleRecord(key = "staff", name = "Staff"))
+        repository.addRoleInheritance("test-user", "staff", "default")
+        repository.createKeycloakGroupMapping(
+            "test-user",
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "staff"),
+        )
+        val syncedAt = Instant.now()
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(
+            listOf(
+                ProjectedPlayerIdentity(
+                    playerId = playerId,
+                    keycloakUserId = "keycloak-single-connection",
+                    minecraftUsername = "SingleConnection",
+                    normalizedUsername = "singleconnection",
+                    groupPaths = setOf("/staff"),
+                    syncedAt = syncedAt,
+                    sourceUpdatedAt = null,
+                )
+            ),
+            syncedAt,
+        )
+    }
+
+    private fun singleConnectionPool(): AgroalDataSource =
+        AgroalDataSource.from(
+            AgroalDataSourceConfigurationSupplier().connectionPoolConfiguration { pool ->
+                pool
+                    .maxSize(1)
+                    .acquisitionTimeout(Duration.ofSeconds(2))
+                    .connectionFactoryConfiguration { factory ->
+                        factory
+                            .jdbcUrl(jdbcUrl)
+                            .principal(NamePrincipal(username))
+                            .credential(SimplePassword(password))
+                    }
+            }
+        )
+
+    // Snapshot cache
+
+    private fun seedCachedPlayer() {
+        repository.deleteAllPermissionData()
+        repository.createRole(RoleRecord(key = "default", name = "Default", isDefault = true))
+        repository.createRole(RoleRecord(key = "staff", name = "Staff"))
+        repository.createKeycloakGroupMapping(
+            KeycloakGroupMappingRecord(UUID.randomUUID(), "/staff", "staff")
+        )
+        replaceCachedPlayerIdentity(groups = setOf("/staff"))
+    }
+
+    @Test
+    fun aPlayerMissIsOneStatementAndAHitIsNone() {
+        seedCachedPlayer()
+        val statements = AtomicInteger()
+        val instance = otherCachingInstance(statements)
+        instance.snapshotCache.globals()
+
+        statements.set(0)
+        instance.policyFor(cacheRequest)
+        assertEquals(1, statements.get(), "statements for a miss")
+
+        statements.set(0)
+        repeat(10) { instance.policyFor(cacheRequest) }
+        assertEquals(0, statements.get(), "statements for hits")
+    }
+
+    @Test
+    fun theVersionPollPicksUpPlayerWritesFromOtherInstances() {
+        seedCachedPlayer()
+        val instance = otherCachingInstance(AtomicInteger())
+        instance.refreshSnapshotCache()
+        assertEquals(emptyList<Any>(), instance.policyFor(cacheRequest).playerGrants)
+
+        repository.createPlayerGrant(
+            PlayerGrantRecord(
+                id = UUID.randomUUID(),
+                playerId = cachePlayerId,
+                effect = PermissionEffect.ALLOW,
+                pattern = "grounds.fly",
+                scope = PermissionScope(PermissionScopeKind.GLOBAL),
+            )
+        )
+        assertEquals(emptyList<Any>(), instance.policyFor(cacheRequest).playerGrants)
+        instance.refreshSnapshotCache()
+
+        val input = instance.policyFor(cacheRequest)
+        assertEquals(listOf("grounds.fly"), input.playerGrants.map { it.grant.pattern })
+        assertEquals(repository.currentPolicyVersion(), input.policyVersion)
+    }
+
+    @Test
+    fun aNatsInvalidationEvictsThePlayer() {
+        seedCachedPlayer()
+        assertEquals(
+            listOf("staff"),
+            repository.policyFor(cacheRequest).playerRoles.map { it.roleKey },
+        )
+
+        replaceCachedPlayerIdentity(groups = emptySet(), syncedAt = Instant.now().plusSeconds(10))
+        assertEquals(
+            listOf("staff"),
+            repository.policyFor(cacheRequest).playerRoles.map { it.roleKey },
+        )
+        invalidationSubscriber.onMessage(
+            objectMapper.writeValueAsBytes(
+                PermissionSnapshotInvalidationEvent(
+                    SNAPSHOT_INVALIDATION_SCHEMA_VERSION,
+                    cachePlayerId,
+                )
+            )
+        )
+
+        assertEquals(
+            emptyList<String>(),
+            repository.policyFor(cacheRequest).playerRoles.map { it.roleKey },
+        )
+    }
+
+    private fun replaceCachedPlayerIdentity(
+        groups: Set<String>,
+        syncedAt: Instant = Instant.now(),
+    ) {
+        identityRepository.markSyncRunning(syncedAt.minusSeconds(1))
+        identityRepository.replaceAll(
+            listOf(
+                ProjectedPlayerIdentity(
+                    playerId = cachePlayerId,
+                    keycloakUserId = "keycloak-cache-player",
+                    minecraftUsername = "CachePlayer",
+                    normalizedUsername = "cacheplayer",
+                    groupPaths = groups,
+                    syncedAt = syncedAt,
+                    sourceUpdatedAt = null,
+                )
+            ),
+            syncedAt,
+        )
+    }
+
+    private fun otherCachingInstance(statements: AtomicInteger) =
+        PermissionRepository(countingStatements(statements), objectMapper, readinessCheck)
+
+    private fun countingStatements(statements: AtomicInteger): DataSource =
+        object : DataSource by dataSource {
+            override fun getConnection(): Connection {
+                val connection = dataSource.connection
+                return Proxy.newProxyInstance(
+                    Connection::class.java.classLoader,
+                    arrayOf(Connection::class.java),
+                ) { _, method, args ->
+                    if (method.name == "prepareStatement" || method.name == "createStatement") {
+                        statements.incrementAndGet()
+                    }
+                    try {
+                        method.invoke(connection, *(args ?: emptyArray()))
+                    } catch (error: java.lang.reflect.InvocationTargetException) {
+                        throw error.targetException
+                    }
+                } as Connection
+            }
+        }
+
+    private companion object {
+        const val SINGLE_CONNECTION_REQUESTS = 4
+    }
 }

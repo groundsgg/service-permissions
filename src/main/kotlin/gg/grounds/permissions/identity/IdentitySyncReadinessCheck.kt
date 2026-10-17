@@ -39,15 +39,13 @@ class IdentitySyncReadinessCheck(
     fun isIdentityPolicyAvailable(): Boolean = isIdentityPolicyAvailable(clock.instant())
 
     fun isIdentityPolicyAvailable(now: Instant): Boolean =
-        isAvailable(store.currentSyncState(), now)
+        isIdentityPolicyAvailable(store.currentSyncState().lastSuccessAt, now)
 
-    fun isIdentityPolicyAvailable(state: IdentitySyncState, now: Instant): Boolean =
-        isAvailable(state, now)
+    fun isIdentityPolicyAvailable(lastSuccessAt: Instant?, now: Instant): Boolean =
+        lastSuccessAt != null && !lastSuccessAt.isBefore(now.minus(maxStaleness))
 
-    private fun isAvailable(state: IdentitySyncState, now: Instant): Boolean {
-        val lastSuccessAt = state.lastSuccessAt ?: return false
-        return !lastSuccessAt.isBefore(now.minus(maxStaleness))
-    }
+    private fun isAvailable(state: IdentitySyncState, now: Instant): Boolean =
+        isIdentityPolicyAvailable(state.lastSuccessAt, now)
 
     private companion object {
         const val CHECK_NAME = "player-identity-projection"

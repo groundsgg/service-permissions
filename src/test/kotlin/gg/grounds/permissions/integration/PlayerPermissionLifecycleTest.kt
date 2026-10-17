@@ -21,6 +21,7 @@ import gg.grounds.permissions.identity.KeycloakAuthorizationProvider
 import gg.grounds.permissions.identity.KeycloakGroupRepresentation
 import gg.grounds.permissions.identity.KeycloakUserRepresentation
 import gg.grounds.permissions.identity.MinecraftIdentityChangedEvent
+import gg.grounds.permissions.identity.PermissionSnapshotInvalidationPublisher
 import gg.grounds.permissions.identity.PlayerIdentitySynchronizer
 import gg.grounds.permissions.persistence.KeycloakGroupMappingRecord
 import gg.grounds.permissions.persistence.PermissionRepository
@@ -61,6 +62,7 @@ class PlayerPermissionLifecycleTest {
     @Inject lateinit var identityRepository: PlayerIdentityRepository
     @Inject lateinit var objectMapper: ObjectMapper
     @Inject lateinit var permissionRepository: PermissionRepository
+    @Inject lateinit var invalidationPublisher: PermissionSnapshotInvalidationPublisher
 
     private val playerId = UUID.fromString("00000000-0000-0000-0000-000000001301")
     private val keycloakUserId = "keycloak-user-13"
@@ -158,6 +160,7 @@ class PlayerPermissionLifecycleTest {
         assertEquals(setOf("builder"), snapshot(clock.instant()).roleKeys)
 
         forceIdentityProjectionStale(clock.instant().minus(Duration.ofHours(7)))
+        permissionRepository.refreshSnapshotCache()
 
         assertThrows(IdentityProjectionUnavailableException::class.java) {
             snapshot(clock.instant())
@@ -181,6 +184,7 @@ class PlayerPermissionLifecycleTest {
             source = source,
             clock = clock,
             maxStaleness = Duration.ofHours(6),
+            invalidationPublisher = invalidationPublisher,
         )
     }
 
