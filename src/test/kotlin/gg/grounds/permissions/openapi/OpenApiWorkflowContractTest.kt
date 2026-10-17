@@ -33,7 +33,7 @@ class OpenApiWorkflowContractTest {
         assertThat(workflow).contains("'grounds-runners'", "'ubuntu-24.04'")
         assertThat(workflow).doesNotContain("runs-on: arc-dind")
         assertThat(workflow).contains("actions/checkout@v7")
-        assertThat(workflow).contains("actions/setup-java@v5", "java-version: \"25\"")
+        assertThat(workflow).contains("actions/setup-java@v6", "java-version: \"25\"")
         assertThat(workflow).contains("gradle/actions/setup-gradle@v6")
         assertThat(workflow)
             .contains(
