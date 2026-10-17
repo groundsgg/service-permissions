@@ -6,7 +6,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     id("gg.grounds.base-conventions") version "0.8.1"
-    id("io.quarkus") version "3.39.1"
+    alias(libs.plugins.quarkus)
 }
 
 kotlin { jvmToolchain(25) }
@@ -50,7 +50,7 @@ repositories {
 }
 
 dependencies {
-    implementation(enforcedPlatform("io.quarkus.platform:quarkus-bom:3.39.1"))
+    implementation(enforcedPlatform(libs.quarkus.bom))
     implementation("io.quarkus:quarkus-arc")
     implementation("io.quarkus:quarkus-rest")
     implementation("io.quarkus:quarkus-rest-jackson")
@@ -76,7 +76,7 @@ dependencies {
     testImplementation("io.quarkus:quarkus-test-security")
     testImplementation("io.rest-assured:rest-assured")
     testImplementation("org.assertj:assertj-core:3.27.7")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:6.4.0")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")
 }
 
