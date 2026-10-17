@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/groundsgg/service-permissions/compare/v1.3.1...v1.4.0) (2026-10-17)
+
+
+### Features
+
+* **db:** run Flyway on a direct migrations datasource ([#108](https://github.com/groundsgg/service-permissions/issues/108)) ([21f2007](https://github.com/groundsgg/service-permissions/commit/21f2007466c6db83e8b86dd449da17911857fb18))
+
 ## [1.3.1](https://github.com/groundsgg/service-permissions/compare/v1.3.0...v1.3.1) (2026-10-17)
 
 
