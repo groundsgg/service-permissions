@@ -1647,7 +1647,9 @@ constructor(
     fun deleteCustomCatalogEntry(permissionKey: String) =
         deleteCustomCatalogEntry(REPOSITORY_SYSTEM_ACTOR, permissionKey)
 
-    fun currentPolicyVersion(): Long = read { connection ->
+    fun currentPolicyVersion(): Long = read(::currentPolicyVersion)
+
+    private fun currentPolicyVersion(connection: Connection): Long =
         connection
             .prepareStatement("SELECT version FROM permission_policy_versions WHERE id = 1")
             .use { statement ->
@@ -1656,29 +1658,37 @@ constructor(
                     rows.getLong("version")
                 }
             }
-    }
 
+    /** Reads the whole policy input on one pooled connection and from one database snapshot. */
     fun policyFor(
         request: PermissionPolicyRequest,
         now: Instant = Instant.now(),
-    ): PermissionPolicyInput {
-        val roles = listRoleDefinitions()
-        val directPlayerRoles = listPlayerRoleGrants(request.playerId)
+    ): PermissionPolicyInput = consistentRead { connection ->
+        val roles = listRoleDefinitions(connection)
+        val directPlayerRoles = listPlayerRoleGrants(connection, request.playerId)
         val mappedRoles =
-            if (hasKeycloakGroupMappings()) {
-                if (!identityReadinessCheck.isIdentityPolicyAvailable(now)) {
+            if (hasKeycloakGroupMappings(connection)) {
+                if (
+                    !identityReadinessCheck.isIdentityPolicyAvailable(
+                        identityRepository.currentSyncState(connection),
+                        now,
+                    )
+                ) {
                     throw IdentityProjectionUnavailableException()
                 }
                 val groupPaths =
-                    identityRepository.findByPlayerId(request.playerId)?.groupPaths.orEmpty()
-                listMappedRoleGrants(request.playerId, groupPaths)
+                    identityRepository
+                        .findByPlayerId(connection, request.playerId)
+                        ?.groupPaths
+                        .orEmpty()
+                listMappedRoleGrants(connection, request.playerId, groupPaths)
             } else {
                 emptyList()
             }
-        val playerGrants = listPlayerGrants(request.playerId)
+        val playerGrants = listPlayerGrants(connection, request.playerId)
 
-        return PermissionPolicyInput(
-            policyVersion = currentPolicyVersion(),
+        PermissionPolicyInput(
+            policyVersion = currentPolicyVersion(connection),
             roles = roles,
             playerRoles = directPlayerRoles + mappedRoles,
             playerGrants = playerGrants,
@@ -1687,7 +1697,7 @@ constructor(
         )
     }
 
-    fun requiresIdentityProjection(): Boolean = hasKeycloakGroupMappings()
+    fun requiresIdentityProjection(): Boolean = read(::hasKeycloakGroupMappings)
 
     fun deleteAllPermissionData() {
         dataSource.connection.use { connection ->
@@ -1740,10 +1750,10 @@ constructor(
         }
     }
 
-    private fun listRoleDefinitions(): List<RoleDefinition> = read { connection ->
+    private fun listRoleDefinitions(connection: Connection): List<RoleDefinition> {
         val inheritedRoles = listRoleInheritance(connection)
         val grants = listRoleGrants(connection)
-        listRoles().map { role ->
+        return listRoles(connection).map { role ->
             RoleDefinition(
                 key = role.key,
                 name = role.name,
@@ -1801,7 +1811,10 @@ constructor(
                 }
             }
 
-    private fun listPlayerRoleGrants(playerId: UUID): List<PlayerRoleGrant> = read { connection ->
+    private fun listPlayerRoleGrants(
+        connection: Connection,
+        playerId: UUID,
+    ): List<PlayerRoleGrant> =
         connection
             .prepareStatement(
                 """
@@ -1830,9 +1843,8 @@ constructor(
                     }
                 }
             }
-    }
 
-    private fun hasKeycloakGroupMappings(): Boolean = read { connection ->
+    private fun hasKeycloakGroupMappings(connection: Connection): Boolean =
         connection
             .prepareStatement("SELECT EXISTS (SELECT 1 FROM permission_keycloak_group_mappings)")
             .use { statement ->
@@ -1841,9 +1853,9 @@ constructor(
                     rows.getBoolean(1)
                 }
             }
-    }
 
     private fun listMappedRoleGrants(
+        connection: Connection,
         playerId: UUID,
         keycloakGroups: Set<String>,
     ): List<PlayerRoleGrant> {
@@ -1851,44 +1863,44 @@ constructor(
             return emptyList()
         }
 
-        return read { connection ->
-            connection
-                .prepareStatement(
-                    """
-                    SELECT id, role_key, starts_at, expires_at
-                    FROM permission_keycloak_group_mappings
-                    WHERE keycloak_group = ANY (?)
-                    ORDER BY created_at ASC, id ASC
-                    """
-                        .trimIndent()
+        return connection
+            .prepareStatement(
+                """
+                SELECT id, role_key, starts_at, expires_at
+                FROM permission_keycloak_group_mappings
+                WHERE keycloak_group = ANY (?)
+                ORDER BY created_at ASC, id ASC
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.setArray(
+                    1,
+                    connection.createArrayOf("text", keycloakGroups.toTypedArray()),
                 )
-                .use { statement ->
-                    statement.setArray(
-                        1,
-                        connection.createArrayOf("text", keycloakGroups.toTypedArray()),
-                    )
-                    statement.executeQuery().use { rows ->
-                        buildList {
-                            while (rows.next()) {
-                                add(
-                                    PlayerRoleGrant(
-                                        playerId = playerId,
-                                        roleKey = rows.getString("role_key"),
-                                        startsAt = rows.instantOrNull("starts_at"),
-                                        expiresAt = rows.instantOrNull("expires_at"),
-                                        assignmentSource =
-                                            PermissionRoleAssignmentSource.GROUP_MAPPING,
-                                        mappingId = rows.getObject("id", UUID::class.java),
-                                    )
+                statement.executeQuery().use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(
+                                PlayerRoleGrant(
+                                    playerId = playerId,
+                                    roleKey = rows.getString("role_key"),
+                                    startsAt = rows.instantOrNull("starts_at"),
+                                    expiresAt = rows.instantOrNull("expires_at"),
+                                    assignmentSource = PermissionRoleAssignmentSource.GROUP_MAPPING,
+                                    mappingId = rows.getObject("id", UUID::class.java),
                                 )
-                            }
+                            )
                         }
                     }
                 }
-        }
+            }
     }
 
-    private fun listPlayerGrants(playerId: UUID): List<PlayerPermissionGrant> = read { connection ->
+    private fun listPlayerGrants(
+        connection: Connection,
+        playerId: UUID,
+    ): List<PlayerPermissionGrant> =
         connection
             .prepareStatement(
                 """
@@ -1918,7 +1930,6 @@ constructor(
                     }
                 }
             }
-    }
 
     private fun <T> read(block: (Connection) -> T): T =
         dataSource.connection.use { connection -> block(connection) }

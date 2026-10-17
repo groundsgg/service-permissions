@@ -24,7 +24,10 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     PlayerIdentityStore {
 
     override fun findByPlayerId(playerId: UUID): ProjectedPlayerIdentity? =
-        findIdentity("player_id = ?") { statement -> statement.setObject(1, playerId) }
+        dataSource.connection.use { connection -> findByPlayerId(connection, playerId) }
+
+    fun findByPlayerId(connection: Connection, playerId: UUID): ProjectedPlayerIdentity? =
+        findIdentity(connection, "player_id = ?") { statement -> statement.setObject(1, playerId) }
 
     override fun findByKeycloakUserId(keycloakUserId: String): ProjectedPlayerIdentity? =
         findIdentity("keycloak_user_id = ?") { statement -> statement.setString(1, keycloakUserId) }
@@ -366,36 +369,40 @@ class PlayerIdentityRepository @Inject constructor(private val dataSource: DataS
     }
 
     override fun currentSyncState(): IdentitySyncState =
-        dataSource.connection.use { connection ->
-            connection
-                .prepareStatement(
-                    """
-                    SELECT status, started_at, completed_at, last_success_at, duration_ms, player_count,
-                           failure_reason
-                    FROM permission_identity_sync_state
-                    WHERE id = 1
-                    """
-                        .trimIndent()
-                )
-                .use { statement ->
-                    statement.executeQuery().use { rows ->
-                        check(rows.next()) { "Identity sync state row is missing" }
-                        rows.toIdentitySyncState()
-                    }
+        dataSource.connection.use(::currentSyncState)
+
+    fun currentSyncState(connection: Connection): IdentitySyncState =
+        connection
+            .prepareStatement(
+                """
+                SELECT status, started_at, completed_at, last_success_at, duration_ms, player_count,
+                       failure_reason
+                FROM permission_identity_sync_state
+                WHERE id = 1
+                """
+                    .trimIndent()
+            )
+            .use { statement ->
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "Identity sync state row is missing" }
+                    rows.toIdentitySyncState()
                 }
-        }
+            }
 
     private fun findIdentity(
         predicate: String,
         bind: (java.sql.PreparedStatement) -> Unit,
     ): ProjectedPlayerIdentity? =
-        dataSource.connection.use { connection ->
-            connection.prepareStatement(identityQuery(predicate)).use { statement ->
-                bind(statement)
-                statement.executeQuery().use { rows ->
-                    if (rows.next()) rows.toIdentity() else null
-                }
-            }
+        dataSource.connection.use { connection -> findIdentity(connection, predicate, bind) }
+
+    private fun findIdentity(
+        connection: Connection,
+        predicate: String,
+        bind: (java.sql.PreparedStatement) -> Unit,
+    ): ProjectedPlayerIdentity? =
+        connection.prepareStatement(identityQuery(predicate)).use { statement ->
+            bind(statement)
+            statement.executeQuery().use { rows -> if (rows.next()) rows.toIdentity() else null }
         }
 
     private fun acquireMutationLock(connection: Connection) {

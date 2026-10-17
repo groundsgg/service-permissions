@@ -41,6 +41,9 @@ class IdentitySyncReadinessCheck(
     fun isIdentityPolicyAvailable(now: Instant): Boolean =
         isAvailable(store.currentSyncState(), now)
 
+    fun isIdentityPolicyAvailable(state: IdentitySyncState, now: Instant): Boolean =
+        isAvailable(state, now)
+
     private fun isAvailable(state: IdentitySyncState, now: Instant): Boolean {
         val lastSuccessAt = state.lastSuccessAt ?: return false
         return !lastSuccessAt.isBefore(now.minus(maxStaleness))
