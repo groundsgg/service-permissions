@@ -89,3 +89,8 @@ tasks.processResources {
         filter { line: String -> line.replace("@VERSION@", projectVersion) }
     }
 }
+
+// Every @QuarkusTest class with its own test resource starts a fresh application in the same
+// test JVM, and earlier applications are not always collected right away. With the default
+// 512 MiB the suite ran out of heap and stalled in GC.
+tasks.withType<Test>().configureEach { maxHeapSize = "1g" }
