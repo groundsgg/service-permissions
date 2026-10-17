@@ -6,7 +6,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     id("gg.grounds.base-conventions") version "0.8.0"
-    id("io.quarkus") version "3.39.1"
+    alias(libs.plugins.quarkus)
 }
 
 kotlin { jvmToolchain(25) }
@@ -50,7 +50,7 @@ repositories {
 }
 
 dependencies {
-    implementation(enforcedPlatform("io.quarkus.platform:quarkus-bom:3.39.1"))
+    implementation(enforcedPlatform(libs.quarkus.bom))
     implementation("io.quarkus:quarkus-arc")
     implementation("io.quarkus:quarkus-rest")
     implementation("io.quarkus:quarkus-rest-jackson")
