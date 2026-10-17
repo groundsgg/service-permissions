@@ -19,6 +19,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.net.URI
 import java.security.Principal
+import java.util.concurrent.Executor
 
 @ApplicationScoped
 class RuntimeBearerAuthenticationMechanism
@@ -80,9 +81,18 @@ constructor(
         context: RoutingContext,
         path: String,
         failure: RuntimeAccessException,
-    ): Uni<SecurityIdentity> {
-        writeProblem(context, path, failure.statusCode, failure.publicDetail, failure.error)
-        return Uni.createFrom().failure(AuthenticationCompletionException())
+    ): Uni<SecurityIdentity> =
+        Uni.createFrom()
+            .voidItem()
+            .emitOn(eventLoopExecutor(context))
+            .invoke { _ ->
+                writeProblem(context, path, failure.statusCode, failure.publicDetail, failure.error)
+            }
+            .onItem()
+            .transformToUni { _ -> Uni.createFrom().failure(AuthenticationCompletionException()) }
+
+    private fun eventLoopExecutor(context: RoutingContext): Executor = Executor { command ->
+        context.vertx().runOnContext { command.run() }
     }
 
     private fun writeProblem(
