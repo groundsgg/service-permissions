@@ -1,6 +1,7 @@
 package gg.grounds.permissions.identity
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import gg.grounds.permissions.persistence.PermissionRepository
 import io.nats.client.Connection
 import io.nats.client.Nats
 import io.nats.client.Options
@@ -122,6 +123,7 @@ internal class PermissionSnapshotInvalidationPublisherProducer
 constructor(
     private val objectMapper: ObjectMapper,
     private val transport: NatsPermissionSnapshotInvalidationTransport,
+    private val repository: PermissionRepository,
     @ConfigProperty(name = "permissions.snapshot-invalidations.subject") subject: String,
     @ConfigProperty(name = "permissions.snapshot-invalidations.enabled") enabled: Boolean,
 ) {
@@ -131,9 +133,24 @@ constructor(
     @Produces
     @ApplicationScoped
     fun publisher(): PermissionSnapshotInvalidationPublisher =
-        if (enabled) {
-            NatsPermissionSnapshotInvalidationPublisher(objectMapper, transport, subject)
-        } else {
-            NoopPermissionSnapshotInvalidationPublisher
-        }
+        LocalEvictingPermissionSnapshotInvalidationPublisher(
+            evictLocally = repository.snapshotCache::evictPlayer,
+            delegate =
+                if (enabled) {
+                    NatsPermissionSnapshotInvalidationPublisher(objectMapper, transport, subject)
+                } else {
+                    NoopPermissionSnapshotInvalidationPublisher
+                },
+        )
+}
+
+/** Drops this instance's cached snapshot inputs before telling everyone else. */
+internal class LocalEvictingPermissionSnapshotInvalidationPublisher(
+    private val evictLocally: (UUID) -> Unit,
+    private val delegate: PermissionSnapshotInvalidationPublisher,
+) : PermissionSnapshotInvalidationPublisher {
+    override fun publish(playerId: UUID) {
+        evictLocally(playerId)
+        delegate.publish(playerId)
+    }
 }

@@ -23,7 +23,9 @@ import jakarta.ws.rs.core.UriInfo
 import jakarta.ws.rs.ext.ExceptionMapper
 import jakarta.ws.rs.ext.Provider
 import java.net.URI
+import java.sql.SQLException
 import org.jboss.logging.Logger
+import org.postgresql.util.PSQLException
 
 private const val PROBLEM_JSON = "application/problem+json"
 
@@ -335,17 +337,60 @@ class PermissionUnexpectedExceptionMapper :
                 "internal_server_error",
             )
         val details = response.entity as ProblemDetails
+        val rootCause = RootCauseSummary.of(exception)
         LOG.errorf(
-            "REST request failed (requestId=%s, instance=%s, exceptionType=%s)",
+            "REST request failed (requestId=%s, instance=%s, exceptionType=%s, rootCauseType=%s, rootCauseSqlState=%s, rootCauseMessage=%s)",
             details.requestId,
             details.instance,
             exception.javaClass.name,
+            rootCause.type,
+            rootCause.sqlState,
+            rootCause.message,
         )
         return response
     }
 
     private companion object {
         val LOG: Logger = Logger.getLogger(PermissionUnexpectedExceptionMapper::class.java)
+    }
+}
+
+/**
+ * The loggable part of an exception's root cause: always its class, plus the SQLState for SQL
+ * errors. The message is kept only for SQL errors raised by the pool or driver themselves ("Sorry,
+ * acquisition timeout!", "This connection has been closed."). PostgreSQL server errors can echo row
+ * values (for example the key of a unique violation), and other exception messages may carry
+ * request data, so those messages are dropped.
+ */
+internal data class RootCauseSummary(
+    val type: String,
+    val sqlState: String?,
+    val message: String?,
+) {
+    companion object {
+        private const val MAX_MESSAGE_LENGTH = 300
+        private val WHITESPACE = Regex("\\s+")
+
+        fun of(exception: Throwable): RootCauseSummary {
+            var rootCause = exception
+            val seen = mutableSetOf<Throwable>()
+            while (seen.add(rootCause)) {
+                rootCause = rootCause.cause ?: break
+            }
+            val sqlException = rootCause as? SQLException
+            val clientSideSqlError =
+                sqlException != null && (rootCause as? PSQLException)?.serverErrorMessage == null
+            return RootCauseSummary(
+                type = rootCause.javaClass.name,
+                sqlState = sqlException?.sqlState,
+                message =
+                    if (clientSideSqlError) {
+                        rootCause.message?.replace(WHITESPACE, " ")?.take(MAX_MESSAGE_LENGTH)
+                    } else {
+                        null
+                    },
+            )
+        }
     }
 }
 
