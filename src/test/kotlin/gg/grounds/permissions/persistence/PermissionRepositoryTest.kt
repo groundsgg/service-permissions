@@ -1820,6 +1820,62 @@ class PermissionRepositoryTest {
             }
         )
 
+    // Policy version
+
+    @Test
+    fun catalogWritesLeaveThePolicyVersionAlone() {
+        val versionBefore = repository.currentPolicyVersion()
+
+        repeat(2) { restart ->
+            repository.replaceRuntimeManifest(
+                runtimeManifest(
+                    source = "plugin-lobby",
+                    registeredAt =
+                        Instant.parse("2030-01-01T00:00:00Z").plusSeconds(restart.toLong()),
+                    permissions = listOf(runtimeCatalogEntry("grounds.lobby.fly", "Fly")),
+                )
+            )
+        }
+        repository.upsertCatalogEntry(
+            testActor,
+            CatalogEntryRecord(
+                key = "grounds.custom.entry",
+                label = "Custom",
+                source = "custom",
+                sourceVersion = "1",
+                supportedScopes = listOf(PermissionScopeKind.GLOBAL),
+                custom = true,
+                lastSeenAt = null,
+            ),
+        )
+        repository.deleteCustomCatalogEntry(testActor, "grounds.custom.entry")
+
+        assertEquals(versionBefore, repository.currentPolicyVersion())
+        assertEquals(
+            listOf("grounds.lobby.fly"),
+            repository.listCatalogEntries().map(CatalogEntryRecord::key),
+        )
+        // Still audited: two manifest registrations, one upsert, one delete.
+        assertEquals(
+            4L,
+            repository
+                .listAuditEvents(
+                    PermissionAuditEventQuery(
+                        actions =
+                            setOf(
+                                "catalog.runtime_manifest.replaced",
+                                "catalog.entry.upserted",
+                                "catalog.entry.deleted",
+                            )
+                    )
+                )
+                .total,
+        )
+
+        repository.createRole(testActor, RoleRecord(key = "member", name = "Member"))
+        assertEquals(versionBefore + 1, repository.currentPolicyVersion())
+    }
+
     // Snapshot cache
 
     private fun seedCachedPlayer() {

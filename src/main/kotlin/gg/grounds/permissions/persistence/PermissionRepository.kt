@@ -1279,6 +1279,7 @@ constructor(
             "catalog.entry.upserted",
             "permission:${entry.key}",
             auditMetadata { put("catalogKey", entry.key) },
+            policyChange = false,
         ) { connection ->
             require(!entry.custom || !catalogEntryOwnedByRuntime(connection, entry.key)) {
                 "Catalog entry is owned by runtime registration (permissionKey=${entry.key})"
@@ -1350,6 +1351,7 @@ constructor(
                     put("serverId", registration.serverId)
                     put("permissionCount", registration.permissions.size)
                 },
+            policyChange = false,
         ) { connection ->
             assertRuntimeCatalogOwnership(connection, registration)
             registration.permissions.forEach { entry ->
@@ -1595,6 +1597,7 @@ constructor(
             "catalog.entry.deleted",
             "permission:$permissionKey",
             auditMetadata { put("catalogKey", permissionKey) },
+            policyChange = false,
         ) { connection ->
             connection
                 .prepareStatement(
@@ -2176,11 +2179,17 @@ constructor(
         put("expiresAt", mapping.expiresAt?.toString())
     }
 
+    /**
+     * Runs a mutation under the policy version lock, which serializes every write across replicas.
+     * The version only moves when [policyChange] is set: it tells runtimes and caches that snapshot
+     * inputs changed, and catalog-only writes (runtime manifests on every server start) never do.
+     */
     private fun <T> write(
         actorUserId: String,
         action: String,
         target: String,
         metadata: JsonNode,
+        policyChange: Boolean = true,
         block: (Connection) -> T,
     ): T =
         dataSource.connection.use { connection ->
@@ -2188,10 +2197,14 @@ constructor(
             try {
                 lockPolicyVersion(connection)
                 val result = block(connection)
-                incrementPolicyVersion(connection)
+                if (policyChange) {
+                    incrementPolicyVersion(connection)
+                }
                 insertAuditEvent(connection, actorUserId, action, target, metadata)
                 connection.commit()
-                afterPolicyWrite(target)
+                if (policyChange) {
+                    afterPolicyWrite(target)
+                }
                 result
             } catch (error: Throwable) {
                 connection.rollback()
@@ -2204,6 +2217,7 @@ constructor(
         action: String,
         target: String,
         metadata: JsonNode,
+        policyChange: Boolean = true,
         block: (Connection) -> Boolean,
     ) {
         dataSource.connection.use { connection ->
@@ -2212,11 +2226,13 @@ constructor(
                 lockPolicyVersion(connection)
                 val changed = block(connection)
                 if (changed) {
-                    incrementPolicyVersion(connection)
+                    if (policyChange) {
+                        incrementPolicyVersion(connection)
+                    }
                     insertAuditEvent(connection, actorUserId, action, target, metadata)
                 }
                 connection.commit()
-                if (changed) {
+                if (changed && policyChange) {
                     afterPolicyWrite(target)
                 }
             } catch (error: Throwable) {
