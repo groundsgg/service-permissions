@@ -68,7 +68,7 @@ dependencies {
     implementation("io.quarkus:quarkus-kubernetes-client")
     implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
     implementation("io.quarkus:quarkus-redis-client")
-    implementation("com.github.ben-manes.caffeine:caffeine")
+    implementation("io.quarkus:quarkus-caffeine")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("io.nats:jnats:2.26.4")
