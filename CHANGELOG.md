@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/groundsgg/service-permissions/compare/v1.4.1...v1.5.0) (2026-11-01)
+
+
+### Features
+
+* **permissions:** add portable native runtime and reusable CI ([#114](https://github.com/groundsgg/service-permissions/issues/114)) ([536ec71](https://github.com/groundsgg/service-permissions/commit/536ec714da96df2c5d88ccfa4bf39d4a24613819))
+
 ## [1.4.1](https://github.com/groundsgg/service-permissions/compare/v1.4.0...v1.4.1) (2026-10-17)
 
 
