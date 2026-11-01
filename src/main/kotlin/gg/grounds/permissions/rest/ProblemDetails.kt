@@ -1,10 +1,12 @@
 package gg.grounds.permissions.rest
 
 import com.fasterxml.jackson.annotation.JsonInclude
+import io.quarkus.runtime.annotations.RegisterForReflection
 import jakarta.ws.rs.core.HttpHeaders
 import java.net.URI
 import java.util.UUID
 
+@RegisterForReflection
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class ProblemDetails(
     val type: URI,
