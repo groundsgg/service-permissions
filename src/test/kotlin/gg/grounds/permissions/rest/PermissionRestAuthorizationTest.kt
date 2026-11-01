@@ -451,6 +451,8 @@ class PermissionRestAuthorizationTestProfile : QuarkusTestProfile {
         mapOf(
             "quarkus.flyway.migrate-at-start" to "false",
             "quarkus.datasource.devservices.enabled" to "false",
+            // Background cache refreshes must not race with repository mock stubbing.
+            "quarkus.scheduler.enabled" to "false",
             "permissions.auth.allow-test-security-principal" to "true",
             "permissions.instance-environment" to "stage",
         )
