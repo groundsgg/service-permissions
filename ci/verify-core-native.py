@@ -223,12 +223,12 @@ def main():
             except urllib.error.HTTPError as error:
                 return error.code, error.read().decode()
         assert request('/v1/permissions/roles')[0] == 401
-        admin = token(['MINECRAFT_PERMISSIONS_PRODUCTION_MANAGE'])
+        admin = token(['GAME_AREA_ACCESS', 'MINECRAFT_PERMISSIONS_PRODUCTION_MANAGE'])
         status, body = request('/v1/permissions/roles', admin, {'name': 'Core Native Members', 'description': 'Native fixture', 'default': True})
         assert status == 201 and body['name'] == 'Core Native Members', (status, body)
         status, body = request('/v1/permissions/roles', admin)
         assert status == 200 and any(r['name'] == 'Core Native Members' for r in body), (status, body)
-        status, body = request('/v1/permissions/roles', token(['MINECRAFT_PERMISSIONS_STAGE_MANAGE']))
+        status, body = request('/v1/permissions/roles', token(['GAME_AREA_ACCESS', 'MINECRAFT_PERMISSIONS_STAGE_MANAGE']))
         assert status == 403, (status, body)
         invalidations = [json.loads(b) for s, b in received if s == 'permissions.snapshot.invalidated']
         assert all(item['schemaVersion'] == 1 and item['playerId'] == player for item in invalidations)
