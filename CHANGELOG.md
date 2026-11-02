@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/groundsgg/service-permissions/compare/v1.5.0...v1.5.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **native:** support Core identity synchronization events ([#117](https://github.com/groundsgg/service-permissions/issues/117)) ([f932995](https://github.com/groundsgg/service-permissions/commit/f932995561313af735f90bb9316870a0f5228a7d))
+
 ## [1.5.0](https://github.com/groundsgg/service-permissions/compare/v1.4.1...v1.5.0) (2026-11-01)
 
 
