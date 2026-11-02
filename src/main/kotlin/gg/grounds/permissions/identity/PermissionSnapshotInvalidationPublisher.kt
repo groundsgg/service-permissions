@@ -5,6 +5,7 @@ import gg.grounds.permissions.persistence.PermissionRepository
 import io.nats.client.Connection
 import io.nats.client.Nats
 import io.nats.client.Options
+import io.quarkus.runtime.annotations.RegisterForReflection
 import jakarta.annotation.PreDestroy
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.inject.Produces
@@ -16,6 +17,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 
 const val SNAPSHOT_INVALIDATION_SCHEMA_VERSION = 1
 
+@RegisterForReflection
 data class PermissionSnapshotInvalidationEvent(val schemaVersion: Int, val playerId: UUID)
 
 interface PermissionSnapshotInvalidationPublisher {
