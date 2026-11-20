@@ -71,7 +71,7 @@ dependencies {
     implementation("io.quarkus:quarkus-caffeine")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
-    implementation("io.nats:jnats:2.26.4")
+    implementation("io.nats:jnats:2.27.0")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-junit5-mockito")
